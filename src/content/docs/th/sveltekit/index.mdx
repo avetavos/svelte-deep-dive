@@ -1,0 +1,87 @@
+---
+title: 'SvelteKit: Full-Stack Svelte'
+description: 'สิ่งที่ SvelteKit เพิ่มบน Svelte — routing, server-side rendering, data loading, form actions, endpoints และ deployment adapters — framework สำหรับสร้างแอปจริง'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Svelte สร้าง component; SvelteKit สร้างแอป
+
+Svelte ให้ component กับคุณ ส่วน **SvelteKit** คือ application framework อย่างเป็นทางการที่สร้างต่อยอดขึ้นไป (และอยู่บน Vite) มันเพิ่มทุกอย่างที่แอปจริงต้องใช้ — router, server-side rendering, data loading, form handling, API endpoints และ deployment — คุณจึงไม่ต้องประกอบเองทีละชิ้น
+
+ความสัมพันธ์นี้เหมือน React กับ Next.js หรือ Vue กับ Nuxt: view library ดูแล UI ส่วน meta-framework ดูแลตัวแอป
+
+## โมดูลนี้ครอบคลุมอะไรบ้าง
+
+| บทเรียน | สิ่งที่คุณจะได้เรียน |
+|--------|-------------------|
+| Routing & pages | file-based routing, `+page.svelte`, layout, dynamic route |
+| Loading data | `load` function, universal vs server-only, `data` prop |
+| Forms & actions | form `actions` และ progressive enhancement ด้วย `use:enhance` |
+| Server & API | `+server.js` endpoint, hooks, render mode และ adapters |
+
+## หน้าตาของแอป SvelteKit
+
+route คือไฟล์ใน `src/routes/` และชื่อไฟล์พิเศษแต่ละแบบมีบทบาทเฉพาะ
+
+<Mermaid title="ไฟล์ที่ประกอบกันเป็น route" code={shapeDiagram} />
+
+export const shapeDiagram = `flowchart TB
+  route["route folder ใน src/routes/"] --> page["+page.svelte — ตัว UI"]
+  route --> pjs["+page.js / +page.server.js — load data + actions"]
+  route --> layout["+layout.svelte — shared shell"]
+  route --> server["+server.js — API endpoint"]
+  page --> ssr["render บน server (SSR) โดย default\nแล้ว hydrate บน client"]`;
+
+- **`+page.svelte`** คือหน้าเพจของ route — เป็น Svelte component ปกติ
+- **`+page.js` / `+page.server.js`** ให้ข้อมูลของเพจ (ผ่าน `load`) และ form `actions`
+- **`+layout.svelte`** ครอบ child route ด้วย shell ที่ใช้ร่วมกัน (nav, footer)
+- **`+server.js`** คือ API endpoint เดี่ยว ๆ (JSON, webhook) ที่ไม่มี UI
+
+โดย default SvelteKit จะ render เพจบน **server** ก่อน (first paint เร็ว, ดีต่อ SEO) แล้วค่อย hydrate บน client เพื่อความ interactive — ได้ข้อดีทั้งสองฝั่ง และปรับได้ราย route
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**SvelteKit** คือ app framework อย่างเป็นทางการบน Svelte + Vite: ให้ file-based **routing** (`src/routes/` พร้อมไฟล์พิเศษอย่าง `+page.svelte`, `+layout.svelte`, `+server.js`), **server-side rendering** โดย default, **data loading** (`load`), **form actions**, **API endpoints** และ deployment **adapters** Svelte สร้าง component; SvelteKit สร้างแอปรอบ ๆ มัน
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'ความสัมพันธ์ระหว่าง Svelte กับ SvelteKit คืออะไร',
+    options: [
+      'เป็นสิ่งเดียวกัน',
+      'Svelte คือ component/view library ส่วน SvelteKit คือ app framework (routing, SSR, data, endpoints) ที่สร้างต่อยอดขึ้นไป',
+      'SvelteKit คือ Svelte เวอร์ชันเก่า',
+      'SvelteKit คือเครื่องมือ CSS',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'route ในแอป SvelteKit อยู่ที่ไหน',
+    options: [
+      'ใน routes config array',
+      'เป็นไฟล์ใต้ `src/routes/` — file-based routing',
+      'ใน database',
+      'ใน `+router.js`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'โดย default เพจ SvelteKit render ครั้งแรกที่ไหน',
+    options: [
+      'ใน browser เท่านั้น',
+      'บน server (SSR) ก่อน แล้วจึง hydrate บน client',
+      'ไม่ render จนกว่าจะคลิก',
+      'ตอน build time เท่านั้น',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="sveltekit/index" />

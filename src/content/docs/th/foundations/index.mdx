@@ -1,0 +1,83 @@
+---
+title: 'Svelte Foundations & Mental Model'
+description: 'ไอเดียเดียวที่ Svelte สร้างขึ้นมา — มันคือ compiler ไม่ใช่ runtime — บวกกับ .svelte component, runes reactivity และ template syntax เลนส์สำหรับทุกอย่างที่เหลือ'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในประโยคเดียว
+
+**Svelte คือ compiler** มันอ่าน component ของคุณตอน build time แล้ว generate JavaScript เล็ก ๆ แบบ imperative ที่อัปเดต DOM แบบเจาะจง — ไม่มี virtual DOM และไม่มี framework runtime มานั่ง diff UI ทุกครั้งที่มีการเปลี่ยนแปลง "framework" แทบจะหายไปในผลลัพธ์
+
+ทุกฟีเจอร์ของ Svelte — runes, snippets, scoped styles, transitions — เป็นผลมาจากสิ่งนี้: เพราะ Svelte *compile* code ของคุณ มันเลยเปลี่ยน `count++` ให้กลายเป็นการอัปเดต DOM เท่าที่การเปลี่ยนแปลงนั้นต้องการพอดี และส่งอย่างอื่นไปแทบไม่มีเลย
+
+## โมดูลนี้ครอบคลุมอะไรบ้าง
+
+| บทเรียน | สิ่งที่คุณจะได้เรียน |
+|--------|-------------------|
+| Why Svelte, the compiler | compile model, ไม่มี virtual DOM และ bundle เล็ก |
+| The component anatomy | ไฟล์ `.svelte`: script, markup และ scoped styles |
+| Runes & reactivity | runes ขับเคลื่อน reactivity ที่ compiler generate อย่างไร (Svelte 5) |
+| Template syntax | interpolation, `{#if}`/`{#each}`/`{#await}` และการ render |
+
+## เลนส์สำหรับทั้งคอร์ส
+
+สองไอเดียนี้อธิบายเกือบทุกอย่างที่ Svelte ทำ:
+
+<Mermaid title="สองไอเดียที่ทุกอย่างต่อยอดมา" code={lensDiagram} />
+
+export const lensDiagram = `flowchart TB
+  compile["Compiler: analyze components at build time"] --> gen["Generate surgical DOM updates\n(no virtual DOM)"]
+  runes["Runes: mark what is reactive\n($state, $derived, $effect)"] --> gen
+  gen --> small["Tiny, fast output"]`;
+
+- เพราะ Svelte เป็น **compiler** มันรู้ตั้งแต่ build time ว่าส่วนไหนของ DOM ขึ้นกับ state ตัวไหน — จึงเขียน code อัปเดตที่แม่นยำแทนที่จะส่ง diffing runtime ไป
+- เพราะ reactivity ถูกประกาศด้วย **runes** compiler เลยไล่ dependency graph แบบ static ได้ และอัปเดตเฉพาะสิ่งที่เปลี่ยน ไม่ว่ามันจะอยู่ตรงไหน
+
+จับสองอย่างนี้ไว้ แล้ว Svelte จะเลิกดูเหมือนเวทมนตร์ และเริ่มดูเหมือน code generator ที่เก่งมาก
+
+<Callout title="การเปลี่ยนมุมมอง">
+ถ้ามาจาก React สัญชาตญาณของคุณคือ "framework re-run component ของฉันแล้ว diff virtual DOM" Svelte กลับด้าน: **ไม่มีการ re-run และไม่มีการ diff** compiler รู้อยู่แล้วว่า `count` โผล่ในtext node หนึ่งจุด ดังนั้น `count++` เลย compile เป็นการอัปเดตเฉพาะ text node นั้น คุณคิดในแง่ *state และ dependency* ไม่ใช่ render และ reconciliation
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'โดยพื้นฐานแล้ว Svelte คืออะไร?',
+    options: [
+      'runtime library ที่มี virtual DOM',
+      'compiler ที่ generate JavaScript แบบ imperative เล็ก ๆ เพื่ออัปเดต DOM แบบเจาะจง',
+      'CSS framework',
+      'server-side templating engine',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Svelte อัปเดต DOM อย่างไรเมื่อ state เปลี่ยน?',
+    options: [
+      'มัน re-render component แล้ว diff virtual DOM',
+      'compiler generate code ที่แม่นยำไว้แล้ว ซึ่งอัปเดตเฉพาะ DOM node ที่ขึ้นกับ state นั้น',
+      'มัน reload หน้า',
+      'มัน re-run ทุก component บนหน้า',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'runes ทำอะไร?',
+    options: [
+      'จัด style ให้ component',
+      'ประกาศว่าอะไร reactive ($state, $derived, $effect) เพื่อให้ compiler ไล่ dependency graph ได้',
+      'กำหนด route',
+      'fetch data',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="foundations/index" />

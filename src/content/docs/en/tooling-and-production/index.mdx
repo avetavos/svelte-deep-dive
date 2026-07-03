@@ -1,0 +1,68 @@
+---
+title: 'Tooling, Testing & Production'
+description: 'The workflow around your Svelte code — scaffolding with the sv CLI, TypeScript, testing with Vitest and Testing Library, and shipping to production.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## From component to shipped app
+
+You know Svelte the language now. This module is the workflow *around* it: how you scaffold a project, keep it type-safe, prove it works, and get it in front of users. None of it is Svelte-specific magic — it's the ordinary craft of a Vite-based project, with the Svelte-flavoured tools called out.
+
+## What this module covers
+
+| Lesson | What you'll learn |
+|--------|-------------------|
+| Project & tooling | Scaffolding with `sv create`, Vite, and `svelte-check` |
+| TypeScript with Svelte | Typing runes, props, snippets, and generic components |
+| Testing | Vitest, `@testing-library/svelte`, and Playwright |
+| Performance & deploy | Small output, adapters, prerendering, and production builds |
+
+## The toolchain at a glance
+
+<Mermaid title="What sits around your Svelte components" code={toolDiagram} />
+
+export const toolDiagram = `flowchart LR
+  sv["sv CLI: scaffold"] --> vite["Vite: dev server + build"]
+  vite --> check["svelte-check: types + diagnostics"]
+  vite --> test["Vitest + Playwright: tests"]
+  vite --> adapter["SvelteKit adapter: deploy target"]
+  adapter --> prod["production site"]`;
+
+The through-line: Svelte compiles to small output by default, and the surrounding tools (Vite, `svelte-check`, Vitest, adapters) are the same modern JavaScript toolchain you'd use anywhere — so most of this transfers directly from other frameworks.
+
+<Callout title="The one-line takeaway">
+This module is the **workflow around Svelte**: scaffold with the **`sv` CLI**, develop and build on **Vite**, keep types honest with **`svelte-check`**, prove behaviour with **Vitest + Testing Library + Playwright**, and deploy via a **SvelteKit adapter**. The compiler already gives you small, fast output — the toolchain is standard modern JavaScript tooling with a few Svelte-aware pieces.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'What build tool underlies a modern Svelte/SvelteKit project?',
+    options: [
+      'Webpack only',
+      'Vite',
+      'Rollup configured by hand',
+      'No build tool',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `svelte-check` do?',
+    options: [
+      'Runs the app in production',
+      'Type-checks and reports diagnostics across your .svelte files, including the markup',
+      'Minifies CSS',
+      'Deploys the site',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="tooling-and-production/index" />

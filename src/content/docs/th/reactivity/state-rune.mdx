@@ -1,0 +1,134 @@
+---
+title: 'The $state Rune'
+description: 'reactive state ด้วย $state, deep reactivity ผ่าน proxy, การ opt out ด้วย $state.raw และการเอา plain copy ด้วย $state.snapshot'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ประกาศ reactive state
+
+`$state` สร้างค่า reactive อ่านมันเหมือนตัวแปรปกติ และ reassign มันเหมือนตัวแปรปกติ — compiler ทำให้ทุกการอ่านเป็น dependency และทุกการเขียนเป็น trigger
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+```
+
+ไม่มี setter ไม่มี update call พิเศษ `count++` คือการ reassign จริง ๆ และเพราะ compiler รู้ว่า text ของปุ่มอ่าน `count` text node นั้นจะ update
+
+## Deep reactivity ผ่าน proxy
+
+เมื่อคุณส่ง object หรือ array เข้า `$state` Svelte จะห่อมันด้วย **proxy** เพื่อให้ *mutation* — ไม่ใช่แค่การ reassign — เป็น reactive การ push เข้า array หรือ set nested property จะ trigger update
+
+```svelte
+<script>
+  let todos = $state([{ text: 'learn runes', done: false }]);
+
+  function toggle(todo) {
+    todo.done = !todo.done;   // mutating a nested property is reactive
+  }
+  function add(text) {
+    todos.push({ text, done: false });  // mutating the array is reactive
+  }
+</script>
+```
+
+นี่ต่างจาก React จริง ๆ ที่คุณต้องสร้าง object/array ใหม่ ใน Svelte แค่ `todos.push(...)` และ `todo.done = true` ก็ทำงาน — proxy จับ mutation ได้ reactivity เป็นแบบ **deep**: nested object และ array ก็เป็น proxy ด้วย
+
+<Mermaid title="object แบบ $state คือ reactive proxy" code={stateDiagram} />
+
+export const stateDiagram = `flowchart LR
+  write["mutate: todo.done = true"] --> proxy["$state proxy จับการเปลี่ยน"]
+  proxy --> update["update เฉพาะ DOM ที่เกี่ยวข้อง"]`;
+
+## Opt out: $state.raw
+
+การทำ deep proxy มีต้นทุนนิดหน่อยและไม่ได้อยากได้เสมอไป — สำหรับข้อมูลใหญ่ที่ immutable และคุณแค่ *replace* ทั้งก้อน ให้ใช้ **`$state.raw`** raw state เป็น reactive ตอน **reassign** แต่ไม่ใช่ตอน mutate
+
+```svelte
+<script>
+  let settings = $state.raw({ theme: 'dark', density: 'cozy' });
+
+  // ✅ Reassigning a whole new object IS reactive:
+  settings = { ...settings, theme: 'light' };
+
+  // ❌ Mutating is NOT tracked with raw state:
+  // settings.theme = 'light';  // no update
+</script>
+```
+
+ใช้ `$state.raw` กับค่าที่คุณ treat แบบ immutable (replace ทั้งก้อน) หรือ structure ใหญ่ ๆ ที่คุณไม่อยากได้ overhead ของ proxy
+
+## เอา plain copy: $state.snapshot
+
+เพราะ object แบบ `$state` คือ proxy การส่งมันเข้า code ที่คาดหวัง object ธรรมดา (`console.log` ที่โชว์ Proxy, `structuredClone`, library ภายนอก) อาจเซอร์ไพรส์ **`$state.snapshot`** คืน copy ที่เป็น plain และไม่ reactive
+
+```svelte
+<script>
+  let user = $state({ name: 'Ada', roles: ['admin'] });
+
+  function save() {
+    const plain = $state.snapshot(user);  // a normal object, not a proxy
+    api.save(plain);
+  }
+</script>
+```
+
+<Callout title="สรุปบรรทัดเดียว">
+`$state(value)` สร้าง reactive state ที่คุณอ่านและ reassign เหมือนตัวแปรปกติ สำหรับ **object และ array มันคือ deep proxy** ดังนั้น *mutation* (`arr.push`, `obj.x = …`) เป็น reactive — ไม่ต้องสร้าง object ใหม่แบบ React ใช้ **`$state.raw`** กับค่าที่คุณแค่ replace ทั้งก้อน (reactive ตอน reassign ไม่ใช่ตอน mutate) เพื่อเลี่ยง overhead ของ proxy และใช้ **`$state.snapshot(x)`** เพื่อเอา plain copy ที่ไม่ใช่ proxy ไป log, clone หรือส่งให้ code ภายนอก
+</Callout>
+
+export const quizState = [
+  {
+    q: 'ใน Svelte 5 คุณ update `$state` ยังไง?',
+    options: [
+      'เรียก setter เช่น setCount(1)',
+      'reassign หรือ mutate มันตามปกติ — `count++` หรือ `obj.x = 1` สำหรับ $state object',
+      'dispatch action',
+      'เรียก $state.update()',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม `todos.push(newTodo)` ถึง reactive เมื่อ `todos` เป็น `$state([])`?',
+    options: [
+      'array เป็น reactive เสมอใน JavaScript',
+      'Svelte ห่อ array ด้วย proxy จึง track mutation ได้ (deep reactivity)',
+      'push คืน array ใหม่',
+      'มันไม่ reactive — ต้อง reassign',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เมื่อไรควรใช้ `$state.raw`?',
+    options: [
+      'กับค่าที่ mutate บ่อย ๆ',
+      'กับค่าที่คุณแค่ replace ทั้งก้อน หรือข้อมูลใหญ่ที่อยากเลี่ยง overhead ของ proxy',
+      'เพื่อทำให้ state เป็น global',
+      'เพื่อปิด reactivity ทั้งหมด',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`$state.snapshot(user)` คืนอะไร?',
+    options: [
+      'reactive proxy',
+      'plain copy ที่ไม่ reactive — มีประโยชน์ตอน log, structuredClone หรือส่งให้ code ภายนอก',
+      'store',
+      'derived value',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/state-rune" questions={quizState} />
+
+<ProgressTracker client:visible id="reactivity/state-rune" />

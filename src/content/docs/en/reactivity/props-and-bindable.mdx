@@ -1,0 +1,140 @@
+---
+title: 'Props & $bindable'
+description: 'Declaring component inputs with $props (destructuring, defaults, rest, TypeScript), one-way data flow, and opting into two-way binding with $bindable.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Declaring props with $props
+
+A component receives inputs from its parent through **`$props()`**, which you destructure into the values you expect. This replaces Svelte 4's `export let`.
+
+```svelte
+<!-- Greeting.svelte -->
+<script>
+  let { name, greeting = 'Hello' } = $props();   // name required, greeting has a default
+</script>
+
+<p>{greeting}, {name}!</p>
+```
+
+```svelte
+<!-- parent -->
+<Greeting name="Ada" />
+<Greeting name="Grace" greeting="Hi" />
+```
+
+Destructuring gives you the full toolkit of JavaScript: **defaults** (`greeting = 'Hello'`), **renaming** (`{ class: className }`), and **rest** to collect everything else (`let { id, ...rest } = $props()`), which is perfect for forwarding attributes to an element with `{...rest}`.
+
+## Typing props
+
+With `lang="ts"`, declare an `interface` and annotate the destructuring — Svelte type-checks the parent's usage against it.
+
+```svelte
+<script lang="ts">
+  interface Props {
+    name: string;
+    greeting?: string;      // optional
+    count?: number;
+  }
+  let { name, greeting = 'Hello', count = 0 }: Props = $props();
+</script>
+```
+
+## One-way data flow by default
+
+Props flow **down**: a parent passes values, and the child reads them. A child should not reassign a prop to "send data back" — that breaks the one-directional flow and Svelte warns about it. When a child needs to communicate upward, the parent passes a callback prop, or the two share state via binding.
+
+```svelte
+<script>
+  // Parent passes a callback; child calls it — data flows up explicitly.
+  let { onincrement } = $props();
+</script>
+<button onclick={() => onincrement()}>+1</button>
+```
+
+## Two-way binding with $bindable
+
+Sometimes two-way binding is genuinely the clean design — a custom input component whose value the parent wants to `bind:` to. Mark that prop **`$bindable()`** and the parent can bind to it.
+
+```svelte
+<!-- FancyInput.svelte -->
+<script>
+  let { value = $bindable() } = $props();
+</script>
+
+<input bind:value={value} />
+```
+
+```svelte
+<!-- parent -->
+<script>
+  let name = $state('');
+</script>
+<FancyInput bind:value={name} />   <!-- two-way: parent's name stays in sync -->
+```
+
+<Mermaid title="Props flow down; $bindable opens a two-way channel" code={propsDiagram} />
+
+export const propsDiagram = `flowchart TB
+  parent["Parent state"] -->|props flow down| child["Child reads props"]
+  child -->|callback prop| parent
+  parent <-->|bind: with $bindable| child`;
+
+Two-way binding is opt-in on purpose: most props stay one-way (simpler to reason about), and `$bindable` is reserved for components where syncing a value both ways is the natural interface.
+
+<Callout title="The one-line takeaway">
+A component declares inputs with **`let { … } = $props()`** (replacing `export let`), using JavaScript **destructuring** for defaults, renaming, and rest — plus a `Props` interface for TypeScript. Data flows **one-way down** by default; a child communicates up via a **callback prop**. To allow genuine two-way binding, mark a prop **`$bindable()`** so the parent can `bind:` to it — opt-in, for components where syncing both ways is the natural design.
+</Callout>
+
+export const quizProps = [
+  {
+    q: 'How does a Svelte 5 component declare its props?',
+    options: [
+      '`export let name`',
+      '`let { name } = $props()` — destructured from the $props rune',
+      '`this.props.name`',
+      '`inject(name)`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you give a prop a default value?',
+    options: [
+      'A separate defaults object',
+      'Destructuring default: `let { greeting = \'Hello\' } = $props()`',
+      'You cannot default props',
+      'With $bindable',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'By default, how does data flow with props?',
+    options: [
+      'Two-way automatically',
+      'One-way down — a child should not reassign a prop; it uses a callback prop to send data up',
+      'Up only',
+      'Through global state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you allow a parent to `bind:` to a child prop?',
+    options: [
+      'Nothing special — all props are bindable',
+      'Mark it `$bindable()` in the child: `let { value = $bindable() } = $props()`',
+      'Use a store',
+      'Export a setter',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/props-and-bindable" questions={quizProps} />
+
+<ProgressTracker client:visible id="reactivity/props-and-bindable" />

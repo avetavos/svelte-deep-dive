@@ -1,0 +1,144 @@
+---
+title: 'TypeScript with Svelte'
+description: 'Typing runes, props with an interface, snippet props with the Snippet type, generic components, and how svelte-check verifies the markup.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Turning on TypeScript
+
+Add `lang="ts"` to the script and you're writing TypeScript. Runes are generic, so state is typed with no ceremony:
+
+```svelte
+<script lang="ts">
+  let count = $state(0);          // inferred number
+  let name = $state<string>('');   // explicit
+  let user = $state<User | null>(null);
+</script>
+```
+
+The compiler infers the type from the initial value where it can; use `$state<T>(...)` to be explicit (e.g. when the initial value is `null` but the type is wider).
+
+## Typing props
+
+Declare an `interface` for your props and annotate the `$props()` destructuring. This is the idiomatic Svelte 5 replacement for Svelte 4's individually-typed `export let` props:
+
+```svelte
+<script lang="ts">
+  interface Props {
+    label: string;
+    count?: number;          // optional
+    onclick?: () => void;    // event callbacks are just props
+  }
+
+  let { label, count = 0, onclick }: Props = $props();
+</script>
+
+<button {onclick}>{label}: {count}</button>
+```
+
+Consumers get autocompletion and type-checking when they use the component, and `svelte-check` flags a wrong or missing prop at the call site.
+
+## Snippet props and the `Snippet` type
+
+Snippets passed as props are typed with the **`Snippet`** type from `svelte`. A snippet that takes parameters is `Snippet<[ArgType]>`:
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+
+  interface Props {
+    header: Snippet;                 // a plain snippet
+    row: Snippet<[item: string]>;    // a snippet taking one argument
+    children: Snippet;               // the default passed-in content
+  }
+
+  let { header, row, children }: Props = $props();
+</script>
+
+{@render header()}
+{@render row('first')}
+{@render children()}
+```
+
+## Generic components
+
+When a component's types depend on what the consumer passes (a typed list, a generic select), declare type parameters with the `generics` attribute on the script tag:
+
+```svelte
+<script lang="ts" generics="T">
+  interface Props {
+    items: T[];
+    selected: T;
+    onselect: (item: T) => void;
+  }
+
+  let { items, selected, onselect }: Props = $props();
+</script>
+```
+
+Now `T` flows through: pass `items` of `User[]` and `onselect` is typed as `(item: User) => void`. There's also a `Component` type (from `svelte`) for typing a variable that holds a component.
+
+<Mermaid title="Where types flow in a Svelte component" code={typeDiagram} />
+
+export const typeDiagram = `flowchart LR
+  props["interface Props"] --> dollar["let { ... }: Props = props()"]
+  snip["Snippet type"] --> dollar
+  gen["generics attribute (T)"] --> dollar
+  dollar --> check["svelte-check verifies usage + markup"]`;
+
+<Callout title="The one-line takeaway">
+Add **`lang="ts"`** and runes are generic — `$state<T>(...)` types state. Type props with an **`interface Props`** annotating `$props()` destructuring (the Svelte 5 replacement for typed `export let`). Type passed-in markup with the **`Snippet`** type (`Snippet<[Arg]>` for parameters), and make a component generic with the **`generics`** attribute so consumer types flow through. `svelte-check` verifies it all, markup included.
+</Callout>
+
+export const quizTs = [
+  {
+    q: 'How do you type a piece of state whose initial value does not reveal the full type?',
+    options: [
+      'You cannot type state',
+      'Use the generic form, e.g. `$state<User | null>(null)`',
+      'Cast it with `as any`',
+      'Put the type in the markup',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the idiomatic way to type component props in Svelte 5?',
+    options: [
+      'Type each `export let` individually',
+      'Declare an `interface Props` and annotate the `$props()` destructuring',
+      'Use PropTypes',
+      'Props cannot be typed',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What type describes a snippet passed as a prop?',
+    options: [
+      'Function',
+      'The `Snippet` type from svelte (e.g. `Snippet<[item]>` for a parameterized one)',
+      'ReactNode',
+      'HTMLElement',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you write a generic component whose types depend on the consumer\'s data?',
+    options: [
+      'You cannot',
+      'Add the `generics` attribute to the `<script>` tag (e.g. `generics="T"`)',
+      'Use `any` everywhere',
+      'Split it into multiple components',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/typescript-with-svelte" questions={quizTs} />
+
+<ProgressTracker client:visible id="tooling-and-production/typescript-with-svelte" />

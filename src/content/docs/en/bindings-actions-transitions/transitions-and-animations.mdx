@@ -1,0 +1,124 @@
+---
+title: 'Transitions & Animations'
+description: 'transition:, in:, and out: for enter/leave motion, the built-in transitions, and animate:flip for smooth list reordering.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Transitions animate elements entering and leaving
+
+When an element is added to or removed from the DOM (via `{#if}`, `{#each}`, etc.), a **transition** animates that change. Apply one with the `transition:` directive, using a built-in from `svelte/transition`:
+
+```svelte
+<script>
+  import { fade } from 'svelte/transition';
+  let visible = $state(true);
+</script>
+
+<button onclick={() => (visible = !visible)}>toggle</button>
+
+{#if visible}
+  <p transition:fade>Fades in when added, fades out when removed</p>
+{/if}
+```
+
+`transition:` applies to **both** enter and leave. When you want different animations for each, use **`in:`** and **`out:`** separately:
+
+```svelte
+<script>
+  import { fly, fade } from 'svelte/transition';
+</script>
+
+{#if visible}
+  <div in:fly={{ y: 20 }} out:fade>Flies in, fades out</div>
+{/if}
+```
+
+The built-ins include `fade`, `fly`, `slide`, `scale`, `blur`, and `draw` (for SVG). Each accepts parameters — `duration`, `delay`, `easing`, and transition-specific options like `fly`'s `x`/`y`:
+
+```svelte
+<p transition:fly={{ y: 50, duration: 400, delay: 100 }}>…</p>
+```
+
+<Mermaid title="Enter and leave transitions" code={transDiagram} />
+
+export const transDiagram = `flowchart LR
+  add["element added to DOM"] --> intro["in: / transition: plays the intro"]
+  remove["element removed"] --> outro["out: / transition: plays the outro"]
+  outro --> gone["element leaves after the animation"]`;
+
+## animate: for reordering lists
+
+Transitions handle add/remove, but not **movement**. When items in a keyed `{#each}` reorder, the `animate:` directive smoothly slides them to their new positions. The built-in `flip` (First-Last-Invert-Play) from `svelte/animate` does exactly this:
+
+```svelte
+<script>
+  import { flip } from 'svelte/animate';
+  let items = $state([1, 2, 3, 4]);
+  function shuffle() { items = items.toSorted(() => Math.random() - 0.5); }
+</script>
+
+<button onclick={shuffle}>shuffle</button>
+
+{#each items as item (item)}
+  <div animate:flip={{ duration: 300 }}>{item}</div>
+{/each}
+```
+
+`animate:` requires a **keyed** each block — the key `(item)` is how Svelte knows which element moved where. Combine `animate:flip` with `transition:` on the same list to animate additions, removals, and reordering all at once.
+
+<Callout title="The one-line takeaway">
+**`transition:`** animates an element as it enters *and* leaves the DOM (use **`in:`**/**`out:`** for different intro/outro); built-ins like `fade`/`fly`/`slide`/`scale` come from `svelte/transition` and take `duration`/`delay`/`easing` params. **`animate:flip`** (from `svelte/animate`) smoothly repositions items when a **keyed** `{#each}` reorders — transitions handle add/remove, `animate:` handles movement.
+</Callout>
+
+export const quizTrans = [
+  {
+    q: 'What does the `transition:` directive animate?',
+    options: [
+      'Only entering elements',
+      'Both entering and leaving an element from the DOM',
+      'Only CSS hover states',
+      'Route changes',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you use different animations for enter vs leave?',
+    options: [
+      'You cannot',
+      'Use `in:` and `out:` separately instead of `transition:`',
+      'Two transition: directives',
+      'A store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `animate:flip` do, and what does it require?',
+    options: [
+      'Fades elements; requires nothing',
+      'Smoothly repositions items when a keyed `{#each}` reorders — requires a keyed each block',
+      'Rotates elements 180 degrees',
+      'Deletes elements',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where do the built-in transitions like `fly` come from?',
+    options: [
+      'They are global',
+      'Imported from `svelte/transition` (and `flip` from `svelte/animate`)',
+      'From the DOM',
+      'From a store',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/transitions-and-animations" questions={quizTrans} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/transitions-and-animations" />

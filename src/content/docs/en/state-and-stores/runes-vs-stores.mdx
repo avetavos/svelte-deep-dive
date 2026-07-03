@@ -1,0 +1,123 @@
+---
+title: 'Runes vs Stores'
+description: 'The Svelte 5 shift — $state in a .svelte.js module gives shared reactive state without the store ceremony. A side-by-side comparison and when to use each.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The same counter, two ways
+
+Before Svelte 5, sharing reactive state across components meant a store. Now you can put `$state` in a module and export it. Runes work outside components — but only in files with a **`.svelte.js`** or **`.svelte.ts`** extension, which tells the compiler to enable rune processing.
+
+**The store version:**
+
+```js
+// counter.js
+import { writable } from 'svelte/store';
+export const count = writable(0);
+```
+
+```svelte
+<script>
+  import { count } from './counter.js';
+</script>
+<button onclick={() => count.update((n) => n + 1)}>{$count}</button>
+```
+
+**The runes version:**
+
+```js
+// counter.svelte.js  ← note the .svelte.js extension
+export const counter = $state({ value: 0 });
+```
+
+```svelte
+<script>
+  import { counter } from './counter.svelte.js';
+</script>
+<button onclick={() => counter.value++}>{counter.value}</button>
+```
+
+No `writable`, no `set`/`update`, no `$` prefix — you read and mutate `counter.value` like a normal object, and it's reactive everywhere it's used.
+
+## Why export an object, not a bare value
+
+Notice the runes version exports `{ value: 0 }`, not `0`. A bare exported `let x = $state(0)` can't stay linked across a module boundary — importing it copies the value, losing reactivity. Exporting an **object** (or a function returning reactive state) keeps everyone pointing at the same reactive proxy, so mutations to `counter.value` propagate. This is the one gotcha of module-level runes.
+
+## Side by side
+
+| | Store (`writable`) | Runes (`.svelte.js`) |
+|---|---|---|
+| Read in component | `$count` | `counter.value` |
+| Update | `count.set(x)` / `count.update(fn)` | `counter.value = x` |
+| Outside a component | works anywhere | needs `.svelte.js`/`.svelte.ts` |
+| The subscribe contract | yes (interop, observables) | no |
+| Ceremony | more (methods, `$`) | less (plain read/write) |
+
+<Mermaid title="Choosing runes or stores" code={chooseDiagram} />
+
+export const chooseDiagram = `flowchart TB
+  q["Sharing reactive state?"] --> interop["Need the subscribe contract\n(observables, external push source)?"]
+  interop --> yes["Yes: use a store"]
+  interop --> no["No: export $state from a .svelte.js module"]`;
+
+## When to use each
+
+- **Runes (default).** Most shared app state — a cart, a theme, a current-user object. Simpler, less boilerplate, and the same mental model as component-local state.
+- **Stores.** When you need the *contract*: wrapping a WebSocket or other push source with `readable`, interoperating with RxJS-style observables, or maintaining existing store-based code. Stores aren't legacy — they're the specialized tool.
+
+<Callout title="The one-line takeaway">
+Svelte 5 lets you export **`$state` from a `.svelte.js`/`.svelte.ts` module** for shared reactive state — read and mutate it like a plain object, no `writable`/`set`/`$` ceremony. Export an **object** (not a bare value) so the reactive link survives the import. Use **runes for most shared app state**, and reach for **stores when you need the subscribe contract** (external push sources, observable interop, existing code).
+</Callout>
+
+export const quizVs = [
+  {
+    q: 'How do you use runes for state outside a component?',
+    options: [
+      'Any .js file works',
+      'Put the `$state` in a file with a `.svelte.js` or `.svelte.ts` extension',
+      'Wrap it in writable first',
+      'You cannot use runes outside components',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why export an object like `$state({ value: 0 })` instead of a bare `$state(0)`?',
+    options: [
+      'Objects are faster',
+      'Importing a bare value copies it and loses reactivity; an object keeps everyone pointing at the same reactive proxy',
+      'Bare values are not allowed',
+      'It has no effect',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In the runes version, how do you update shared state?',
+    options: [
+      'Call `counter.set(x)`',
+      'Mutate it directly: `counter.value = x` (or `counter.value++`)',
+      'Dispatch an action',
+      'Use `$counter = x`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When are stores the better choice over runes?',
+    options: [
+      'For all state',
+      'When you need the subscribe contract — wrapping external push sources, observable interop, or existing store-based code',
+      'They never are',
+      'Only for numbers',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/runes-vs-stores" questions={quizVs} />
+
+<ProgressTracker client:visible id="state-and-stores/runes-vs-stores" />

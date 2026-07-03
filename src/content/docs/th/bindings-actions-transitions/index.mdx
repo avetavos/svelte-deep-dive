@@ -1,0 +1,79 @@
+---
+title: 'Bindings, Actions & Transitions'
+description: 'two-way binding, use: action สำหรับงาน DOM แบบ imperative, transitions และ animations และการจัดการ form ในทางปฏิบัติ — เครื่องมือที่เชื่อม Svelte เข้ากับ DOM และ motion'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## เชื่อม component เข้ากับ DOM และ motion
+
+runes ให้ reactive state; โมดูลนี้ครอบคลุม directive ที่เชื่อม state นั้นเข้ากับ DOM element จริงและกับ motion:
+
+- **Bindings** (`bind:`) สร้าง link สองทางระหว่าง state กับ DOM property — input update state และ state update input
+- **Actions** (`use:`) run โค้ด setup แบบ imperative บน element ตอน mount — escape hatch สำหรับ library ที่ไม่ใช่ Svelte, focus, tooltip และ click-outside
+- **Transitions & animations** (`transition:`, `animate:`) animate element แบบ declarative ตอนเข้า ออก และเรียงใหม่
+
+## โมดูลนี้ครอบคลุมอะไรบ้าง
+
+| บทเรียน | สิ่งที่จะได้เรียน |
+|--------|-------------------|
+| Bindings | `bind:value`, `bind:this`, `bind:group` และ component binding |
+| Actions | `use:` directive และ action lifecycle |
+| Transitions & animations | `transition:`/`in:`/`out:` และ `animate:flip` |
+| Forms & inputs | controlled input, validation และการจัดการ submit |
+
+<Mermaid title="สามวิธีที่ Svelte เข้าถึง DOM" code={overviewDiagram} />
+
+export const overviewDiagram = `flowchart TB
+  state["reactive state (runes)"] --> bind["bind: link สองทางกับ DOM property"]
+  state --> action["use: setup แบบ imperative บน element"]
+  state --> trans["transition: / animate: motion แบบ declarative"]
+  bind --> dom["the DOM"]
+  action --> dom
+  trans --> dom`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+โมดูลนี้ครอบคลุม directive ที่ link reactive state เข้ากับ DOM: **`bind:`** สำหรับ data flow สองทาง, **`use:`** action สำหรับ setup element แบบ imperative (library ภายนอก, focus, click-outside) และ **`transition:`/`animate:`** สำหรับ motion แบบ declarative ตอนเข้า/ออก/เรียงใหม่ รวมกันคือวิธีที่ component ของ Svelte พบกับ element จริงและความ polish เชิงภาพ
+</Callout>
+
+export const quizIndex = [
+  {
+    q: '`bind:` directive สร้างอะไร?',
+    options: [
+      'การ render ทางเดียว',
+      'link สองทางระหว่าง state กับ DOM property (element update state, state update element)',
+      'CSS animation',
+      'network request',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`use:` action ใช้ทำอะไร?',
+    options: [
+      'จัด style element',
+      'run โค้ด setup แบบ imperative บน element ตอน mount — สำหรับ library ภายนอก, focus, tooltip ฯลฯ',
+      'นิยาม route',
+      'สร้าง store',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`transition:` และ `animate:` directive ทำอะไร?',
+    options: [
+      'fetch data',
+      'animate element แบบ declarative ตอนเข้า ออก และเรียงใหม่',
+      'validate form',
+      'bind input',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/index" />

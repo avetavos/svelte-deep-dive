@@ -1,0 +1,128 @@
+---
+title: 'Routing & Pages'
+description: 'File-based routing in src/routes, pages and layouts, dynamic route parameters, error pages, and client-side navigation.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Folders are routes
+
+In SvelteKit, the folder structure under `src/routes/` *is* the URL structure. A `+page.svelte` file makes its folder a navigable page.
+
+```text
+src/routes/
+├── +page.svelte              →  /
+├── about/
+│   └── +page.svelte          →  /about
+├── blog/
+│   ├── +page.svelte          →  /blog
+│   └── [slug]/
+│       └── +page.svelte      →  /blog/:slug   (dynamic)
+└── +layout.svelte            →  wraps every page
+```
+
+<Mermaid title="Folders map to URLs" code={routeDiagram} />
+
+export const routeDiagram = `flowchart LR
+  f1["routes/+page.svelte"] --> u1["/"]
+  f2["routes/about/+page.svelte"] --> u2["/about"]
+  f3["routes/blog/[slug]/+page.svelte"] --> u3["/blog/:slug"]`;
+
+## Dynamic parameters
+
+Square brackets in a folder name capture a URL segment. `src/routes/blog/[slug]/+page.svelte` matches `/blog/hello`, and the value is available as `params.slug` (in a `load` function — next lesson). Variations:
+
+- `[slug]` — a required parameter.
+- `[...rest]` — a rest parameter that matches multiple segments (`/docs/a/b/c`).
+- `[[optional]]` — an optional parameter that also matches when absent.
+
+## Layouts wrap pages
+
+A `+layout.svelte` applies to its folder and every route beneath it — the place for shared chrome like a header and footer. It renders its child route through the `children` snippet:
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script>
+  let { children } = $props();   // the active child page
+</script>
+
+<nav>…site navigation…</nav>
+
+<main>
+  {@render children()}           <!-- the current page renders here -->
+</main>
+
+<footer>© 2026</footer>
+```
+
+Layouts **nest**: a layout deeper in the tree wraps inside the ones above it, so you can compose a global shell with section-specific shells.
+
+## Error pages and navigation
+
+- **`+error.svelte`** in a folder renders when a `load` in that subtree throws — a scoped error boundary. It reads the error via `page.error` (from `$app/state`).
+- **Navigation** uses ordinary `<a href="/blog">` links; SvelteKit intercepts them for fast client-side navigation (no full reload). For programmatic navigation, call `goto('/blog')` from `$app/navigation`.
+
+```svelte
+<script>
+  import { goto } from '$app/navigation';
+</script>
+
+<a href="/about">About</a>                     <!-- client-side nav -->
+<button onclick={() => goto('/dashboard')}>Go</button>
+```
+
+<Callout title="The one-line takeaway">
+SvelteKit routing is **file-based**: folders under `src/routes/` become URLs, and a **`+page.svelte`** makes a page. Capture URL segments with **`[slug]`** (or `[...rest]` / `[[optional]]`), share chrome with nested **`+layout.svelte`** files (which render the page via `{@render children()}`), and scope errors with **`+error.svelte`**. Plain `<a>` links do fast client-side navigation; use `goto()` from `$app/navigation` in code.
+</Callout>
+
+export const quizRouting = [
+  {
+    q: 'How is a page route defined in SvelteKit?',
+    options: [
+      'By registering it in a routes array',
+      'By adding a `+page.svelte` file in a folder under `src/routes/` — the folder path is the URL',
+      'By exporting a route object',
+      'By naming a file page.html',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does the folder `src/routes/blog/[slug]/` create?',
+    options: [
+      'A static /blog/slug page',
+      'A dynamic route matching /blog/:slug, with the segment available as `params.slug`',
+      'A layout',
+      'An API endpoint',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is `+layout.svelte` for?',
+    options: [
+      'Defining CSS only',
+      'Wrapping its folder and all nested routes with shared UI, rendering the page via `{@render children()}`',
+      'Fetching data',
+      'Handling form submissions',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you navigate programmatically in SvelteKit?',
+    options: [
+      'window.location only',
+      'Call `goto(\'/path\')` from `$app/navigation`',
+      'Use a `<Link>` component',
+      'You cannot navigate in code',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/routing-and-pages" questions={quizRouting} />
+
+<ProgressTracker client:visible id="sveltekit/routing-and-pages" />

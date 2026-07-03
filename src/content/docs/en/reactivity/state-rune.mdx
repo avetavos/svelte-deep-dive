@@ -1,0 +1,134 @@
+---
+title: 'The $state Rune'
+description: 'Reactive state with $state, deep reactivity through proxies, opting out with $state.raw, and taking plain copies with $state.snapshot.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Declaring reactive state
+
+`$state` creates a reactive value. Read it like a normal variable and reassign it like a normal variable — the compiler makes every read a dependency and every write a trigger.
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+```
+
+There are no setters and no special update calls. `count++` is a real reassignment, and because the compiler tracks that the button's text reads `count`, that one text node updates.
+
+## Deep reactivity via proxies
+
+When you pass an object or array to `$state`, Svelte wraps it in a **proxy** so that *mutations* — not just reassignments — are reactive. Pushing to an array or setting a nested property triggers updates.
+
+```svelte
+<script>
+  let todos = $state([{ text: 'learn runes', done: false }]);
+
+  function toggle(todo) {
+    todo.done = !todo.done;   // mutating a nested property is reactive
+  }
+  function add(text) {
+    todos.push({ text, done: false });  // mutating the array is reactive
+  }
+</script>
+```
+
+This is a real difference from React, where you must produce new objects/arrays. In Svelte, `todos.push(...)` and `todo.done = true` just work — the proxy notices the mutation. The reactivity is **deep**: nested objects and arrays are proxied too.
+
+<Mermaid title="A $state object is a reactive proxy" code={stateDiagram} />
+
+export const stateDiagram = `flowchart LR
+  write["mutate: todo.done = true"] --> proxy["$state proxy notices the change"]
+  proxy --> update["update exactly the dependent DOM"]`;
+
+## Opting out: $state.raw
+
+Deep proxying costs a little and isn't always wanted — for large immutable data you only ever *replace*, use **`$state.raw`**. Raw state is reactive on **reassignment** but not on mutation.
+
+```svelte
+<script>
+  let settings = $state.raw({ theme: 'dark', density: 'cozy' });
+
+  // ✅ Reassigning a whole new object IS reactive:
+  settings = { ...settings, theme: 'light' };
+
+  // ❌ Mutating is NOT tracked with raw state:
+  // settings.theme = 'light';  // no update
+</script>
+```
+
+Use `$state.raw` for values you treat immutably (replace wholesale) or large structures where you don't want the proxy overhead.
+
+## Getting a plain copy: $state.snapshot
+
+Because `$state` objects are proxies, passing one to code that expects a plain object (a `console.log` that shows a Proxy, `structuredClone`, a third-party library) can be surprising. **`$state.snapshot`** returns a plain, non-reactive copy.
+
+```svelte
+<script>
+  let user = $state({ name: 'Ada', roles: ['admin'] });
+
+  function save() {
+    const plain = $state.snapshot(user);  // a normal object, not a proxy
+    api.save(plain);
+  }
+</script>
+```
+
+<Callout title="The one-line takeaway">
+`$state(value)` creates reactive state you read and reassign like a normal variable. For **objects and arrays it is a deep proxy**, so *mutations* (`arr.push`, `obj.x = …`) are reactive — no need to produce new objects like in React. Use **`$state.raw`** for values you only ever replace (reactive on reassignment, not mutation) to skip proxy overhead, and **`$state.snapshot(x)`** to get a plain non-proxy copy for logging, cloning, or passing to external code.
+</Callout>
+
+export const quizState = [
+  {
+    q: 'How do you update `$state` in Svelte 5?',
+    options: [
+      'Call a setter like setCount(1)',
+      'Reassign or mutate it normally — `count++`, or `obj.x = 1` for a $state object',
+      'Dispatch an action',
+      'Call $state.update()',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why is `todos.push(newTodo)` reactive when `todos` is `$state([])`?',
+    options: [
+      'Arrays are always reactive in JavaScript',
+      'Svelte wraps the array in a proxy, so mutations are tracked (deep reactivity)',
+      'push returns a new array',
+      'It is not reactive — you must reassign',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When would you use `$state.raw`?',
+    options: [
+      'For values you mutate frequently',
+      'For values you only ever replace wholesale, or large data where you want to skip proxy overhead',
+      'To make state global',
+      'To disable reactivity entirely',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `$state.snapshot(user)` return?',
+    options: [
+      'A reactive proxy',
+      'A plain, non-reactive copy — useful for logging, structuredClone, or third-party code',
+      'A store',
+      'A derived value',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/state-rune" questions={quizState} />
+
+<ProgressTracker client:visible id="reactivity/state-rune" />

@@ -1,0 +1,125 @@
+---
+title: 'Lifecycle'
+description: 'onMount, onDestroy, and tick — the lifecycle functions that remain useful in Svelte 5, and how $effect covers most of what lifecycle hooks used to do.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## $effect covers most lifecycle needs
+
+In Svelte 4, you reached for lifecycle hooks (`onMount`, `beforeUpdate`, `afterUpdate`) for anything involving the DOM or timing. In Svelte 5, **`$effect` covers most of that**: it runs after the DOM updates, re-runs when its dependencies change, and its returned cleanup function handles teardown.
+
+```svelte
+<script>
+  let count = $state(0);
+
+  $effect(() => {
+    document.title = `Count: ${count}`;   // runs after mount and on every change
+    return () => { document.title = 'App'; };  // cleanup on destroy / before re-run
+  });
+</script>
+```
+
+So before reaching for a lifecycle function, ask whether an effect fits. Often it does.
+
+## onMount and onDestroy
+
+Two lifecycle functions remain genuinely useful:
+
+- **`onMount(fn)`** runs once after the component is first rendered to the DOM, **only in the browser** (never during SSR). It's the right place for browser-only setup: measuring the DOM, initializing a canvas or map library, starting an interval. If `fn` returns a function, it's called on destroy.
+- **`onDestroy(fn)`** runs when the component is removed — for cleanup that isn't tied to a specific effect (unsubscribing, clearing timers).
+
+```svelte
+<script>
+  import { onMount, onDestroy } from 'svelte';
+
+  onMount(() => {
+    const chart = new Chart(canvasEl);   // browser-only library
+    return () => chart.destroy();         // cleanup on unmount
+  });
+
+  onDestroy(() => console.log('gone'));
+</script>
+```
+
+The key distinction from `$effect`: `onMount` runs **exactly once** and **only in the browser**, which is precisely what you want for one-time, browser-only initialization. An effect that reads no reactive state also runs once, but `onMount` states that intent clearly and guarantees browser-only execution.
+
+<Mermaid title="Component lifecycle moments" code={lifeDiagram} />
+
+export const lifeDiagram = `flowchart LR
+  create["component created"] --> mount["onMount (browser, once)"]
+  mount --> effects["$effect runs after DOM updates"]
+  effects --> effects
+  effects --> destroy["onDestroy + effect cleanups"]`;
+
+## tick: waiting for the DOM to update
+
+Svelte batches DOM updates. When you change state and need the DOM to reflect it *before* your next line runs (to measure an element, or focus a freshly-shown input), **`await tick()`** resolves once pending changes are applied.
+
+```svelte
+<script>
+  import { tick } from 'svelte';
+
+  async function addAndScroll() {
+    items.push(newItem);
+    await tick();                 // wait for the new row to be in the DOM
+    list.scrollTop = list.scrollHeight;
+  }
+</script>
+```
+
+<Callout title="The one-line takeaway">
+In Svelte 5, **`$effect`** handles most of what lifecycle hooks used to — it runs after DOM updates and cleans up on destroy. Two lifecycle functions still matter: **`onMount`** (once, browser-only — ideal for DOM measurement and browser-only libraries) and **`onDestroy`** (teardown not tied to an effect). **`await tick()`** waits for Svelte's batched DOM updates to apply before you read or act on the DOM.
+</Callout>
+
+export const quizLifecycle = [
+  {
+    q: 'In Svelte 5, what covers most former lifecycle-hook use cases?',
+    options: [
+      'Stores',
+      '`$effect` — runs after DOM updates, re-runs on dependency change, cleans up on destroy',
+      'Context',
+      'Props',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is distinctive about `onMount`?',
+    options: [
+      'It runs on every update',
+      'It runs exactly once, only in the browser (never during SSR) — ideal for browser-only setup',
+      'It runs on the server',
+      'It replaces $state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `await tick()` do?',
+    options: [
+      'Waits one second',
+      'Resolves once Svelte has applied pending DOM updates, so you can measure or act on the updated DOM',
+      'Destroys the component',
+      'Fetches data',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where should you initialize a browser-only charting library?',
+    options: [
+      'In the top-level script during SSR',
+      'In `onMount`, which runs only in the browser after first render',
+      'In a derived',
+      'In getContext',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/lifecycle" questions={quizLifecycle} />
+
+<ProgressTracker client:visible id="components/lifecycle" />

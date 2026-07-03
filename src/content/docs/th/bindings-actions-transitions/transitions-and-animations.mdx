@@ -1,0 +1,124 @@
+---
+title: 'Transitions & Animations'
+description: 'transition:, in: และ out: สำหรับ motion ตอนเข้า/ออก, transition ที่มีมาให้ และ animate:flip สำหรับการเรียง list ใหม่อย่างลื่น'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## transition animate element ตอนเข้าและออก
+
+เมื่อ element ถูกเพิ่มเข้าหรือลบออกจาก DOM (ผ่าน `{#if}`, `{#each}` ฯลฯ) **transition** animate การเปลี่ยนแปลงนั้น ใช้ด้วย `transition:` directive โดยใช้ตัวที่มีมาให้จาก `svelte/transition`:
+
+```svelte
+<script>
+  import { fade } from 'svelte/transition';
+  let visible = $state(true);
+</script>
+
+<button onclick={() => (visible = !visible)}>toggle</button>
+
+{#if visible}
+  <p transition:fade>fade in ตอนเพิ่ม, fade out ตอนลบ</p>
+{/if}
+```
+
+`transition:` ใช้กับ **ทั้ง** เข้าและออก เมื่อต้องการ animation ต่างกันสำหรับแต่ละอัน ใช้ **`in:`** และ **`out:`** แยกกัน:
+
+```svelte
+<script>
+  import { fly, fade } from 'svelte/transition';
+</script>
+
+{#if visible}
+  <div in:fly={{ y: 20 }} out:fade>fly in, fade out</div>
+{/if}
+```
+
+ตัวที่มีมาให้รวมถึง `fade`, `fly`, `slide`, `scale`, `blur` และ `draw` (สำหรับ SVG) แต่ละอันรับพารามิเตอร์ — `duration`, `delay`, `easing` และ option เฉพาะ transition เช่น `x`/`y` ของ `fly`:
+
+```svelte
+<p transition:fly={{ y: 50, duration: 400, delay: 100 }}>…</p>
+```
+
+<Mermaid title="transition ตอนเข้าและออก" code={transDiagram} />
+
+export const transDiagram = `flowchart LR
+  add["element ถูกเพิ่มเข้า DOM"] --> intro["in: / transition: เล่น intro"]
+  remove["element ถูกลบ"] --> outro["out: / transition: เล่น outro"]
+  outro --> gone["element ออกไปหลัง animation"]`;
+
+## animate: สำหรับเรียง list ใหม่
+
+transition จัดการ add/remove แต่ไม่จัดการ **การเคลื่อนที่** เมื่อ item ใน keyed `{#each}` เรียงใหม่ `animate:` directive เลื่อนมันไปตำแหน่งใหม่อย่างลื่น ตัวที่มีมาให้คือ `flip` (First-Last-Invert-Play) จาก `svelte/animate` ทำสิ่งนี้พอดี:
+
+```svelte
+<script>
+  import { flip } from 'svelte/animate';
+  let items = $state([1, 2, 3, 4]);
+  function shuffle() { items = items.toSorted(() => Math.random() - 0.5); }
+</script>
+
+<button onclick={shuffle}>shuffle</button>
+
+{#each items as item (item)}
+  <div animate:flip={{ duration: 300 }}>{item}</div>
+{/each}
+```
+
+`animate:` ต้องการ each block ที่ **keyed** — key `(item)` คือวิธีที่ Svelte รู้ว่า element ไหนย้ายไปไหน รวม `animate:flip` กับ `transition:` บน list เดียวกันเพื่อ animate การเพิ่ม ลบ และเรียงใหม่พร้อมกัน
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**`transition:`** animate element ตอนเข้า *และ* ออกจาก DOM (ใช้ **`in:`**/**`out:`** สำหรับ intro/outro ต่างกัน); ตัวที่มีมาให้อย่าง `fade`/`fly`/`slide`/`scale` มาจาก `svelte/transition` และรับพารามิเตอร์ `duration`/`delay`/`easing` **`animate:flip`** (จาก `svelte/animate`) เลื่อน item ใหม่อย่างลื่นเมื่อ keyed `{#each}` เรียงใหม่ — transition จัดการ add/remove, `animate:` จัดการการเคลื่อนที่
+</Callout>
+
+export const quizTrans = [
+  {
+    q: '`transition:` directive animate อะไร?',
+    options: [
+      'เฉพาะ element ที่เข้า',
+      'ทั้งการเข้าและออกของ element จาก DOM',
+      'เฉพาะ CSS hover state',
+      'route change',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใช้ animation ต่างกันสำหรับเข้า vs ออกยังไง?',
+    options: [
+      'ทำไม่ได้',
+      'ใช้ `in:` และ `out:` แยกกันแทน `transition:`',
+      'สอง transition: directive',
+      'store',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`animate:flip` ทำอะไร และต้องการอะไร?',
+    options: [
+      'fade element; ไม่ต้องการอะไร',
+      'เลื่อน item ใหม่อย่างลื่นเมื่อ keyed `{#each}` เรียงใหม่ — ต้องการ keyed each block',
+      'หมุน element 180 องศา',
+      'ลบ element',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'transition ที่มีมาให้อย่าง `fly` มาจากไหน?',
+    options: [
+      'มัน global',
+      'import จาก `svelte/transition` (และ `flip` จาก `svelte/animate`)',
+      'จาก DOM',
+      'จาก store',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/transitions-and-animations" questions={quizTrans} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/transitions-and-animations" />

@@ -1,0 +1,60 @@
+---
+title: Svelte Deep Dive
+description: เชี่ยวชาญ Svelte ตั้งแต่พื้นฐาน — compiler model, runes reactivity ($state, $derived, $effect, $props), components & snippets, bindings, actions & transitions, stores และแอปแบบ full-stack ด้วย SvelteKit สำหรับ Svelte 5
+template: splash
+hero:
+  tagline: คอร์สแบบ standalone ระดับ intermediate→advanced ว่าด้วย Svelte 5 ตั้งแต่ compiler model และ runes reactivity ไปจนถึง components & snippets, bindings และ transitions, stores และ full-stack SvelteKit — สอนผ่าน code ที่ annotate และไดอะแกรมที่แสดงว่า compiler ทำอะไรและทำไม bundle ถึงเล็ก
+  actions:
+    - text: เริ่มที่นี่
+      link: /svelte/th/foundations/
+      icon: right-arrow
+      variant: primary
+    - text: ข้ามไปที่ Runes
+      link: /svelte/th/reactivity/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## สิ่งที่คุณจะได้เรียน
+
+<CardGrid>
+  <Card title="Foundations & Mental Model" icon="rocket">
+    Svelte ในฐานะ compiler, .svelte component, runes reactivity และ template syntax [เริ่ม →](/svelte/th/foundations/)
+  </Card>
+  <Card title="Reactivity with Runes" icon="random">
+    $state, $derived, $effect, $props & $bindable และ advanced runes [เรียน →](/svelte/th/reactivity/)
+  </Card>
+  <Card title="Components & Composition" icon="seti:html">
+    snippets & render, การส่ง UI, context และ component lifecycle [ประกอบ →](/svelte/th/components/)
+  </Card>
+  <Card title="Bindings, Actions & Transitions" icon="seti:plan">
+    two-way binding, use: action, transitions & animations และ form [bind →](/svelte/th/bindings-actions-transitions/)
+  </Card>
+  <Card title="State Management & Stores" icon="seti:config">
+    store contract, built-in store, runes vs stores และ cross-component state [จัดการ →](/svelte/th/state-and-stores/)
+  </Card>
+  <Card title="SvelteKit: Full-Stack Svelte" icon="puzzle">
+    routing, load function, form action และ server endpoint [build →](/svelte/th/sveltekit/)
+  </Card>
+  <Card title="Tooling, Testing & Production" icon="approve-check">
+    Vite & svelte-check, TypeScript, testing และ performance & deployment [ship →](/svelte/th/tooling-and-production/)
+  </Card>
+</CardGrid>
+
+## คอร์สนี้ทำงานยังไง
+
+<CardGrid>
+  <Card title="เข้าใจ model ก่อน แล้วค่อยดู code" icon="rocket">
+    ทุกหัวข้อเริ่มจาก model — compiler, fine-grained reactivity, store contract — พอเข้าใจแล้วความ magic ของ Svelte จะกลายเป็นกลไกที่คุณเข้าใจได้
+  </Card>
+  <Card title="Svelte 5 ที่ verify แล้ว" icon="random">
+    เขียนบน Svelte 5 และตรวจสอบกับ official docs — runes (`$state`/`$derived`/`$effect`/`$props`), snippets (`{@render}`) และ event แบบ `onclick` ถูกสอนตามที่มีอยู่จริงวันนี้ ไม่ใช่แบบ Svelte 4
+  </Card>
+  <Card title="เน้นการออกแบบ ไม่ใช่แค่ syntax" icon="approve-check">
+    ไม่ใช่แค่ "นี่คือ $effect" แต่เป็น "ทำไมคุณอาจไม่ต้องใช้มัน และควร derive อะไรแทน" คุณจะ reason เรื่อง reactivity และ data flow ได้อย่างมั่นใจ
+  </Card>
+  <Card title="ไดอะแกรมที่อธิบายได้" icon="puzzle">
+    compile step, reactivity graph, snippet rendering และ SvelteKit load flow เป็นไดอะแกรม Mermaid ที่รองรับธีม สองภาษา (English / ไทย) พร้อมบันทึกความคืบหน้า quiz
+  </Card>
+</CardGrid>

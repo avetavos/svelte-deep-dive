@@ -1,0 +1,123 @@
+---
+title: 'Server & API'
+description: 'Standalone API endpoints with +server.js, request hooks and locals, per-route rendering options, and deployment adapters.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## API endpoints with +server.js
+
+A `+server.js` file is a route with **no UI** — a standalone HTTP endpoint. Export functions named for the HTTP method; each returns a `Response`. Use it for JSON APIs, webhooks, file downloads, or anything a non-browser client calls.
+
+```js
+// src/routes/api/posts/+server.js
+import { json, error } from '@sveltejs/kit';
+
+export async function GET({ url }) {
+  const page = Number(url.searchParams.get('page') ?? '1');
+  return json(await getPosts(page));      // json() sets the header + serializes
+}
+
+export async function POST({ request }) {
+  const body = await request.json();
+  if (!body.title) error(400, 'title required');   // throw a typed HTTP error
+  return json(await createPost(body), { status: 201 });
+}
+```
+
+**Endpoint vs form action:** use a **form action** when a page's own form submits to the server (it integrates with `use:enhance` and the `form` prop). Use a **`+server.js` endpoint** for a reusable API consumed by fetch, a mobile app, or a third party.
+
+## Hooks: middleware for every request
+
+`src/hooks.server.js` exports **`handle`**, which runs on *every* request before it reaches a route — the place for authentication, logging, and populating `locals`.
+
+```js
+// src/hooks.server.js
+export async function handle({ event, resolve }) {
+  const token = event.cookies.get('session');
+  event.locals.user = token ? await getUser(token) : null;  // available to load/actions
+  return resolve(event);   // continue to the route
+}
+```
+
+Whatever you set on `event.locals` is available in every server `load` and action for that request (via `locals`) — this is how the current user flows through the app.
+
+<Mermaid title="A request passes through handle, then the route" code={hookDiagram} />
+
+export const hookDiagram = `flowchart LR
+  req["incoming request"] --> handle["hooks: handle()\nset locals.user"]
+  handle --> route["route: load / action / +server"]
+  route --> resp["response"]`;
+
+## Render mode per route, and adapters
+
+Each route can choose how it renders, with page options exported from `+page.js`/`+page.server.js`:
+
+- `export const prerender = true` — render to a static file at build time (great for pages that are the same for everyone).
+- `export const ssr = false` — skip server rendering (client-only page).
+- `export const csr = false` — ship no client JS (fully static output for that page).
+
+Finally, an **adapter** (set in `svelte.config.js`) packages your built app for a target platform:
+
+- **`adapter-auto`** — detects common platforms (the default in a new project).
+- **`adapter-node`** — a standalone Node server.
+- **`adapter-cloudflare`** — a Cloudflare Worker/Pages.
+- **`adapter-static`** — a fully prerendered static site (no server needed).
+
+You choose the adapter for where you deploy; the same app code runs across them.
+
+<Callout title="The one-line takeaway">
+Build standalone APIs with **`+server.js`** — export `GET`/`POST`/… returning a `Response` (use `json()` and `error()` from `@sveltejs/kit`); reach for an endpoint when a reusable API is needed and a **form action** when a page's form submits. **`hooks.server.js`**'s `handle` runs on every request to set `event.locals` (e.g. the user). Control rendering per route with `prerender`/`ssr`/`csr`, and package the app for deployment with an **adapter** (auto/node/cloudflare/static).
+</Callout>
+
+export const quizServer = [
+  {
+    q: 'What is a `+server.js` file?',
+    options: [
+      'A page with UI',
+      'A standalone API endpoint (no UI) exporting HTTP-method functions that return a Response',
+      'A layout',
+      'A config file',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `handle` in `hooks.server.js` do?',
+    options: [
+      'Styles the app',
+      'Runs on every request before the route — used for auth, logging, and setting `event.locals`',
+      'Defines routes',
+      'Builds the project',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you make a single route render to a static file at build time?',
+    options: [
+      'Rename it to .html',
+      'Export `const prerender = true` from that route',
+      'Delete its load function',
+      'Set output: static globally',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does an adapter do?',
+    options: [
+      'Fetches data',
+      'Packages the built app for a target platform (Node, Cloudflare, static, …) for deployment',
+      'Validates forms',
+      'Manages CSS',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/server-and-api" questions={quizServer} />
+
+<ProgressTracker client:visible id="sveltekit/server-and-api" />

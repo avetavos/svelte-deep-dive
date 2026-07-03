@@ -1,0 +1,116 @@
+---
+title: 'The Context API'
+description: 'setContext and getContext for sharing data down a component tree without prop drilling, combining context with runed state, and when to use it.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Context avoids prop drilling
+
+When many nested components need the same data — a theme, the current user, a form's shared state — passing it through every intermediate component as props (**prop drilling**) is tedious and noisy. **Context** lets an ancestor set a value that any descendant can read directly.
+
+- **`setContext(key, value)`** — called in a component during initialization; makes `value` available to all descendants under `key`.
+- **`getContext(key)`** — called in any descendant; reads the nearest ancestor's value for `key`.
+
+```svelte
+<!-- Parent.svelte -->
+<script>
+  import { setContext } from 'svelte';
+  setContext('theme', 'dark');
+</script>
+<slot-like-children />
+```
+
+```svelte
+<!-- DeepChild.svelte (any depth below) -->
+<script>
+  import { getContext } from 'svelte';
+  const theme = getContext('theme');   // 'dark' — no props threaded through
+</script>
+<div class={theme}>…</div>
+```
+
+<Mermaid title="Context flows down to any descendant" code={ctxDiagram} />
+
+export const ctxDiagram = `flowchart TB
+  parent["Ancestor: setContext('theme', value)"] --> mid["intermediate components\n(no props needed)"]
+  mid --> child["Descendant: getContext('theme')"]`;
+
+## Reactive context with runes
+
+`setContext` runs once, at init — the *value* it stores isn't reactive by itself. To share **reactive** data, put a runed object into context and read its properties in descendants; because `$state` objects are deeply reactive, changes propagate.
+
+```svelte
+<!-- Store a runed object, not a plain snapshot -->
+<script>
+  import { setContext } from 'svelte';
+  let cart = $state({ items: [] });
+  setContext('cart', cart);          // descendants see live updates to cart.items
+</script>
+```
+
+A common pattern is a small factory that creates the runed state and pairs `setContext`/`getContext` behind typed helper functions, so consumers just call `getCart()`.
+
+## Context vs props vs global state
+
+- **Props** — best for direct parent→child data. Explicit and easy to trace.
+- **Context** — best when data is needed by *many* descendants at varying depths (theme, auth, a widget's shared state) and is scoped to a subtree.
+- **Module state** (`.svelte.js`) — best for truly app-global state, but mind SSR (a module singleton is shared across requests on the server — the state-management module covers this).
+
+Crucially, context is **per component tree and per render**, so on the server each request gets its own context — making it the SSR-safe way to share request-scoped state, unlike a module-level singleton.
+
+<Callout title="The one-line takeaway">
+**`setContext(key, value)`** (called at init) shares data with all descendants, read via **`getContext(key)`** — eliminating prop drilling. The stored value isn't reactive on its own, so put a **runed `$state` object** into context to share live-updating data. Prefer context over props when many descendants need the data; and because context is scoped per tree and per render, it's the **SSR-safe** choice for request-scoped shared state.
+</Callout>
+
+export const quizContext = [
+  {
+    q: 'What problem does context solve?',
+    options: [
+      'Styling components',
+      'Sharing data with many descendants without threading it through every intermediate component as props',
+      'Server rendering',
+      'Animation',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you share reactive data through context?',
+    options: [
+      'setContext is always reactive',
+      'Put a runed `$state` object into context; descendants read its properties and see live updates',
+      'Use a store prefix in setContext',
+      'You cannot share reactive data',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why is context safer than a module-level singleton for request-scoped state on the server?',
+    options: [
+      'It is faster',
+      'Context is scoped per component tree and per render, so each SSR request gets its own — a module singleton is shared across requests',
+      'It uses less memory',
+      'There is no difference',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When should you prefer props over context?',
+    options: [
+      'Always',
+      'For direct parent-to-child data where explicit, traceable flow is clearer',
+      'Never',
+      'Only on the server',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/context-api" questions={quizContext} />
+
+<ProgressTracker client:visible id="components/context-api" />

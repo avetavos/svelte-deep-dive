@@ -1,0 +1,135 @@
+---
+title: 'Events & Attributes'
+description: 'event handler ของ Svelte 5 (onclick ไม่ใช่ on:click), attribute shorthand และ spread และ directive class กับ style'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ตอนนี้ event เป็นแค่ property
+
+ใน Svelte 5 DOM event handler เป็น **attribute ธรรมดา** ที่ตั้งชื่อเหมือน property: `onclick`, `oninput`, `onsubmit` คุณส่ง function เข้าไปเหมือนที่ทำใน HTML/JS ธรรมดาเป๊ะ
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>+1</button>
+<input oninput={(e) => console.log(e.currentTarget.value)} />
+```
+
+นี่คือการเปลี่ยนที่ตั้งใจจาก **Svelte 4** ซึ่งใช้ directive พิเศษ `on:click` ถ้าคุณอ่าน code หรือ tutorial เก่า จะเห็น `on:click={handler}` — เทียบเท่าแบบใหม่คือ `onclick={handler}` รูปแบบใหม่เป็นแค่ property จึง compose ได้เป็นธรรมชาติและ spread รวมกับ attribute อื่นได้
+
+<Callout title="event ของ Svelte 4 เทียบกับ Svelte 5">
+Svelte 4: `<button on:click={handler}>` — directive ของ framework Svelte 5: `<button onclick={handler}>` — property ธรรมดา event *modifier* (`on:click|preventDefault`) ก็หายไปใน 5 เช่นกัน; คุณเรียก `e.preventDefault()` ในตัว handler เอง หรือใช้ wrapper เล็ก ๆ นี่คือหนึ่งในการเปลี่ยนที่เห็นชัดที่สุดจาก Svelte 4 ไป 5
+</Callout>
+
+## attribute shorthand และ spread
+
+เมื่อ variable มีชื่อเดียวกับ attribute ให้ใช้ shorthand `{value}`:
+
+```svelte
+<script>
+  let src = $state('/logo.png');
+  let alt = $state('Logo');
+</script>
+
+<img {src} {alt} />            <!-- shorthand for src={src} alt={alt} -->
+```
+
+spread object ของ attribute ทั้งก้อนด้วย `{...obj}` — สะดวกเวลา forward props ไปให้ element:
+
+```svelte
+<script>
+  let { ...rest } = $props();   // collect remaining props
+</script>
+
+<button {...rest}>click</button>   <!-- forward them all to the button -->
+```
+
+## directive class และ style
+
+การ toggle class และ inline style แบบ reactive เกิดขึ้นบ่อยพอที่ Svelte จะให้ directive เฉพาะ
+
+**`class:name={condition}`** เพิ่ม class เมื่อ condition เป็น truthy:
+
+```svelte
+<div class:active={isActive} class:done={isDone}>…</div>
+```
+
+Svelte 5 ยังให้คุณส่ง object หรือ array ให้ attribute `class` ธรรมดาได้ (เหมือน helper `clsx` ยอดนิยม):
+
+```svelte
+<div class={{ active: isActive, done: isDone }}>…</div>
+```
+
+**`style:prop={value}`** ตั้งค่า CSS property แบบ inline อย่าง reactive:
+
+```svelte
+<div style:color={textColor} style:font-size="{size}px">…</div>
+```
+
+ทั้งคู่ compile เป็นการอัปเดตที่แม่นยำ — เมื่อ `isActive` พลิก จะ toggle เฉพาะ class นั้น; เมื่อ `textColor` เปลี่ยน จะตั้งเฉพาะ style property นั้น
+
+<Mermaid title="directive compile เป็นการอัปเดตแบบเจาะจง" code={directiveDiagram} />
+
+export const directiveDiagram = `flowchart LR
+  cls["class:active={isActive}"] --> u1["toggle exactly that class"]
+  sty["style:color={textColor}"] --> u2["set exactly that CSS property"]
+  ev["onclick={handler}"] --> u3["attach a plain event listener"]`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+event handler ของ Svelte 5 เป็น **property ธรรมดา** — `onclick={handler}` ไม่ใช่ directive `on:click` ของ Svelte 4 (และ event modifier หายไป — เรียก `e.preventDefault()` เอง) ใช้ **shorthand `{value}`** เมื่อ variable ตรงกับชื่อ attribute, **`{...obj}`** เพื่อ spread attribute และ directive **`class:name={cond}`** กับ **`style:prop={value}`** (หรือส่ง object ให้ `class`) เพื่อ toggle class และ style แบบ reactive — ทั้งหมด compile เป็นการอัปเดต DOM แบบเจาะจง
+</Callout>
+
+export const quizEvents = [
+  {
+    q: 'attach click handler ใน Svelte 5 อย่างไร?',
+    options: [
+      '`on:click={handler}`',
+      '`onclick={handler}` — property ธรรมดา',
+      '`@click="handler"`',
+      '`v-on:click`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'event เปลี่ยนอะไรจาก Svelte 4 ไป Svelte 5?',
+    options: [
+      'ไม่มีอะไรเปลี่ยน',
+      'Svelte 4 ใช้ directive `on:click` (มี modifier); Svelte 5 ใช้ property ธรรมดาอย่าง `onclick` และตัด modifier ออก',
+      'event ถูกลบออก',
+      'ตอนนี้ event ต้องใช้ store',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`<img {src} {alt} />` หมายความว่าอะไร?',
+    options: [
+      'เป็น syntax ที่ไม่ถูกต้อง',
+      'shorthand ของ `src={src} alt={alt}` เมื่อชื่อ variable ตรงกับ attribute',
+      'มันล้าง attribute',
+      'มัน spread object',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`class:active={isActive}` ทำอะไร?',
+    options: [
+      'เพิ่ม class active เสมอ',
+      'เพิ่ม class `active` เฉพาะเมื่อ `isActive` เป็น truthy และอัปเดตแม่นยำเมื่อมันเปลี่ยน',
+      'เปลี่ยนชื่อ element',
+      'ตั้งค่า inline style',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/events-and-attributes" questions={quizEvents} />
+
+<ProgressTracker client:visible id="foundations/events-and-attributes" />

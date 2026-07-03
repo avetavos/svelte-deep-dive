@@ -1,0 +1,126 @@
+---
+title: 'The $effect Rune'
+description: 'sync กับโลกภายนอกด้วย $effect, cleanup function, $effect.pre และแนวทางสำคัญว่าส่วนใหญ่คุณไม่ต้องใช้ effect'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## effect sync กับโลกภายนอก
+
+`$effect` รัน function หลัง DOM update แล้ว และรันซ้ำทุกครั้งที่ค่า reactive ที่มันอ่านเปลี่ยน มันมีไว้สำหรับ **side effect** — sync state ของ Svelte กับสิ่งที่อยู่นอก Svelte: DOM ตรง ๆ, library ภายนอก, subscription, timer, logging, `localStorage`
+
+```svelte
+<script>
+  let count = $state(0);
+
+  $effect(() => {
+    // Runs after render, and again whenever count changes.
+    document.title = `Count: ${count}`;
+  });
+</script>
+```
+
+dependency ถูก track อัตโนมัติ เหมือน `$derived` เป๊ะ — effect อ่าน `count` มันจึงรันซ้ำเมื่อ `count` เปลี่ยน ไม่ต้องมี dependency array
+
+## Cleanup
+
+ถ้า effect ตั้งอะไรบางอย่างที่ต้อง tear down — interval, event listener, subscription — ให้ **return cleanup function** Svelte จะรันมันก่อน effect รันซ้ำ และตอน component ถูก destroy
+
+```svelte
+<script>
+  let seconds = $state(0);
+
+  $effect(() => {
+    const id = setInterval(() => seconds++, 1000);
+    return () => clearInterval(id);   // cleanup: runs before re-run and on destroy
+  });
+</script>
+```
+
+## $effect.pre
+
+`$effect` รัน **หลัง** DOM update บางครั้งคุณต้องอ่าน DOM *ก่อน* มัน update — เช่น จับ scroll position ก่อน content ใหม่จะดันมันไป **`$effect.pre`** รันก่อน DOM update แทน โดยมีกฎ track และ cleanup เหมือนกัน
+
+```svelte
+<script>
+  let messages = $state([]);
+
+  $effect.pre(() => {
+    messages.length;                 // track the dependency
+    // read scroll position BEFORE the DOM updates with new messages
+  });
+</script>
+```
+
+## ส่วนใหญ่คุณไม่ต้องใช้ effect
+
+นี่คือแนวทางที่สำคัญที่สุดในโมดูล effect คือ escape hatch และการหยิบมันมาจัดการ state *ภายใน* คือความผิดพลาดที่พบบ่อยที่สุดใน Svelte 5 ก่อนเขียน effect ให้ถามว่า:
+
+- **คำนวณค่าจาก state?** ใช้ `$derived` ไม่ใช่ effect ที่ assign state
+- **ตอบสนอง user action?** ทำงานใน event handler (`onclick`) ไม่ใช่ effect ที่คอยดูตัวแปร
+- **mirror prop ลง state?** มักเป็น design smell — derive จาก prop แทน
+
+<Mermaid title="เลือกเครื่องมือให้ถูก" code={effectDiagram} />
+
+export const effectDiagram = `flowchart TB
+  q["ต้อง react ต่อ state?"] --> derive["คำนวณค่า? ใช้ $derived"]
+  q --> handler["จาก user action? ใช้ event handler"]
+  q --> effect["sync กับสิ่งนอก Svelte? ใช้ $effect"]`;
+
+effect เป็นเครื่องมือที่ถูกก็ต่อเมื่อคุณเชื่อมไปยังสิ่งที่ Svelte ไม่ได้ควบคุม — document title, canvas, websocket, `localStorage`, analytics call ถ้างานยังอยู่ในโลก reactive ของ Svelte rune อย่าง `$derived` มักเหมาะกว่าเสมอ
+
+<Callout title="สรุปบรรทัดเดียว">
+`$effect(fn)` รัน **หลัง DOM update** และรันซ้ำเมื่อค่าที่ track อ่านเปลี่ยน — สำหรับ **side effect ที่เชื่อมไปโลกภายนอก** (DOM, subscription, timer, `localStorage`) ให้ return **cleanup function** เพื่อ tear down subscription/interval และใช้ **`$effect.pre`** เพื่อรันก่อน DOM update ที่สำคัญ **ส่วนใหญ่คุณไม่ต้องใช้ effect**: derive ค่าด้วย `$derived` ทำงานจาก action ใน event handler และเก็บ `$effect` ไว้สำหรับ sync กับภายนอกจริง ๆ
+</Callout>
+
+export const quizEffect = [
+  {
+    q: '`$effect` มีไว้ทำอะไร?',
+    options: [
+      'คำนวณค่าจาก state',
+      'side effect ที่ sync กับโลกภายนอก — DOM, subscription, timer, localStorage',
+      'ประกาศ props',
+      'style component',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'จะ tear down subscription หรือ interval ที่สร้างใน effect ยังไง?',
+    options: [
+      'เรียก onDestroy แยก',
+      'return cleanup function จาก effect — มันรันก่อนรอบถัดไปและตอน destroy',
+      'clean up ไม่ได้',
+      'ตั้ง state เป็น null',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'คุณอยากคำนวณ `fullName` จาก `first` กับ `last` ควรใช้อะไร?',
+    options: [
+      '`$effect` ที่ assign `fullName`',
+      '`$derived` — อย่าใช้ effect คำนวณค่า',
+      'store',
+      'onMount',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ความต่างระหว่าง `$effect` กับ `$effect.pre` คืออะไร?',
+    options: [
+      'เหมือนกัน',
+      '`$effect` รันหลัง DOM update; `$effect.pre` รันก่อน',
+      '`$effect.pre` track dependency ไม่ได้',
+      '`$effect.pre` รันบน server เท่านั้น',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/effect-rune" questions={quizEffect} />
+
+<ProgressTracker client:visible id="reactivity/effect-rune" />

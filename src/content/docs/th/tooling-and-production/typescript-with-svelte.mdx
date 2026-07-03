@@ -1,0 +1,144 @@
+---
+title: 'TypeScript with Svelte'
+description: 'type ให้ rune, props ด้วย interface, snippet props ด้วย Snippet type, generic component และ svelte-check verify markup อย่างไร'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## เปิดใช้ TypeScript
+
+เพิ่ม `lang="ts"` ให้ script แล้วคุณก็เขียน TypeScript ได้ rune เป็น generic อยู่แล้ว state จึงถูก type โดยไม่ต้องมีพิธีรีตอง:
+
+```svelte
+<script lang="ts">
+  let count = $state(0);          // inferred number
+  let name = $state<string>('');   // explicit
+  let user = $state<User | null>(null);
+</script>
+```
+
+compiler infer type จากค่าเริ่มต้นเมื่อทำได้ ใช้ `$state<T>(...)` เมื่ออยาก explicit (เช่น ค่าเริ่มต้นเป็น `null` แต่ type กว้างกว่านั้น)
+
+## type ให้ props
+
+ประกาศ `interface` สำหรับ props แล้ว annotate การ destructure `$props()` นี่คือวิธี idiomatic ของ Svelte 5 ที่มาแทน props แบบ `export let` ที่ type ทีละตัวใน Svelte 4:
+
+```svelte
+<script lang="ts">
+  interface Props {
+    label: string;
+    count?: number;          // optional
+    onclick?: () => void;    // event callbacks are just props
+  }
+
+  let { label, count = 0, onclick }: Props = $props();
+</script>
+
+<button {onclick}>{label}: {count}</button>
+```
+
+ผู้ใช้ component จะได้ autocompletion และ type-checking ตอนใช้ และ `svelte-check` จะ flag prop ที่ผิดหรือขาดตรงจุดที่เรียกใช้
+
+## snippet props และ type `Snippet`
+
+snippet ที่ส่งเป็น prop ถูก type ด้วย type **`Snippet`** จาก `svelte` snippet ที่รับ parameter เป็น `Snippet<[ArgType]>`:
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+
+  interface Props {
+    header: Snippet;                 // a plain snippet
+    row: Snippet<[item: string]>;    // a snippet taking one argument
+    children: Snippet;               // the default passed-in content
+  }
+
+  let { header, row, children }: Props = $props();
+</script>
+
+{@render header()}
+{@render row('first')}
+{@render children()}
+```
+
+## generic component
+
+เมื่อ type ของ component ขึ้นกับสิ่งที่ผู้ใช้ส่งเข้ามา (list ที่ type แล้ว, select แบบ generic) ให้ประกาศ type parameter ด้วย attribute `generics` บน script tag:
+
+```svelte
+<script lang="ts" generics="T">
+  interface Props {
+    items: T[];
+    selected: T;
+    onselect: (item: T) => void;
+  }
+
+  let { items, selected, onselect }: Props = $props();
+</script>
+```
+
+ตอนนี้ `T` ไหลผ่านทั้งหมด: ส่ง `items` เป็น `User[]` แล้ว `onselect` จะถูก type เป็น `(item: User) => void` มี type `Component` (จาก `svelte`) สำหรับ type ตัวแปรที่เก็บ component ด้วย
+
+<Mermaid title="type ไหลไปที่ไหนใน Svelte component" code={typeDiagram} />
+
+export const typeDiagram = `flowchart LR
+  props["interface Props"] --> dollar["let { ... }: Props = props()"]
+  snip["Snippet type"] --> dollar
+  gen["generics attribute (T)"] --> dollar
+  dollar --> check["svelte-check verifies usage + markup"]`;
+
+<Callout title="The one-line takeaway">
+เพิ่ม **`lang="ts"`** แล้ว rune เป็น generic — `$state<T>(...)` type ให้ state type props ด้วย **`interface Props`** ที่ annotate การ destructure `$props()` (ตัวแทน `export let` ที่ type แล้วของ Svelte 5) type markup ที่ส่งเข้ามาด้วย type **`Snippet`** (`Snippet<[Arg]>` สำหรับ parameter) และทำ component ให้ generic ด้วย attribute **`generics`** เพื่อให้ type ของผู้ใช้ไหลผ่าน `svelte-check` verify ทั้งหมด รวม markup ด้วย
+</Callout>
+
+export const quizTs = [
+  {
+    q: 'จะ type state ที่ค่าเริ่มต้นไม่บอก type เต็มได้อย่างไร?',
+    options: [
+      'type state ไม่ได้',
+      'ใช้รูปแบบ generic เช่น `$state<User | null>(null)`',
+      'cast ด้วย `as any`',
+      'ใส่ type ไว้ใน markup',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'วิธี idiomatic ในการ type props ใน Svelte 5 คืออะไร?',
+    options: [
+      'type `export let` ทีละตัว',
+      'ประกาศ `interface Props` แล้ว annotate การ destructure `$props()`',
+      'ใช้ PropTypes',
+      'type props ไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'type อะไรอธิบาย snippet ที่ส่งเป็น prop?',
+    options: [
+      'Function',
+      'type `Snippet` จาก svelte (เช่น `Snippet<[item]>` สำหรับตัวที่มี parameter)',
+      'ReactNode',
+      'HTMLElement',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'จะเขียน generic component ที่ type ขึ้นกับ data ของผู้ใช้ได้อย่างไร?',
+    options: [
+      'ทำไม่ได้',
+      'เพิ่ม attribute `generics` ให้ `<script>` tag (เช่น `generics="T"`)',
+      'ใช้ `any` ทุกที่',
+      'แยกเป็นหลาย component',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/typescript-with-svelte" questions={quizTs} />
+
+<ProgressTracker client:visible id="tooling-and-production/typescript-with-svelte" />

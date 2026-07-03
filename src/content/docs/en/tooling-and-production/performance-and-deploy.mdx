@@ -1,0 +1,118 @@
+---
+title: 'Performance & Deploy'
+description: 'Why Svelte output is small by default, measuring bundle size, choosing a SvelteKit adapter, prerendering, and the production build.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Fast by default
+
+Because Svelte is a compiler (the very first lesson), the performance baseline is already good: there's no virtual DOM runtime to ship, and components compile to targeted update code. You spend far less time fighting bundle size than in runtime-framework apps — the framework overhead riding along with your code is small.
+
+That doesn't make performance automatic. Your *own* code, images, third-party libraries, and data-loading choices still matter. But the starting point is lean, and the tools below help you keep it that way.
+
+## Measuring what you ship
+
+Before optimizing, measure. `vite build` reports the output sizes, and Vite's ecosystem has bundle visualizers (e.g. `rollup-plugin-visualizer`) to show what's taking space — usually a heavy third-party dependency, not Svelte itself.
+
+```bash
+npm run build      # vite build — prints chunk sizes
+```
+
+Watch for: a large date/utility library imported whole, an icon set pulled in entirely, or a component eagerly loaded that could be lazy. SvelteKit code-splits per route automatically, so a heavy page doesn't weigh down the rest of the app.
+
+## Adapters: choosing a deploy target
+
+A SvelteKit app is deployed through an **adapter** that transforms the build for a specific platform. You set it in `svelte.config.js`:
+
+```js
+import adapter from '@sveltejs/adapter-auto';
+
+export default {
+  kit: {
+    adapter: adapter(),
+  },
+};
+```
+
+| Adapter | Deploys to |
+|---------|-----------|
+| `adapter-auto` | Detects common platforms (Vercel, Netlify, Cloudflare…) automatically |
+| `adapter-node` | A long-running Node server you host yourself |
+| `adapter-cloudflare` | Cloudflare Pages / Workers (edge) |
+| `adapter-static` | A fully static site — HTML/CSS/JS on any CDN |
+
+`adapter-auto` is the zero-config default; you switch to a specific adapter when you know your target (and need its options).
+
+<Mermaid title="One build, many deploy targets via adapters" code={deployDiagram} />
+
+export const deployDiagram = `flowchart LR
+  build["vite build (SvelteKit)"] --> adapter["adapter"]
+  adapter --> node["Node server"]
+  adapter --> edge["Cloudflare / edge"]
+  adapter --> static["static CDN"]`;
+
+## Static vs server
+
+The big deployment decision mirrors the rendering choice:
+
+- **Static** — with `adapter-static` (or `export const prerender = true` on prerenderable routes), pages are built to HTML at build time and served from any CDN. Perfect for content that's the same for everyone; no server needed.
+- **Server** — with a runtime adapter (node/cloudflare/…), pages render on demand for request-time data (the logged-in user, live data). You can mix: prerender the marketing pages, render the dashboard on demand.
+
+Set `export const prerender = true` on the routes that can be static and let the rest render on demand — the same hybrid approach that keeps most of the site cacheable while a few routes stay dynamic.
+
+<Callout title="The one-line takeaway">
+Svelte's compiler makes output **small and fast by default**, but measure with `vite build` (and a bundle visualizer) — the weight is usually a third-party dependency, not Svelte. Deploy a SvelteKit app through an **adapter**: `adapter-auto` (zero-config), `adapter-node`, `adapter-cloudflare`, or `adapter-static`. Choose **static** (prerender to a CDN, no server) for shared content and a **server** adapter for request-time data — and mix them per route with `export const prerender`.
+</Callout>
+
+export const quizDeploy = [
+  {
+    q: 'Why is a Svelte app small by default?',
+    options: [
+      'Svelte deletes unused files',
+      'As a compiler it ships no virtual DOM runtime; components compile to targeted update code',
+      'It refuses large dependencies',
+      'It compresses HTML',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When you measure a large bundle, what is usually to blame?',
+    options: [
+      'The Svelte runtime',
+      'A heavy third-party dependency imported whole (a big utility/icon library)',
+      'The compiler',
+      'Scoped styles',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is a SvelteKit adapter for?',
+    options: [
+      'Converting Svelte 4 to Svelte 5',
+      'Transforming the build for a specific deploy target (Node, Cloudflare, static, …)',
+      'Type-checking the app',
+      'Running tests',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you make some routes static and others render on demand?',
+    options: [
+      'You must pick one for the whole app',
+      'Set `export const prerender = true` on the routes that can be static; leave the rest to render on demand',
+      'Use two separate projects',
+      'It is not possible in SvelteKit',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/performance-and-deploy" questions={quizDeploy} />
+
+<ProgressTracker client:visible id="tooling-and-production/performance-and-deploy" />

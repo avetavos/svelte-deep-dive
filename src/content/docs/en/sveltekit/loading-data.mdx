@@ -1,0 +1,116 @@
+---
+title: 'Loading Data'
+description: 'The load function, universal (+page.js) vs server-only (+page.server.js) loading, consuming data via the data prop, and shared layout data.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Data comes from a load function
+
+A page doesn't fetch its own data in the component. Instead, a **`load`** function beside the page returns the data, and SvelteKit passes it to the page as the `data` prop. Because `load` runs before the page renders (on the server for the first request), the data is present in the initial HTML — no loading flash, good SEO.
+
+```js
+// src/routes/blog/[slug]/+page.js
+export async function load({ params, fetch }) {
+  const res = await fetch(`/api/posts/${params.slug}`);
+  return { post: await res.json() };   // becomes the `data` prop
+}
+```
+
+```svelte
+<!-- src/routes/blog/[slug]/+page.svelte -->
+<script>
+  let { data } = $props();     // data.post is here
+</script>
+
+<h1>{data.post.title}</h1>
+```
+
+<Mermaid title="load runs, then the page renders with its data" code={loadDiagram} />
+
+export const loadDiagram = `flowchart LR
+  req["request /blog/hello"] --> load["load({ params, fetch })"]
+  load --> data["return { post }"]
+  data --> page["+page.svelte gets data prop"]
+  page --> html["rendered HTML"]`;
+
+## Universal vs server-only load
+
+There are two kinds of `load`, and choosing correctly is the key decision:
+
+- **`+page.js` — universal load.** Runs on the server for the first render, then in the browser for subsequent client-side navigations. Use it for data that is safe to fetch anywhere (a public API through the provided `fetch`).
+- **`+page.server.js` — server-only load.** *Always* runs on the server, never in the browser. Use it when the code must stay server-side: direct database queries, secrets, private environment variables, reading cookies for auth. The returned data must be serializable (it's sent to the client).
+
+```js
+// src/routes/dashboard/+page.server.js — server-only
+import { db } from '$lib/server/db';
+
+export async function load({ locals }) {
+  // locals.user was set by a hook; db + secrets never reach the browser.
+  return { projects: await db.projectsFor(locals.user.id) };
+}
+```
+
+The rule of thumb: **if it touches a database, a secret, or private env, it goes in `+page.server.js`.** Otherwise `+page.js` is fine and lets client navigations refetch without a server round-trip.
+
+## The load event and layout data
+
+The `load` function receives an event object with useful fields: `params` (route params), `fetch` (a special fetch that handles relative URLs and forwards cookies during SSR), `url` (the requested URL), `setHeaders`, `cookies` (server load only), `locals` (server load only), and `parent` (to await parent layout data).
+
+A **`+layout.js` / `+layout.server.js`** `load` provides data to its layout *and* every child page — ideal for things every page needs (the current user, site settings). Child pages merge layout data with their own.
+
+<Callout title="The one-line takeaway">
+A **`load`** function returns a page's data, which arrives as the **`data` prop** (`let { data } = $props()`); it runs before render, so data is in the initial SSR HTML. Use **`+page.js`** (universal — server then client) for anywhere-safe data, and **`+page.server.js`** (server-only) whenever code touches a **database, secrets, private env, or auth cookies**. A **`+layout` load** shares data with every child route.
+</Callout>
+
+export const quizLoad = [
+  {
+    q: 'How does a SvelteKit page receive data from its load function?',
+    options: [
+      'Via a global variable',
+      'As the `data` prop — `let { data } = $props()`',
+      'By fetching inside onMount',
+      'Through context only',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When must you use `+page.server.js` instead of `+page.js`?',
+    options: [
+      'Never — they are interchangeable',
+      'When the code touches a database, secrets, private env, or auth cookies — it must stay server-only',
+      'Only for static pages',
+      'When the page has no data',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where does a universal `load` in `+page.js` run?',
+    options: [
+      'Only in the browser',
+      'On the server for the first render, then in the browser on client-side navigations',
+      'Only at build time',
+      'Only on the server, always',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is a `+layout.js` load useful for?',
+    options: [
+      'Styling the layout',
+      'Providing data to the layout and every child route (e.g. the current user)',
+      'Defining routes',
+      'Nothing — layouts cannot load data',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/loading-data" questions={quizLoad} />
+
+<ProgressTracker client:visible id="sveltekit/loading-data" />

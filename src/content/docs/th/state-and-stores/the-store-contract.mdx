@@ -1,0 +1,119 @@
+---
+title: 'The Store Contract'
+description: 'store ของ Svelte จริง ๆ คืออะไร — object ใด ๆ ที่มี method subscribe — และ prefix $store ทำ auto-subscribe, re-render และ cleanup ให้ยังไง'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## store คือแค่ contract
+
+Svelte store ไม่มีอะไร magic เลย **store คือ object ใด ๆ ที่มี method `subscribe`** ที่รับ callback และเรียกมันด้วยค่าปัจจุบัน ทั้งทันทีและทุกครั้งที่ค่าเปลี่ยน — โดย return ฟังก์ชัน *unsubscribe* กลับมา นั่นคือ contract ทั้งหมด:
+
+```js
+// The minimal store contract, written by hand.
+function createCounter() {
+  let value = 0;
+  const subscribers = new Set();
+
+  return {
+    subscribe(fn) {
+      fn(value);                       // 1. call immediately with the current value
+      subscribers.add(fn);
+      return () => subscribers.delete(fn); // 2. return an unsubscribe function
+    },
+    increment() {
+      value += 1;
+      subscribers.forEach((fn) => fn(value)); // 3. notify on change
+    },
+  };
+}
+```
+
+เพราะ contract เล็กขนาดนี้ *อะไรก็ตาม* ที่ทำตามมันได้ก็เป็น store — รวมถึง RxJS observable (ที่ก็มี `subscribe` ที่เข้ากันได้) ความ interoperable นี้คือเหตุผลที่ Svelte นิยาม contract ไว้แทนที่จะเป็น class ตายตัว
+
+## prefix `$` ทำ auto-subscribe ให้
+
+การเขียน `store.subscribe(...)` เองในทุกคอมโพเนนต์คงน่าเบื่อและ leak ง่าย ในคอมโพเนนต์ Svelte ให้ shorthand **`$store`**: เติม `$` หน้า store แล้ว Svelte จะ subscribe ให้ ให้ค่าปัจจุบัน re-render เมื่อค่าเปลี่ยน และ **unsubscribe ให้อัตโนมัติ** เมื่อคอมโพเนนต์ถูกทำลาย
+
+```svelte
+<script>
+  import { counter } from './counter.js';
+</script>
+
+<!-- $counter is the current value; the component re-renders on every change -->
+<button onclick={counter.increment}>count is {$counter}</button>
+```
+
+<Mermaid title="prefix $ ทำอะไรให้บ้าง" code={dollarDiagram} />
+
+export const dollarDiagram = `flowchart LR
+  prefix["$store ในคอมโพเนนต์"] --> sub["subscribe ตอน mount"]
+  sub --> val["อ่านค่าปัจจุบัน"]
+  val --> rerender["re-render เมื่อค่าเปลี่ยน"]
+  rerender --> unsub["auto-unsubscribe ตอน destroy"]`;
+
+คุณยัง assign ให้ `$store` ได้ด้วย (`$counter = 5`) ถ้า store เป็น writable — Svelte จะ compile มันเป็นการเรียก `set` ของ store prefix `$` ใช้ได้เฉพาะในไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เพราะมันคือ compiler magic ไม่ใช่ฟังก์ชัน runtime
+
+## ทำไม contract ยังสำคัญใน Svelte 5
+
+ถึงแม้ runes จะครอบคลุม shared-state ส่วนใหญ่แล้ว (บทถัด ๆ ไป) store contract ก็ยังมีค่า:
+
+- **interop** source ใด ๆ ที่คล้าย observable และมี `subscribe` ที่เข้ากันได้ก็ใช้กับ `$` ได้ — RxJS, custom event stream, third-party library
+- **async source** `readable` (บทถัดไป) ห่อ source แบบ push (WebSocket, geolocation watcher) ไว้หลัง contract ง่าย ๆ อันเดียวกัน
+- **code เดิม** Svelte หลายล้านบรรทัดใช้ stores การเข้าใจ contract ช่วยให้อ่านและดูแลมันได้
+
+<Callout title="สรุปหนึ่งบรรทัด">
+Svelte **store** คือ object ใด ๆ ที่มี method **`subscribe(fn)`** ที่เรียก `fn` ด้วยค่าปัจจุบันทันทีและทุกครั้งที่เปลี่ยน โดย return ฟังก์ชัน **unsubscribe** — contract เล็ก ๆ นี้คือเหตุผลที่ observable อย่าง RxJS ทำงานร่วมกันได้ ในคอมโพเนนต์ prefix **`$store`** ทำ auto-subscribe, อ่านค่าปัจจุบัน, re-render เมื่อเปลี่ยน และ **auto-unsubscribe ตอน destroy** (และ `$store = x` จะเรียก `set` ของ store)
+</Callout>
+
+export const quizContract = [
+  {
+    q: 'อะไรทำให้บางอย่างเป็น Svelte store?',
+    options: [
+      'การ extend คลาส Store',
+      'การมี method `subscribe(fn)` ที่เรียก fn ด้วยค่าปัจจุบันและเมื่อเปลี่ยน โดย return ฟังก์ชัน unsubscribe',
+      'การถูกสร้างด้วย `writable`',
+      'การอยู่ในไฟล์ .store.js',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'prefix `$store` ทำอะไรในคอมโพเนนต์?',
+    options: [
+      'ไม่ทำอะไร — เป็นแค่การตกแต่ง',
+      'auto-subscribe, ให้ค่าปัจจุบัน, re-render เมื่อเปลี่ยน และ auto-unsubscribe ตอน destroy',
+      'ทำให้ store เป็น global',
+      'แปลงมันเป็น rune',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม RxJS observable ถึงใช้กับ syntax `$` ของ Svelte ได้?',
+    options: [
+      'Svelte ทำเคสพิเศษให้ RxJS',
+      'observable มี method `subscribe` ที่เข้ากันได้ ซึ่งตรงตาม store contract',
+      'ใช้ไม่ได้ — RxJS เข้ากันไม่ได้',
+      'ได้หลังแปลงเป็น writable เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'prefix `$store` ใช้ได้ที่ไหน?',
+    options: [
+      'ที่ไหนก็ได้ในไฟล์ .js ใด ๆ',
+      'เฉพาะในไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เพราะเป็น compiler magic',
+      'เฉพาะใน browser console',
+      'เฉพาะภายใน store เอง',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/the-store-contract" questions={quizContract} />
+
+<ProgressTracker client:visible id="state-and-stores/the-store-contract" />

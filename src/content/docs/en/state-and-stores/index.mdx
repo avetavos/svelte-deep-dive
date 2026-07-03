@@ -1,0 +1,80 @@
+---
+title: 'State Management & Stores'
+description: 'Where shared state lives in Svelte 5 — runes in .svelte.js modules vs the classic store API — plus the store contract that makes it all interoperate.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Two ways to share state
+
+Component-local `$state` is enough until two components that aren't parent-and-child need the same data. Then you need *shared* state, and Svelte gives you two answers:
+
+- **Runes in a module.** Put `$state` in a `.svelte.js` / `.svelte.ts` file and export it. Any component that imports it reads and writes the same reactive value. This is the modern default in Svelte 5.
+- **Stores.** The classic Svelte primitive: an object with a `subscribe` method. `writable`, `readable`, and `derived` from `svelte/store` cover most needs, and the `$store` syntax auto-subscribes inside components. Still fully supported — and the underlying *contract* is what lets Svelte interoperate with things like RxJS.
+
+## What this module covers
+
+| Lesson | What you'll learn |
+|--------|-------------------|
+| The store contract | What a "store" really is: any object with `subscribe` |
+| Built-in stores | `writable`, `readable`, `derived`, and the `$` prefix |
+| Runes vs stores | The Svelte 5 shift, and when to use each |
+| Cross-component state | Sharing runed state safely (modules, context, SSR) |
+
+## The lens
+
+<Mermaid title="Choosing where shared state lives" code={lensDiagram} />
+
+export const lensDiagram = `flowchart TB
+  q["Need to share state?"] --> local["No: local $state in the component"]
+  q --> shared["Yes"]
+  shared --> runes["Runes in a .svelte.js module (default)"]
+  shared --> stores["Stores: the subscribe contract / interop / existing code"]`;
+
+Svelte 5 didn't remove stores — it added a simpler option for most cases. You'll learn both, and more importantly, *when* each is the right call.
+
+<Callout title="The mental shift">
+Before Svelte 5, shared reactive state basically *meant* stores. Now, exporting `$state` from a `.svelte.js` module is usually simpler — no `subscribe`, no `$` prefix, just a reactive value you import. Stores remain the right tool for the subscribe *contract* (interop with observables, custom async sources) and for code that already uses them.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'When do you need shared state (beyond component-local `$state`)?',
+    options: [
+      'Always, for every value',
+      'When components that are not in a direct parent-child relationship need the same data',
+      'Only in SvelteKit',
+      'Never — Svelte has no shared state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the modern default for shared state in Svelte 5?',
+    options: [
+      'A Redux store',
+      'Runes (`$state`) exported from a `.svelte.js` / `.svelte.ts` module',
+      'Global window variables',
+      'Only writable stores',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Did Svelte 5 remove stores?',
+    options: [
+      'Yes, stores were deleted',
+      'No — stores are fully supported; runes are just a simpler option for most shared-state cases',
+      'Yes, replaced by context only',
+      'Stores never existed',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="state-and-stores/index" />

@@ -1,0 +1,103 @@
+---
+title: 'Why Svelte, the Compiler'
+description: 'The difference between a runtime framework and a compiler, why there is no virtual DOM, and how the compile step produces tiny, fast bundles.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Runtime frameworks vs a compiler
+
+Most UI frameworks are **runtime** libraries. You ship the framework to the browser, and at runtime it maintains a virtual DOM, re-runs your components when state changes, diffs the new virtual tree against the old one, and applies the differences. That machinery — the reconciler, the scheduler — is code the user downloads and the CPU runs on every update.
+
+Svelte takes the work out of the browser and into the **build step**. The Svelte compiler reads your components ahead of time, figures out precisely which DOM nodes depend on which state, and emits plain JavaScript that updates exactly those nodes. There is no virtual DOM to ship, no diffing at runtime.
+
+<Mermaid title="Where the work happens: runtime vs compile time" code={compileDiagram} />
+
+export const compileDiagram = `flowchart TB
+  subgraph runtime["Runtime framework"]
+    ship["ship framework + components"] --> vdom["runtime keeps a virtual DOM"]
+    vdom --> diff["diff on every state change"]
+  end
+  subgraph svelte["Svelte (compiler)"]
+    build["compile components at build time"] --> emit["emit precise update code"]
+    emit --> tiny["ship tiny JS, no diffing"]
+  end`;
+
+## What "no virtual DOM" buys you
+
+- **Smaller bundles.** You don't ship a reconciler. A Svelte component compiles to roughly the imperative code you'd hand-write to update those exact nodes, so there's little framework overhead riding along.
+- **Less runtime work.** When `count` changes, there's no tree to re-create and diff — the generated code updates the one text node that shows `count`. Updates are surgical by construction.
+- **Less indirection.** The gap between "what I wrote" and "what runs" is small: the compiler's output is close to what you'd write by hand.
+
+This is why Svelte is sometimes called *"the disappearing framework"* — much of it compiles away, leaving mostly your logic plus a thin helper layer.
+
+## What the compiler actually produces
+
+Given a component with `let count = $state(0)` and `<p>{count}</p>`, the compiler statically sees that the text node depends on `count`. It generates code that (1) creates the `<p>` once, and (2) registers that when `count` changes, this specific text node's content is updated — nothing else. Multiply that across a whole app and you get updates that touch only what changed, without any runtime bookkeeping to figure out *what* changed.
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<!-- The compiler knows this text node — and only this one — depends on count. -->
+<button onclick={() => count++}>clicked {count} times</button>
+```
+
+You write declarative components; the compiler writes the imperative DOM code. That division of labor is the entire value proposition.
+
+<Callout title="The one-line takeaway">
+Runtime frameworks ship a **virtual DOM and a diffing reconciler** to the browser; Svelte is a **compiler** that does that analysis at build time and emits precise, imperative DOM-update code instead. The payoff is **smaller bundles and less runtime work** — when state changes, generated code updates exactly the dependent nodes, with no tree to re-create or diff. Much of the "framework" compiles away.
+</Callout>
+
+export const quizWhy = [
+  {
+    q: 'Where does a runtime framework do its diffing work?',
+    options: [
+      'At build time',
+      'In the browser at runtime, using shipped framework code (the reconciler)',
+      'On the server only',
+      'It does not diff',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why are Svelte bundles typically small?',
+    options: [
+      'They are gzipped harder',
+      'There is no virtual DOM / reconciler to ship — the component compiles to roughly the imperative update code it needs',
+      'Svelte forbids large components',
+      'They exclude CSS',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When `count` changes in Svelte, what happens?',
+    options: [
+      'The whole component tree is re-created and diffed',
+      'Generated code updates exactly the DOM node(s) that depend on count — nothing else',
+      'The page reloads',
+      'A virtual DOM is rebuilt',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why is Svelte called "the disappearing framework"?',
+    options: [
+      'It is deprecated',
+      'Much of the framework compiles away at build time, leaving mostly your logic plus a thin helper layer',
+      'It hides your code',
+      'It has no components',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/why-svelte-the-compiler" questions={quizWhy} />
+
+<ProgressTracker client:visible id="foundations/why-svelte-the-compiler" />

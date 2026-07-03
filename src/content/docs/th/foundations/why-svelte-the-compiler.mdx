@@ -1,0 +1,103 @@
+---
+title: 'Why Svelte, the Compiler'
+description: 'ความต่างระหว่าง runtime framework กับ compiler, ทำไมถึงไม่มี virtual DOM และ compile step สร้าง bundle ที่เล็กและเร็วอย่างไร'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## runtime framework เทียบกับ compiler
+
+UI framework ส่วนใหญ่เป็น **runtime** library คุณส่ง framework ไปที่ browser แล้วตอน runtime มันคอยดูแล virtual DOM, re-run component เมื่อ state เปลี่ยน, diff tree ใหม่กับ tree เก่า แล้วนำความต่างไปใช้ กลไกพวกนั้น — reconciler, scheduler — คือ code ที่ user ต้องดาวน์โหลดและ CPU ต้องรันทุกครั้งที่อัปเดต
+
+Svelte ย้ายงานออกจาก browser ไปไว้ที่ **build step** Svelte compiler อ่าน component ของคุณล่วงหน้า หาให้ชัดว่า DOM node ไหนขึ้นกับ state ตัวไหน แล้ว emit JavaScript ธรรมดาที่อัปเดตเฉพาะ node เหล่านั้น ไม่มี virtual DOM ให้ส่ง ไม่มีการ diff ตอน runtime
+
+<Mermaid title="งานเกิดที่ไหน: runtime เทียบกับ compile time" code={compileDiagram} />
+
+export const compileDiagram = `flowchart TB
+  subgraph runtime["Runtime framework"]
+    ship["ship framework + components"] --> vdom["runtime keeps a virtual DOM"]
+    vdom --> diff["diff on every state change"]
+  end
+  subgraph svelte["Svelte (compiler)"]
+    build["compile components at build time"] --> emit["emit precise update code"]
+    emit --> tiny["ship tiny JS, no diffing"]
+  end`;
+
+## "ไม่มี virtual DOM" ให้ประโยชน์อะไร
+
+- **bundle เล็กลง** คุณไม่ต้องส่ง reconciler ไป Svelte component compile เป็น code แบบ imperative ที่ใกล้เคียงกับที่คุณจะเขียนเองเพื่ออัปเดต node เหล่านั้น จึงมี framework overhead ติดมาน้อย
+- **runtime ทำงานน้อยลง** เมื่อ `count` เปลี่ยน ไม่มี tree ให้สร้างใหม่และ diff — code ที่ generate ไว้อัปเดต text node เดียวที่แสดง `count` การอัปเดตเลยเจาะจงโดยธรรมชาติ
+- **indirection น้อยลง** ช่องว่างระหว่าง "สิ่งที่ฉันเขียน" กับ "สิ่งที่รัน" นั้นเล็ก: output ของ compiler ใกล้เคียงกับที่คุณจะเขียนเอง
+
+นี่คือเหตุผลที่บางครั้งเรียก Svelte ว่า *"the disappearing framework"* — ส่วนใหญ่ของมัน compile หายไป เหลือแค่ logic ของคุณบวก helper layer บาง ๆ
+
+## จริง ๆ แล้ว compiler สร้างอะไรออกมา
+
+ให้ component ที่มี `let count = $state(0)` และ `<p>{count}</p>` compiler เห็นแบบ static ว่า text node นี้ขึ้นกับ `count` มัน generate code ที่ (1) สร้าง `<p>` หนึ่งครั้ง และ (2) register ว่าเมื่อ `count` เปลี่ยน ให้อัปเดตเนื้อหาของ text node เฉพาะจุดนี้ — ไม่มีอย่างอื่น คูณด้วยทั้งแอปแล้วคุณจะได้การอัปเดตที่แตะเฉพาะสิ่งที่เปลี่ยน โดยไม่มี runtime bookkeeping มาคอยหาว่า *อะไร* เปลี่ยน
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<!-- The compiler knows this text node — and only this one — depends on count. -->
+<button onclick={() => count++}>clicked {count} times</button>
+```
+
+คุณเขียน component แบบ declarative ส่วน compiler เขียน code DOM แบบ imperative ให้ การแบ่งงานแบบนี้คือคุณค่าทั้งหมด
+
+<Callout title="สรุปหนึ่งบรรทัด">
+runtime framework ส่ง **virtual DOM และ diffing reconciler** ไปที่ browser ส่วน Svelte เป็น **compiler** ที่ทำการวิเคราะห์นั้นตอน build time แล้ว emit code อัปเดต DOM แบบ imperative ที่แม่นยำแทน ผลตอบแทนคือ **bundle เล็กลงและ runtime ทำงานน้อยลง** — เมื่อ state เปลี่ยน code ที่ generate ไว้อัปเดตเฉพาะ node ที่ขึ้นกับมัน ไม่มี tree ให้สร้างใหม่หรือ diff "framework" ส่วนใหญ่ compile หายไป
+</Callout>
+
+export const quizWhy = [
+  {
+    q: 'runtime framework ทำงาน diffing ที่ไหน?',
+    options: [
+      'ตอน build time',
+      'ใน browser ตอน runtime โดยใช้ framework code ที่ส่งไป (reconciler)',
+      'บน server เท่านั้น',
+      'มันไม่ diff',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม bundle ของ Svelte ถึงเล็กโดยทั่วไป?',
+    options: [
+      'gzip หนักกว่า',
+      'ไม่มี virtual DOM / reconciler ให้ส่ง — component compile เป็น code อัปเดตแบบ imperative เท่าที่ต้องการ',
+      'Svelte ห้าม component ใหญ่',
+      'มันตัด CSS ออก',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เมื่อ `count` เปลี่ยนใน Svelte เกิดอะไรขึ้น?',
+    options: [
+      'ทั้ง component tree ถูกสร้างใหม่และ diff',
+      'code ที่ generate ไว้อัปเดตเฉพาะ DOM node ที่ขึ้นกับ count — ไม่มีอย่างอื่น',
+      'หน้า reload',
+      'virtual DOM ถูกสร้างใหม่',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมถึงเรียก Svelte ว่า "the disappearing framework"?',
+    options: [
+      'มันถูก deprecate แล้ว',
+      'ส่วนใหญ่ของ framework compile หายไปตอน build time เหลือแค่ logic ของคุณบวก helper layer บาง ๆ',
+      'มันซ่อน code ของคุณ',
+      'มันไม่มี component',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/why-svelte-the-compiler" questions={quizWhy} />
+
+<ProgressTracker client:visible id="foundations/why-svelte-the-compiler" />

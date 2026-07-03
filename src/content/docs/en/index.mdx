@@ -1,0 +1,60 @@
+---
+title: Svelte Deep Dive
+description: Master Svelte from first principles — the compiler model, runes reactivity ($state, $derived, $effect, $props), components & snippets, bindings, actions & transitions, stores, and full-stack apps with SvelteKit — for Svelte 5.
+template: splash
+hero:
+  tagline: A standalone, intermediate→advanced course on Svelte 5. From the compiler model and runes-based reactivity to components & snippets, bindings and transitions, stores, and full-stack SvelteKit — taught through annotated code and diagrams that show what the compiler does and why your bundles stay tiny.
+  actions:
+    - text: Start here
+      link: /svelte/en/foundations/
+      icon: right-arrow
+      variant: primary
+    - text: Jump to Runes
+      link: /svelte/en/reactivity/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What you'll learn
+
+<CardGrid>
+  <Card title="Foundations & Mental Model" icon="rocket">
+    Svelte as a compiler, the .svelte component, runes reactivity, and template syntax. [Start →](/svelte/en/foundations/)
+  </Card>
+  <Card title="Reactivity with Runes" icon="random">
+    $state, $derived, $effect, $props & $bindable, and the advanced runes. [Learn →](/svelte/en/reactivity/)
+  </Card>
+  <Card title="Components & Composition" icon="seti:html">
+    Snippets & render, passing UI, context, and the component lifecycle. [Compose →](/svelte/en/components/)
+  </Card>
+  <Card title="Bindings, Actions & Transitions" icon="seti:plan">
+    Two-way bindings, use: actions, transitions & animations, and forms. [Bind →](/svelte/en/bindings-actions-transitions/)
+  </Card>
+  <Card title="State Management & Stores" icon="seti:config">
+    The store contract, built-in stores, runes vs stores, and cross-component state. [Manage →](/svelte/en/state-and-stores/)
+  </Card>
+  <Card title="SvelteKit: Full-Stack Svelte" icon="puzzle">
+    Routing, load functions, form actions, and server endpoints. [Build →](/svelte/en/sveltekit/)
+  </Card>
+  <Card title="Tooling, Testing & Production" icon="approve-check">
+    Vite & svelte-check, TypeScript, testing, and performance & deployment. [Ship →](/svelte/en/tooling-and-production/)
+  </Card>
+</CardGrid>
+
+## How this course works
+
+<CardGrid>
+  <Card title="The model first, then the code" icon="rocket">
+    Every topic starts from a model — the compiler, fine-grained reactivity, the store contract — so Svelte's magic becomes mechanism you understand.
+  </Card>
+  <Card title="Svelte 5, verified" icon="random">
+    Written against Svelte 5 and checked against the official docs — runes (`$state`/`$derived`/`$effect`/`$props`), snippets (`{@render}`), and `onclick` events are covered as they exist today, not the Svelte 4 way.
+  </Card>
+  <Card title="Design, not just syntax" icon="approve-check">
+    Not "here's $effect" but "here's why you probably don't need it, and what to derive instead." You'll reason about reactivity and data flow with confidence.
+  </Card>
+  <Card title="Diagrams that explain" icon="puzzle">
+    The compile step, the reactivity graph, snippet rendering, and the SvelteKit load flow as theme-aware Mermaid diagrams. Bilingual (English / ไทย) with saved quiz progress.
+  </Card>
+</CardGrid>

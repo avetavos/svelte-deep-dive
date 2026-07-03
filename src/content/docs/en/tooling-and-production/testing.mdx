@@ -1,0 +1,124 @@
+---
+title: 'Testing'
+description: 'A layered testing strategy for Svelte — plain Vitest for logic, Testing Library for components, testing runed modules, and Playwright for end-to-end.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Three layers, three tools
+
+Testing a Svelte app is the same pyramid as any frontend, with Svelte-aware helpers at the component layer:
+
+| Layer | Tool | What it covers |
+|-------|------|----------------|
+| Unit | Vitest | Pure logic, utilities, and runed `.svelte.js` modules |
+| Component | `@testing-library/svelte` + Vitest | A component rendered in jsdom — behaviour, not internals |
+| End-to-end | Playwright | The real app in a real browser, across pages |
+
+<Mermaid title="The testing pyramid for a Svelte app" code={pyramidDiagram} />
+
+export const pyramidDiagram = `flowchart TB
+  e2e["Playwright: end-to-end (few)"] --> comp["Testing Library: components (some)"]
+  comp --> unit["Vitest: logic + runed modules (many)"]`;
+
+## Unit tests with Vitest
+
+Plain logic — formatters, calculations, a store's update function — is tested with **Vitest**, which shares Vite's config so it understands your project out of the box:
+
+```js
+import { describe, it, expect } from 'vitest';
+import { formatPrice } from './money';
+
+describe('formatPrice', () => {
+  it('adds a currency symbol', () => {
+    expect(formatPrice(5)).toBe('$5.00');
+  });
+});
+```
+
+Reactive state in a **`.svelte.js`** / `.svelte.ts` module (runes outside components) is tested the same way — Vitest runs with the Svelte plugin so runes work in the test. Wrap assertions that depend on effects in `$effect.root` or flush with `await tick()` when needed.
+
+## Component tests with Testing Library
+
+**`@testing-library/svelte`** renders a component into jsdom and gives you queries and interactions that mirror how a user behaves — query by role/text, not by internal class names:
+
+```js
+import { render, screen } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
+import { expect, test } from 'vitest';
+import Counter from './Counter.svelte';
+
+test('increments on click', async () => {
+  render(Counter, { props: { start: 0 } });
+  const button = screen.getByRole('button', { name: /count/i });
+
+  await userEvent.click(button);
+
+  expect(button).toHaveTextContent('count: 1');
+});
+```
+
+The discipline: **test behaviour, not implementation.** Assert on what the user sees and does (visible text, roles, interactions), so a refactor that keeps behaviour identical doesn't break the test.
+
+## End-to-end with Playwright
+
+**Playwright** drives a real browser through real pages — routing, form submission, navigation — which is exactly where SvelteKit's server behaviour (load functions, form actions) needs verifying:
+
+```js
+import { test, expect } from '@playwright/test';
+
+test('user can sign in', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByLabel('Email').fill('ada@example.com');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL('/dashboard');
+});
+```
+
+Keep these few and high-value — they're slower than unit and component tests, but they're the only layer that proves the whole thing works together.
+
+<Callout title="The one-line takeaway">
+Test in three layers: **Vitest** for pure logic and runed `.svelte.js` modules; **`@testing-library/svelte`** (+ Vitest) for components rendered in jsdom, querying by role/text so you test **behaviour not internals**; and **Playwright** for a few high-value end-to-end flows in a real browser (the layer that verifies SvelteKit's load functions and form actions). Many unit tests, some component tests, few e2e.
+</Callout>
+
+export const quizTesting = [
+  {
+    q: 'What is the guiding principle when testing components with Testing Library?',
+    options: [
+      'Assert on internal component state and private variables',
+      'Test behaviour, not implementation — query by role/text and assert on what the user sees',
+      'Snapshot the entire HTML every time',
+      'Only test that it renders without crashing',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you test reactive state in a `.svelte.js` module?',
+    options: [
+      'You cannot test runes',
+      'With Vitest running the Svelte plugin, so runes work in the test',
+      'Only through the browser',
+      'By copying the code into a component first',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which tool verifies a full sign-in flow across real pages in a browser?',
+    options: [
+      'Vitest',
+      'Playwright (end-to-end)',
+      '@testing-library/svelte',
+      'svelte-check',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/testing" questions={quizTesting} />
+
+<ProgressTracker client:visible id="tooling-and-production/testing" />

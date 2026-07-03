@@ -1,0 +1,130 @@
+---
+title: 'Advanced Runes'
+description: 'Debugging with $inspect, reading without subscribing via untrack, and sharing reactive state across components with .svelte.js modules.'
+sidebar:
+  order: 6
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## $inspect: reactive debugging
+
+`$inspect` logs reactive values and **re-logs whenever they change** — a development-only tool (it becomes a no-op in production builds). Unlike a plain `console.log`, which fires once, `$inspect` tracks its arguments and reports every update.
+
+```svelte
+<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+
+  $inspect(count, doubled);   // logs on every change, dev only
+</script>
+```
+
+You can chain `.with(fn)` to run custom logic on each change (for example, to `console.trace` where a change came from).
+
+## untrack: read without depending
+
+Inside a `$derived` or `$effect`, every reactive value you read becomes a dependency. Occasionally you want to read a value *without* creating that dependency — so the effect doesn't re-run when it changes. **`untrack`** (imported from `svelte`) does that.
+
+```svelte
+<script>
+  import { untrack } from 'svelte';
+
+  let count = $state(0);
+  let config = $state({ verbose: true });
+
+  $effect(() => {
+    // re-run when count changes, but NOT when config.verbose changes:
+    const verbose = untrack(() => config.verbose);
+    if (verbose) console.log(count);
+  });
+</script>
+```
+
+## Reactive state beyond the component
+
+Runes are not limited to `.svelte` files. In a **`.svelte.js`** or **`.svelte.ts`** module, you can use `$state` and `$derived` to hold reactive state that any component can import — the foundation for app-wide shared state without stores.
+
+```js
+// counter.svelte.js
+export function createCounter() {
+  let count = $state(0);
+  return {
+    get count() { return count; },   // expose via a getter to preserve reactivity
+    increment() { count++; },
+  };
+}
+```
+
+```svelte
+<script>
+  import { createCounter } from './counter.svelte.js';
+  const counter = createCounter();
+</script>
+
+<button onclick={counter.increment}>{counter.count}</button>
+```
+
+<Mermaid title="Shared reactive state lives in a .svelte.js module" code={sharedDiagram} />
+
+export const sharedDiagram = `flowchart LR
+  mod[".svelte.js module: $state + getters"] --> a["Component A imports it"]
+  mod --> b["Component B imports it"]
+  a --> sync["both stay in sync"]
+  b --> sync`;
+
+The key detail: **export access through a getter (or an object/class), not the bare reassigned value.** A primitive exported directly would be copied at import time and lose reactivity; a getter reads the live reactive source each time. This pattern — a factory or class in a `.svelte.js` module — is the modern alternative to stores, covered fully in the State & Stores module. Briefly, `$host` is a related advanced rune used only when compiling a component to a custom element, to access the host element.
+
+<Callout title="The one-line takeaway">
+**`$inspect(...)`** is dev-only reactive logging that re-fires on every change (chain `.with()` for custom handling). **`untrack(() => x)`** reads a reactive value inside an effect/derived *without* making it a dependency. And runes work in **`.svelte.js` / `.svelte.ts` modules**, so you can hold shared reactive state outside components — exposing it through a **getter** (or object/class) so reactivity survives the import boundary. That module pattern is the modern, store-free way to share state.
+</Callout>
+
+export const quizAdvanced = [
+  {
+    q: 'What makes `$inspect(count)` different from `console.log(count)`?',
+    options: [
+      'Nothing',
+      '`$inspect` re-logs on every change of the tracked value and is dev-only (no-op in production)',
+      'It logs to a file',
+      'It pauses execution',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `untrack(() => config.verbose)` do inside an effect?',
+    options: [
+      'Deletes config.verbose',
+      'Reads the value without creating a dependency, so the effect will not re-run when it changes',
+      'Makes it reactive',
+      'Runs it on the server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where can you use runes outside of `.svelte` components?',
+    options: [
+      'Nowhere',
+      'In `.svelte.js` / `.svelte.ts` modules',
+      'Only in the config file',
+      'Only in TypeScript files',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When sharing `$state` from a module, why expose it through a getter?',
+    options: [
+      'For shorter code',
+      'A bare exported primitive is copied at import and loses reactivity; a getter reads the live reactive source each time',
+      'Getters are required by JavaScript',
+      'To make it read-only',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/advanced-runes" questions={quizAdvanced} />
+
+<ProgressTracker client:visible id="reactivity/advanced-runes" />

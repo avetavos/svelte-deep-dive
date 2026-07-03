@@ -1,0 +1,116 @@
+---
+title: 'Loading Data'
+description: 'load function, universal (+page.js) vs server-only (+page.server.js) loading, การรับ data ผ่าน data prop และ shared layout data'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## data มาจาก load function
+
+เพจไม่ได้ fetch ข้อมูลของตัวเองใน component แต่ **`load`** function ที่อยู่ข้าง ๆ เพจจะ return ข้อมูล แล้ว SvelteKit ส่งให้เพจเป็น `data` prop เพราะ `load` รันก่อนเพจ render (บน server สำหรับ request แรก) ข้อมูลจึงอยู่ใน HTML ตั้งแต่แรก — ไม่มีอาการกระพริบตอนโหลด และดีต่อ SEO
+
+```js
+// src/routes/blog/[slug]/+page.js
+export async function load({ params, fetch }) {
+  const res = await fetch(`/api/posts/${params.slug}`);
+  return { post: await res.json() };   // becomes the `data` prop
+}
+```
+
+```svelte
+<!-- src/routes/blog/[slug]/+page.svelte -->
+<script>
+  let { data } = $props();     // data.post is here
+</script>
+
+<h1>{data.post.title}</h1>
+```
+
+<Mermaid title="load รันก่อน แล้วเพจ render พร้อมข้อมูล" code={loadDiagram} />
+
+export const loadDiagram = `flowchart LR
+  req["request /blog/hello"] --> load["load({ params, fetch })"]
+  load --> data["return { post }"]
+  data --> page["+page.svelte ได้ data prop"]
+  page --> html["rendered HTML"]`;
+
+## universal vs server-only load
+
+`load` มีสองแบบ และการเลือกให้ถูกคือการตัดสินใจสำคัญ:
+
+- **`+page.js` — universal load** รันบน server สำหรับ render แรก แล้วรันใน browser สำหรับ client-side navigation ครั้งต่อ ๆ ไป ใช้กับข้อมูลที่ fetch ที่ไหนก็ปลอดภัย (public API ผ่าน `fetch` ที่ได้มาให้)
+- **`+page.server.js` — server-only load** รันบน server *เสมอ* ไม่เคยรันใน browser ใช้เมื่อโค้ดต้องอยู่ฝั่ง server: query database ตรง ๆ, secret, private environment variable, อ่าน cookie สำหรับ auth ข้อมูลที่ return ต้อง serializable (เพราะถูกส่งไป client)
+
+```js
+// src/routes/dashboard/+page.server.js — server-only
+import { db } from '$lib/server/db';
+
+export async function load({ locals }) {
+  // locals.user was set by a hook; db + secrets never reach the browser.
+  return { projects: await db.projectsFor(locals.user.id) };
+}
+```
+
+กฎง่าย ๆ: **ถ้าแตะ database, secret หรือ private env ให้ไว้ใน `+page.server.js`** นอกนั้น `+page.js` ก็พอ และยังให้ client navigation refetch ได้โดยไม่ต้องวิ่งไป server
+
+## load event และ layout data
+
+`load` function รับ event object ที่มี field ที่มีประโยชน์: `params` (route params), `fetch` (fetch พิเศษที่จัดการ relative URL และ forward cookie ตอน SSR), `url` (URL ที่ร้องขอ), `setHeaders`, `cookies` (server load เท่านั้น), `locals` (server load เท่านั้น) และ `parent` (เพื่อ await ข้อมูลจาก parent layout)
+
+`load` ใน **`+layout.js` / `+layout.server.js`** ให้ข้อมูลกับ layout *และ* ทุก child page — เหมาะกับสิ่งที่ทุกเพจต้องใช้ (current user, site settings) child page จะ merge ข้อมูลจาก layout กับของตัวเอง
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**`load`** function return ข้อมูลของเพจ ซึ่งมาถึงเป็น **`data` prop** (`let { data } = $props()`); มันรันก่อน render ข้อมูลจึงอยู่ใน SSR HTML ตั้งแต่แรก ใช้ **`+page.js`** (universal — server แล้ว client) กับข้อมูลที่ปลอดภัยทุกที่ และ **`+page.server.js`** (server-only) เมื่อโค้ดแตะ **database, secret, private env หรือ auth cookie** ส่วน `load` ของ **`+layout`** แชร์ข้อมูลให้ทุก child route
+</Callout>
+
+export const quizLoad = [
+  {
+    q: 'เพจ SvelteKit รับข้อมูลจาก load function ยังไง',
+    options: [
+      'ผ่าน global variable',
+      'เป็น `data` prop — `let { data } = $props()`',
+      'fetch ใน onMount',
+      'ผ่าน context เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ต้องใช้ `+page.server.js` แทน `+page.js` เมื่อไร',
+    options: [
+      'ไม่ต้องเลย — ใช้แทนกันได้',
+      'เมื่อโค้ดแตะ database, secret, private env หรือ auth cookie — ต้องอยู่ฝั่ง server เท่านั้น',
+      'เฉพาะเพจ static',
+      'เมื่อเพจไม่มีข้อมูล',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'universal `load` ใน `+page.js` รันที่ไหน',
+    options: [
+      'ใน browser เท่านั้น',
+      'บน server สำหรับ render แรก แล้วใน browser ตอน client-side navigation',
+      'ตอน build time เท่านั้น',
+      'บน server เสมอเท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`load` ใน `+layout.js` มีประโยชน์กับอะไร',
+    options: [
+      'จัดสไตล์ layout',
+      'ให้ข้อมูลกับ layout และทุก child route (เช่น current user)',
+      'นิยาม route',
+      'ไม่มีเลย — layout load ข้อมูลไม่ได้',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/loading-data" questions={quizLoad} />
+
+<ProgressTracker client:visible id="sveltekit/loading-data" />

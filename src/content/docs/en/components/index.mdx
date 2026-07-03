@@ -1,0 +1,78 @@
+---
+title: 'Components & Composition'
+description: 'How Svelte components compose — snippets and {@render}, passing UI as children, sharing data with context, and the component lifecycle.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Composing beyond props
+
+Props pass *values* down. But real UIs need to pass *markup* down (a card that wraps arbitrary content), share data across a subtree without drilling props through every level, and run setup when a component mounts. This module covers those composition tools:
+
+- **Snippets** (`{#snippet}` / `{@render}`) — reusable chunks of markup, and Svelte 5's replacement for the old `<slot>`.
+- **Passing UI** — how a parent hands markup to a child via the `children` snippet and named snippet props.
+- **Context** (`setContext` / `getContext`) — sharing data down a component tree without prop drilling.
+- **Lifecycle** (`onMount` / `onDestroy` / `tick`) — running code at specific moments.
+
+## What this module covers
+
+| Lesson | What you'll learn |
+|--------|-------------------|
+| Snippets & render | `{#snippet}` and `{@render}`, replacing `<slot>` |
+| Passing UI & children | The `children` snippet and named snippet props |
+| The context API | `setContext` / `getContext` without prop drilling |
+| Lifecycle | `onMount`, `onDestroy`, `tick`, and `$effect` |
+
+<Mermaid title="The composition tools" code={overviewDiagram} />
+
+export const overviewDiagram = `flowchart TB
+  comp["composing components"] --> snip["snippets: reusable markup"]
+  comp --> children["passing UI down as children"]
+  comp --> ctx["context: data down a subtree"]
+  comp --> life["lifecycle: code at mount / destroy"]`;
+
+<Callout title="The one-line takeaway">
+Beyond passing values with props, Svelte composes UIs with **snippets** (`{#snippet}`/`{@render}` — the Svelte 5 replacement for `<slot>`), **passing markup down** via the `children` snippet, **context** (`setContext`/`getContext`) to share data down a subtree without prop drilling, and **lifecycle** hooks (`onMount`/`onDestroy`/`tick`) — though `$effect` now covers most lifecycle needs.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'What replaced `<slot>` in Svelte 5?',
+    options: [
+      'Props',
+      'Snippets — `{#snippet}` and `{@render}`',
+      'Context',
+      'Stores',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What problem does context (`setContext`/`getContext`) solve?',
+    options: [
+      'Styling',
+      'Sharing data down a component tree without drilling props through every level',
+      'Routing',
+      'Animation',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In Svelte 5, what covers most cases that used lifecycle hooks in Svelte 4?',
+    options: [
+      'Stores',
+      '`$effect`',
+      'Props',
+      'Actions',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="components/index" />

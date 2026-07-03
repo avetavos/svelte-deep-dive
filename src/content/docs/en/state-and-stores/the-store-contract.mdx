@@ -1,0 +1,119 @@
+---
+title: 'The Store Contract'
+description: 'What a Svelte store really is — any object with a subscribe method — and how the $store prefix auto-subscribes, re-renders, and cleans up for you.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## A store is just a contract
+
+There is nothing magic about a Svelte store. A **store is any object with a `subscribe` method** that takes a callback and calls it with the current value, immediately and on every change — returning an *unsubscribe* function. That's the whole contract:
+
+```js
+// The minimal store contract, written by hand.
+function createCounter() {
+  let value = 0;
+  const subscribers = new Set();
+
+  return {
+    subscribe(fn) {
+      fn(value);                       // 1. call immediately with the current value
+      subscribers.add(fn);
+      return () => subscribers.delete(fn); // 2. return an unsubscribe function
+    },
+    increment() {
+      value += 1;
+      subscribers.forEach((fn) => fn(value)); // 3. notify on change
+    },
+  };
+}
+```
+
+Because the contract is this small, *anything* that implements it is a store — including RxJS observables (which also have a compatible `subscribe`). That interoperability is the reason Svelte defined a contract instead of a concrete class.
+
+## The `$` prefix auto-subscribes
+
+Writing `store.subscribe(...)` by hand in every component would be tedious and leak-prone. Inside a component, Svelte gives you the **`$store`** shorthand: prefix a store with `$` and Svelte subscribes for you, gives you the current value, re-renders when it changes, and **unsubscribes automatically** when the component is destroyed.
+
+```svelte
+<script>
+  import { counter } from './counter.js';
+</script>
+
+<!-- $counter is the current value; the component re-renders on every change -->
+<button onclick={counter.increment}>count is {$counter}</button>
+```
+
+<Mermaid title="What the $ prefix does for you" code={dollarDiagram} />
+
+export const dollarDiagram = `flowchart LR
+  prefix["$store in a component"] --> sub["subscribe on mount"]
+  sub --> val["read the current value"]
+  val --> rerender["re-render on change"]
+  rerender --> unsub["auto-unsubscribe on destroy"]`;
+
+You can also assign to `$store` (`$counter = 5`) if the store is writable — Svelte compiles that to calling the store's `set`. The `$` prefix only works inside `.svelte` files and `.svelte.js`/`.svelte.ts` modules, because it's compiler magic, not a runtime function.
+
+## Why the contract still matters in Svelte 5
+
+Even though runes now cover most shared-state needs (next lessons), the store contract remains valuable:
+
+- **Interop.** Any observable-like source with a compatible `subscribe` works with `$` — RxJS, custom event streams, third-party libraries.
+- **Async sources.** `readable` (next lesson) wraps a push-based source (a WebSocket, a geolocation watcher) behind the same simple contract.
+- **Existing code.** Millions of lines of Svelte use stores; understanding the contract lets you read and maintain them.
+
+<Callout title="The one-line takeaway">
+A Svelte **store** is any object with a **`subscribe(fn)`** method that calls `fn` with the current value immediately and on every change, returning an **unsubscribe** function — that small contract is why observables like RxJS interoperate. Inside components, the **`$store`** prefix auto-subscribes, reads the current value, re-renders on change, and **auto-unsubscribes on destroy** (and `$store = x` calls the store's `set`).
+</Callout>
+
+export const quizContract = [
+  {
+    q: 'What makes something a Svelte store?',
+    options: [
+      'Extending a Store base class',
+      'Having a `subscribe(fn)` method that calls fn with the current value and on changes, returning an unsubscribe function',
+      'Being created by `writable`',
+      'Living in a .store.js file',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does the `$store` prefix do inside a component?',
+    options: [
+      'Nothing — it is decorative',
+      'Auto-subscribes, gives the current value, re-renders on change, and auto-unsubscribes on destroy',
+      'Makes the store global',
+      'Converts it to a rune',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why can an RxJS observable work with Svelte\'s `$` syntax?',
+    options: [
+      'Svelte special-cases RxJS',
+      'Observables implement a compatible `subscribe` method, satisfying the store contract',
+      'It cannot — RxJS is incompatible',
+      'Only after conversion to a writable',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where does the `$store` prefix work?',
+    options: [
+      'Anywhere in any .js file',
+      'Only in `.svelte` files and `.svelte.js`/`.svelte.ts` modules, because it is compiler magic',
+      'Only in the browser console',
+      'Only inside stores themselves',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/the-store-contract" questions={quizContract} />
+
+<ProgressTracker client:visible id="state-and-stores/the-store-contract" />

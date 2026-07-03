@@ -1,0 +1,83 @@
+---
+title: 'Svelte Foundations & Mental Model'
+description: 'The one idea Svelte is built on — it is a compiler, not a runtime — plus the .svelte component, runes reactivity, and template syntax. The lens for everything else.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+**Svelte is a compiler.** It reads your components at build time and generates small, imperative JavaScript that surgically updates the DOM — there is no virtual DOM and no framework runtime diffing your UI on every change. The "framework" mostly disappears into the output.
+
+Every Svelte feature — runes, snippets, scoped styles, transitions — is a consequence of that: because Svelte *compiles* your code, it can turn `count++` into exactly the DOM update that one change requires, and ship almost nothing else.
+
+## What this module covers
+
+| Lesson | What you'll learn |
+|--------|-------------------|
+| Why Svelte, the compiler | The compile model, no virtual DOM, and tiny bundles |
+| The component anatomy | The `.svelte` file: script, markup, and scoped styles |
+| Runes & reactivity | How runes drive compiler-generated reactivity (Svelte 5) |
+| Template syntax | Interpolation, `{#if}`/`{#each}`/`{#await}`, and rendering |
+
+## The lens for the whole course
+
+Two ideas explain almost everything Svelte does:
+
+<Mermaid title="The two ideas everything builds on" code={lensDiagram} />
+
+export const lensDiagram = `flowchart TB
+  compile["Compiler: analyze components at build time"] --> gen["Generate surgical DOM updates\n(no virtual DOM)"]
+  runes["Runes: mark what is reactive\n($state, $derived, $effect)"] --> gen
+  gen --> small["Tiny, fast output"]`;
+
+- Because Svelte is a **compiler**, it knows at build time exactly which pieces of the DOM depend on which state — so it writes precise update code instead of shipping a diffing runtime.
+- Because reactivity is declared with **runes**, the compiler can trace the dependency graph statically and update only what changed, wherever it lives.
+
+Hold those two and Svelte stops looking like magic and starts looking like a very good code generator.
+
+<Callout title="The mental shift">
+Coming from React, your instinct is "the framework re-runs my component and diffs a virtual DOM." Svelte inverts it: **there is no re-run and no diff.** The compiler already figured out that `count` appears in one text node, so `count++` compiles to updating exactly that text node. You think in *state and dependencies*, not renders and reconciliation.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'What is Svelte, fundamentally?',
+    options: [
+      'A runtime library with a virtual DOM',
+      'A compiler that generates small imperative JavaScript to surgically update the DOM',
+      'A CSS framework',
+      'A server-side templating engine',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How does Svelte update the DOM when state changes?',
+    options: [
+      'It re-renders the component and diffs a virtual DOM',
+      'The compiler generated precise code that updates exactly the DOM nodes depending on that state',
+      'It reloads the page',
+      'It re-runs every component on the page',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What do runes do?',
+    options: [
+      'Style components',
+      'Declare what is reactive ($state, $derived, $effect) so the compiler can trace the dependency graph',
+      'Define routes',
+      'Fetch data',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="foundations/index" />

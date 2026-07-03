@@ -1,0 +1,132 @@
+---
+title: 'Cross-Component State'
+description: 'Patterns for sharing state across components — module-level runes, per-subtree instances with context, the SSR singleton trap, and a decision guide.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Pattern 1: a shared module
+
+The simplest cross-component state is a reactive value exported from a `.svelte.js` module. Every importer shares one instance:
+
+```js
+// theme.svelte.js
+export const theme = $state({ mode: 'light' });
+
+export function toggle() {
+  theme.mode = theme.mode === 'light' ? 'dark' : 'light';
+}
+```
+
+Any component imports `theme` and `toggle` and stays in sync. This is ideal for genuinely global, single-instance state: the color theme, a toast queue, a feature-flag set.
+
+## The SSR singleton trap
+
+There's a catch that matters the moment you use SvelteKit (or any SSR). A module-level `$state` is a **single instance shared by everything that imports it** — including, on the server, *every user request handled by the same process*. Put a logged-in user in a module-level singleton and, under SSR, one request can see another user's data.
+
+<Callout title="Never put per-user state in a module singleton under SSR">
+On the server, one process handles many requests. A module-level `$state` is shared across all of them, so per-request or per-user data (the current user, a session, a cart tied to a login) can leak between users. Module singletons are safe for truly global, non-user data; for per-user state under SSR, use context (below).
+</Callout>
+
+## Pattern 2: per-subtree instances with context
+
+When you need state that is shared *within a subtree* but **isolated per instance** — and safe under SSR — combine a runed class/object with **`setContext`** / **`getContext`**. The parent creates the state and puts it in context; descendants read it. Each component instance gets its own, created during that request's render.
+
+```svelte
+<!-- Parent.svelte -->
+<script>
+  import { setContext } from 'svelte';
+
+  // created fresh per instance / per request — not a module singleton
+  const cart = $state({ items: [] });
+  setContext('cart', cart);
+</script>
+
+<slot />
+```
+
+```svelte
+<!-- DeepChild.svelte -->
+<script>
+  import { getContext } from 'svelte';
+  const cart = getContext('cart');   // the same reactive object the parent set
+</script>
+
+<button onclick={() => cart.items.push(item)}>add ({cart.items.length})</button>
+```
+
+Because the state is created inside the component tree (not at module load), each render — and each SSR request — gets its own copy. A common idiom is a small factory (`createCart()`) that returns runed state, called in the parent and shared via context.
+
+<Mermaid title="Where each sharing pattern fits" code={decideDiagram} />
+
+export const decideDiagram = `flowchart TB
+  local["Just one component? local $state"] --> up["A few related components? lift $state to the parent, pass props"]
+  up --> ctx["A subtree, per-instance / per-user? setContext + runed state"]
+  ctx --> mod["Truly global, single instance? export $state from a .svelte.js module"]
+  mod --> store["Need the subscribe contract? a store"]`;
+
+## The decision guide
+
+1. **Local** — `$state` in the component. Start here.
+2. **Lift** — move `$state` to the closest common parent, pass down as props. For a handful of related components.
+3. **Context** — `setContext`/`getContext` with runed state for a subtree that needs its own instance (and SSR safety).
+4. **Module** — export `$state` from a `.svelte.js` module for truly global, single-instance state.
+5. **Store** — when you need the subscribe contract (interop, external push sources).
+
+Reach for the *lowest* level that solves your problem; escalate only when you must.
+
+<Callout title="The one-line takeaway">
+Share state across components with the **lowest tool that works**: local `$state` → lift to a parent → **`setContext`/`getContext`** with runed state for a per-instance subtree → a **`.svelte.js` module singleton** for truly global data → a **store** for the subscribe contract. Crucially, **never put per-user state in a module singleton under SSR** — the module is shared across all requests in a process and will leak between users; use context (created per render) instead.
+</Callout>
+
+export const quizCross = [
+  {
+    q: 'What is the SSR singleton trap?',
+    options: [
+      'Modules load too slowly',
+      'A module-level `$state` is shared across all requests in a server process, so per-user data can leak between users',
+      'Context does not work on the server',
+      'SSR disables runes',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you share state within a subtree safely per instance / per request?',
+    options: [
+      'A module singleton',
+      'Create runed state in the parent and share it via `setContext` / `getContext`',
+      'A global window variable',
+      'Copy props by hand at every level',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What kind of state is a `.svelte.js` module singleton appropriate for?',
+    options: [
+      'Per-user session data under SSR',
+      'Truly global, single-instance, non-user data like the color theme or a toast queue',
+      'Every piece of state',
+      'Only numbers',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the guiding principle for choosing a sharing pattern?',
+    options: [
+      'Always use a global store',
+      'Reach for the lowest level that solves the problem, and escalate only when you must',
+      'Always use context',
+      'Always lift to the root',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/cross-component-state" questions={quizCross} />
+
+<ProgressTracker client:visible id="state-and-stores/cross-component-state" />

@@ -1,0 +1,106 @@
+---
+title: 'Project & Tooling'
+description: 'scaffold โปรเจกต์ด้วย sv CLI, Vite ขับเคลื่อน development และ build อย่างไร, editor extension และ svelte-check สำหรับ diagnostics'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## scaffold ด้วย `sv` CLI
+
+วิธีเริ่มโปรเจกต์ Svelte หรือ SvelteKit ในปัจจุบันคือ **`sv` CLI** คำสั่งเดียว scaffold โปรเจกต์และเพิ่ม integration ได้ (TypeScript, Prettier, ESLint, Tailwind, testing) แบบ interactive:
+
+```bash
+npx sv create my-app
+cd my-app
+npm install
+npm run dev
+```
+
+`sv create` มาแทน flow เดิม `npm create svelte@latest` มันตั้งค่าโปรเจกต์ SvelteKit ให้เป็น default (วิธีที่แนะนำในการสร้างแอป Svelte), wire up Vite ให้ และให้คุณเลือก add-on ตั้งแต่ต้น มี `npx sv add <name>` สำหรับเพิ่ม integration เข้าโปรเจกต์ที่มีอยู่แล้วภายหลังด้วย
+
+<Callout title="Svelte vs SvelteKit">
+`sv create` จะ scaffold แอป **SvelteKit** — framework ทางการที่เพิ่ม routing, data loading และ server rendering รอบ ๆ Svelte component คุณ *ใช้* Svelte compiler แบบ standalone ก็ได้ (ฝังในแอป Vite อื่น หรือทำเป็น component library) แต่สำหรับการสร้างแอปพลิเคชัน SvelteKit คือ default และทุกอย่างในโมดูล SvelteKit ของคอร์สนี้ต่อยอดจาก scaffold นี้
+</Callout>
+
+## Vite ขับเคลื่อนทุกอย่าง
+
+โปรเจกต์ Svelte รันบน **Vite** ตอน development Vite serve โมดูลของคุณผ่าน native ESM พร้อม **hot module replacement** — แก้ component แล้วเห็นการเปลี่ยนแปลงโดยไม่ต้อง reload ทั้งหน้า และรักษา state ไว้ได้เท่าที่ทำได้ ส่วน production `vite build` จะ bundle และ optimize output
+
+```json
+{
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  }
+}
+```
+
+Svelte integration ของ Vite (`@sveltejs/vite-plugin-svelte` ที่ `sv create` wire ให้แล้ว) คือสิ่งที่รัน compiler บนไฟล์ `.svelte` ตอน dev และ build คุณแทบไม่ต้องแตะมันตรง ๆ
+
+<Mermaid title="pipeline ของ dev และ build" code={pipelineDiagram} />
+
+export const pipelineDiagram = `flowchart LR
+  code["your .svelte / .ts files"] --> vite["Vite + svelte plugin"]
+  vite --> dev["dev: HMR server"]
+  vite --> build["build: compiled, bundled output"]`;
+
+## editor support และ `svelte-check`
+
+มีเครื่องมือสองตัวที่ช่วยให้ประสบการณ์การเขียนตรงไปตรงมา:
+
+- **Svelte editor extension** (ทางการ สำหรับ VS Code และตัวอื่น) ให้ syntax highlighting, autocompletion และ inline diagnostics สำหรับไฟล์ `.svelte` — รวมถึง type error ใน markup ไม่ใช่แค่ใน script
+- **`svelte-check`** คือเวอร์ชัน command-line: type-check และ lint ทั้งโปรเจกต์ รวมถึง expression ใน template คุณจึงจับ error ใน CI แบบเดียวกับที่ editor โชว์ให้ตอนอยู่ในเครื่อง
+
+```bash
+npm run check      # runs svelte-check across the project
+```
+
+เพราะ `svelte-check` เข้าใจไฟล์ `.svelte` แบบครบวงจร มันจึงจับ error ที่ `tsc` ธรรมดาจะมองไม่เห็น — prop type ที่ส่งผิดใน markup, typo ใน template expression, CSS selector ที่ไม่ได้ใช้ Prettier และ ESLint (พร้อม plugin ของ Svelte ที่ `sv create` เสนอให้) เติมเรื่อง formatting และ linting ให้ครบ
+
+<Callout title="The one-line takeaway">
+scaffold ด้วย **`npx sv create`** (CLI ปัจจุบัน แทน `npm create svelte`) — มันตั้งค่าแอป **SvelteKit** บน **Vite** พร้อม TypeScript/Prettier/ESLint/testing แบบเลือกได้ Vite ให้ **HMR** ตอน dev และ **`vite build`** ที่ optimize แล้วสำหรับ production รักษาคุณภาพด้วย **Svelte editor extension** และ **`svelte-check`** ที่ type-check ไฟล์ `.svelte` รวม markup — จับ error ที่ `tsc` ธรรมดาทำไม่ได้
+</Callout>
+
+export const quizTooling = [
+  {
+    q: 'คำสั่งปัจจุบันสำหรับ scaffold โปรเจกต์ Svelte/SvelteKit ใหม่คืออะไร?',
+    options: [
+      'npm create svelte@latest',
+      'npx sv create',
+      'npx create-svelte-app',
+      'svelte new',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Vite ให้อะไรตอน development?',
+    options: [
+      'production database',
+      'dev server พร้อม hot module replacement (HMR)',
+      'type checking อย่างเดียว',
+      'ไม่มีอะไร — Svelte มี server ของตัวเอง',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมใช้ `svelte-check` แทน `tsc` ธรรมดา?',
+    options: [
+      'มันเร็วกว่าในทุกเรื่อง',
+      'มันเข้าใจไฟล์ .svelte แบบครบวงจร type-check expression ใน markup ที่ tsc มองไม่เห็น',
+      'มัน deploy แอป',
+      'มันแทน Vite',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/project-and-tooling" questions={quizTooling} />
+
+<ProgressTracker client:visible id="tooling-and-production/project-and-tooling" />

@@ -1,0 +1,131 @@
+---
+title: 'The $derived Rune'
+description: 'computed value ด้วย $derived และ $derived.by, การ track dependency อัตโนมัติ, caching และทำไม derived state ดีกว่า effect ที่เขียน state'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Computed value
+
+`$derived` ประกาศค่าที่คำนวณจากค่า reactive อื่น มันจะ recompute อัตโนมัติทุกครั้งที่ค่าที่มันอ่านเปลี่ยน — และมัน **cache** ไว้ ดังนั้นจะ recompute เฉพาะตอน dependency เปลี่ยนจริง ๆ
+
+```svelte
+<script>
+  let count = $state(2);
+  let double = $derived(count * 2);       // 4, and stays in sync
+  let label = $derived(`count is ${count}`);
+</script>
+
+<p>{double} — {label}</p>
+```
+
+คุณไม่ต้อง list dependency เลย compiler เห็นว่า `double` อ่าน `count` แล้ว rebuild `double` ตอน `count` เปลี่ยนพอดี ค่า derived เป็น read-only — คุณไม่ assign ค่าให้มัน มันคือ function ของ input
+
+## logic ซับซ้อน: $derived.by
+
+`$derived(expr)` รับ expression เดียว เมื่อการคำนวณต้องใช้หลาย statement — loop, ตัวแปรชั่วคราว, branch — ให้ใช้ **`$derived.by`** พร้อม function ที่ return ค่า
+
+```svelte
+<script>
+  let numbers = $state([1, 2, 3, 4]);
+
+  let stats = $derived.by(() => {
+    let sum = 0;
+    for (const n of numbers) sum += n;
+    return { sum, avg: sum / numbers.length };
+  });
+</script>
+
+<p>sum {stats.sum}, avg {stats.avg}</p>
+```
+
+`$derived(x)` ก็แค่ shorthand ของ `$derived.by(() => x)` dependency ยัง track อัตโนมัติ — อะไรก็ตามที่ function อ่านจะกลายเป็น dependency
+
+<Mermaid title="derived value recompute จาก dependency ที่ track" code={derivedDiagram} />
+
+export const derivedDiagram = `flowchart LR
+  a["$state count"] --> d["$derived double = count * 2"]
+  b["$state numbers"] --> e["$derived.by stats"]
+  d --> ui["DOM update เมื่อ input เปลี่ยน"]
+  e --> ui`;
+
+## Derive อย่า sync ด้วย effect
+
+ความผิดพลาดแบบ React-brain ที่พบบ่อยคือคำนวณค่าใน effect แล้วเขียนลง state:
+
+```svelte
+<script>
+  let count = $state(2);
+  let double = $state(0);
+
+  // ❌ Don't do this — an effect that mirrors derived state.
+  $effect(() => { double = count * 2; });
+</script>
+```
+
+แบบนี้แย่กว่าในทุกทาง: มี state ตัวเกิน, มี update cycle เกิน, มีโอกาสที่ `double` จะ out of sync ชั่วขณะ และ data flow ตามยากขึ้น เครื่องมือที่ถูกคือ `$derived`:
+
+```svelte
+<script>
+  let count = $state(2);
+  let double = $derived(count * 2);   // ✅ one source of truth, always in sync
+</script>
+```
+
+กฎง่าย ๆ: **ถ้าค่าหนึ่งคำนวณได้จาก state อื่น ให้ derive มัน — อย่าเก็บแล้ว sync** derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า เก็บ `$effect` ไว้ใช้กับ side effect จริง ๆ (บทหน้า) ไม่ใช่คำนวณค่า
+
+<Callout title="สรุปบรรทัดเดียว">
+`$derived(expression)` (หรือ **`$derived.by(() => { … })`** สำหรับ logic หลาย statement) ประกาศ **ค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น** recompute อัตโนมัติเมื่อ dependency ที่ track เปลี่ยน — ไม่ต้อง list dependency เอง เลือก derive ค่าดีกว่าเก็บใน `$state` แล้ว sync ด้วย `$effect`: derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า
+</Callout>
+
+export const quizDerived = [
+  {
+    q: '`$derived` ทำอะไร?',
+    options: [
+      'สร้าง writable state',
+      'ประกาศค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น recompute เมื่อมันเปลี่ยน',
+      'ทำ side effect',
+      'fetch data',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เมื่อไรใช้ `$derived.by` แทน `$derived`?',
+    options: [
+      'ไม่มีวัน — เหมือนกัน',
+      'เมื่อการคำนวณต้องใช้หลาย statement (loop, ตัวแปรชั่วคราว, branch) แทนที่จะเป็น expression เดียว',
+      'เฉพาะกับตัวเลข',
+      'เพื่อทำให้ writable',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Svelte รู้ได้ยังไงว่าค่า `$derived` ขึ้นกับ `count`?',
+    options: [
+      'คุณส่ง dependency array',
+      'compiler track ว่าการคำนวณ derived อ่าน `count`',
+      'คุณเรียก subscribe method',
+      'มัน recompute ทุก render',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมเลือก `$derived` แทน `$effect` ที่เขียน derived state?',
+    options: [
+      'effect ถูก deprecated',
+      'การ derive คงไว้ซึ่ง source of truth เดียว sync เสมอ ไม่มี state หรือ update cycle เกิน',
+      'effect อ่าน state ไม่ได้',
+      'ไม่มีความต่าง',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/derived-rune" questions={quizDerived} />
+
+<ProgressTracker client:visible id="reactivity/derived-rune" />

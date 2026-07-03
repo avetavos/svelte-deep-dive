@@ -1,0 +1,131 @@
+---
+title: 'The $derived Rune'
+description: 'Computed values with $derived and $derived.by, automatic dependency tracking, caching, and why derived state beats an effect that writes state.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Computed values
+
+`$derived` declares a value computed from other reactive values. It recomputes automatically whenever any value it reads changes — and it is **cached**, so it only recomputes when a dependency actually changed.
+
+```svelte
+<script>
+  let count = $state(2);
+  let double = $derived(count * 2);       // 4, and stays in sync
+  let label = $derived(`count is ${count}`);
+</script>
+
+<p>{double} — {label}</p>
+```
+
+You never list dependencies. The compiler sees that `double` reads `count` and rebuilds `double` exactly when `count` changes. Derived values are read-only — you don't assign to them; they are a function of their inputs.
+
+## Complex logic: $derived.by
+
+`$derived(expr)` takes a single expression. When the computation needs multiple statements — a loop, a temporary variable, a branch — use **`$derived.by`** with a function that returns the value.
+
+```svelte
+<script>
+  let numbers = $state([1, 2, 3, 4]);
+
+  let stats = $derived.by(() => {
+    let sum = 0;
+    for (const n of numbers) sum += n;
+    return { sum, avg: sum / numbers.length };
+  });
+</script>
+
+<p>sum {stats.sum}, avg {stats.avg}</p>
+```
+
+`$derived(x)` is just shorthand for `$derived.by(() => x)`. Dependencies are still tracked automatically — anything the function reads becomes a dependency.
+
+<Mermaid title="Derived values recompute from their tracked dependencies" code={derivedDiagram} />
+
+export const derivedDiagram = `flowchart LR
+  a["$state count"] --> d["$derived double = count * 2"]
+  b["$state numbers"] --> e["$derived.by stats"]
+  d --> ui["DOM updates when inputs change"]
+  e --> ui`;
+
+## Derive, do not sync with an effect
+
+A common React-brain mistake is to compute a value in an effect and write it into state:
+
+```svelte
+<script>
+  let count = $state(2);
+  let double = $state(0);
+
+  // ❌ Don't do this — an effect that mirrors derived state.
+  $effect(() => { double = count * 2; });
+</script>
+```
+
+This is worse in every way: an extra state variable, an extra update cycle, a chance for `double` to be briefly out of sync, and harder-to-follow data flow. The right tool is `$derived`:
+
+```svelte
+<script>
+  let count = $state(2);
+  let double = $derived(count * 2);   // ✅ one source of truth, always in sync
+</script>
+```
+
+Rule of thumb: **if a value can be computed from other state, derive it — don't store it and sync it.** Reach for `$effect` only for genuine side effects (the next lesson), not for computing values.
+
+<Callout title="The one-line takeaway">
+`$derived(expression)` (or **`$derived.by(() => { … })`** for multi-statement logic) declares a **cached, read-only value computed from other reactive values**, recomputed automatically when a tracked dependency changes — with no manual dependency lists. Prefer deriving a value over storing it in `$state` and syncing it with an `$effect`: derived state is one source of truth, always consistent, and simpler.
+</Callout>
+
+export const quizDerived = [
+  {
+    q: 'What does `$derived` do?',
+    options: [
+      'Creates writable state',
+      'Declares a cached, read-only value computed from other reactive values, recomputed when they change',
+      'Runs a side effect',
+      'Fetches data',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When do you use `$derived.by` instead of `$derived`?',
+    options: [
+      'Never — they are identical',
+      'When the computation needs multiple statements (a loop, temporaries, branches) rather than one expression',
+      'Only for numbers',
+      'To make it writable',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How does Svelte know a `$derived` value depends on `count`?',
+    options: [
+      'You pass a dependency array',
+      'The compiler tracks that the derived computation reads `count`',
+      'You call a subscribe method',
+      'It recomputes on every render',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why prefer `$derived` over an `$effect` that writes derived state?',
+    options: [
+      'Effects are deprecated',
+      'Deriving keeps one source of truth, always in sync, with no extra state or update cycle',
+      'Effects cannot read state',
+      'There is no difference',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/derived-rune" questions={quizDerived} />
+
+<ProgressTracker client:visible id="reactivity/derived-rune" />

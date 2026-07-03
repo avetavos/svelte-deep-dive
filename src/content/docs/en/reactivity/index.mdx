@@ -1,0 +1,94 @@
+---
+title: 'Reactivity with Runes'
+description: 'Runes are the compiler signals that make values reactive. The overview of $state, $derived, $effect, and $props, and the shift from Svelte 4 to Svelte 5.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Runes: explicit reactivity
+
+A **rune** is a compiler signal — a function-like keyword prefixed with `$` — that tells Svelte "this value is reactive." Runes are not imported and not called at runtime like normal functions; the compiler recognizes them and generates the reactivity machinery around them.
+
+```svelte
+<script>
+  let count = $state(0);        // reactive state
+  let double = $derived(count * 2);  // recomputed when count changes
+  $effect(() => console.log(double)); // runs when double changes
+</script>
+```
+
+The whole model is: **mark reactive values with runes, and the compiler wires up the dependency graph.** You never write dependency arrays or subscription code — the compiler sees that `double` reads `count` and that the effect reads `double`, and connects them.
+
+## The Svelte 4 → 5 shift
+
+Runes are the headline change in Svelte 5. They **replaced** three separate Svelte 4 mechanisms with one consistent system:
+
+| Svelte 4 | Svelte 5 |
+|----------|----------|
+| `let count = 0` (top-level `let` was implicitly reactive) | `let count = $state(0)` |
+| `$: double = count * 2` (reactive statement) | `let double = $derived(count * 2)` |
+| `$: { … }` (reactive block, side effects) | `$effect(() => { … })` |
+| `export let name` (props) | `let { name } = $props()` |
+
+Why the change? In Svelte 4, reactivity was *implicit* — a plain `let` at the top of a component was reactive, but the same code in a `.js` file was not, and `$:` had confusing edge cases. Runes make reactivity **explicit and portable**: `$state` means the same thing in a component and in a `.svelte.js` module, and the rules are uniform.
+
+<Mermaid title="Runes mark reactivity; the compiler wires the graph" code={runeDiagram} />
+
+export const runeDiagram = `flowchart LR
+  state["$state — a reactive source"] --> derived["$derived — recomputes from sources"]
+  derived --> effect["$effect — runs when its reads change"]
+  props["$props — reactive inputs from parent"] --> derived`;
+
+## What this module covers
+
+- **`$state`** — reactive state, deep by default for objects and arrays.
+- **`$derived`** — cached values computed from other reactive values.
+- **`$effect`** — synchronize with the outside world (and why you usually should not).
+- **`$props` / `$bindable`** — component inputs and two-way binding.
+- **Advanced** — `$inspect`, `untrack`, and shared reactive state in `.svelte.js` modules.
+
+<Callout title="The one-line takeaway">
+**Runes** are `$`-prefixed compiler signals that make reactivity **explicit**: `$state` (reactive state), `$derived` (computed values), `$effect` (side effects), and `$props` (inputs). In Svelte 5 they **replaced** Svelte 4's implicit `let` reactivity, `$:` statements, and `export let` props — with one uniform system that works the same inside components and in `.svelte.js` modules. You mark what is reactive; the compiler wires the dependency graph.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'What is a rune?',
+    options: [
+      'A runtime function you import from svelte',
+      'A `$`-prefixed compiler signal that marks a value as reactive',
+      'A CSS directive',
+      'A store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In Svelte 5, what replaced the Svelte 4 `$: double = count * 2` reactive statement?',
+    options: [
+      'Nothing — it is unchanged',
+      '`let double = $derived(count * 2)`',
+      '`$effect(() => double = count * 2)`',
+      'A store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why did Svelte 5 introduce runes?',
+    options: [
+      'To add more syntax for its own sake',
+      'To make reactivity explicit and portable — the same rules inside components and in .svelte.js modules',
+      'To remove reactivity',
+      'To match React',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="reactivity/index" />

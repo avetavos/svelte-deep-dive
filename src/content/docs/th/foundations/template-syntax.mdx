@@ -1,0 +1,138 @@
+---
+title: 'Template Syntax'
+description: 'expression, logic block {#if}, {#each}, {#await} และ {#key} บวกกับ {@html} และ {@render} — markup ของ Svelte แสดง UI ที่ dynamic อย่างไร'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## expression
+
+`{expression}` ใด ๆ ใน markup จะฝังค่า JavaScript ลงไป เพราะ Svelte track reactivity ผ่าน runes เมื่อ expression ขึ้นกับ reactive state compiler จะอัปเดตจุดนั้นให้อัตโนมัติ
+
+```svelte
+<script>
+  let user = $state({ name: 'Ada', points: 42 });
+</script>
+
+<p>{user.name} has {user.points} points</p>
+<p>{user.points > 40 ? 'VIP' : 'member'}</p>   <!-- any JS expression -->
+<img src={user.avatar} alt={user.name} />       <!-- in attributes too -->
+```
+
+## logic block
+
+ไม่เหมือน JSX (ที่ใช้ `&&` และ `.map()` ของ JavaScript) Svelte มี **block** syntax เฉพาะสำหรับ control flow มันอ่านเหมือน HTML และ compiler optimize มันได้ตรง ๆ
+
+**conditional — `{#if}`:**
+
+```svelte
+{#if loggedIn}
+  <p>Welcome back</p>
+{:else if guest}
+  <p>Browsing as guest</p>
+{:else}
+  <button onclick={login}>Log in</button>
+{/if}
+```
+
+**list — `{#each}`** (มี keyed identity ผ่าน expression `(item.id)` เพื่อให้ compiler track item ข้าม reorder ได้):
+
+```svelte
+{#each todos as todo (todo.id)}
+  <li>{todo.text}</li>
+{:else}
+  <li>No todos yet</li>   <!-- rendered when the list is empty -->
+{/each}
+```
+
+**async — `{#await}`** จัดการ pending, resolved และ rejected ของ promise แบบ inline:
+
+```svelte
+{#await fetchUser()}
+  <p>Loading…</p>
+{:then user}
+  <p>Hello {user.name}</p>
+{:catch error}
+  <p>Failed: {error.message}</p>
+{/await}
+```
+
+<Mermaid title="template block และสิ่งที่แต่ละอันแสดง" code={blockDiagram} />
+
+export const blockDiagram = `flowchart TB
+  tmpl["Svelte markup"] --> ifb["{#if} conditional branches"]
+  tmpl --> each["{#each} lists (keyed by id)"]
+  tmpl --> awaitb["{#await} promise states"]
+  tmpl --> key["{#key} destroy and recreate on change"]`;
+
+block `{#key expression}` จะ destroy และสร้างเนื้อหาข้างในใหม่ทุกครั้งที่ expression เปลี่ยน — มีประโยชน์เมื่อต้องการบังคับ re-mount (reset state หรือเล่น transition ซ้ำ)
+
+## render raw HTML และ snippet
+
+- **`{@html string}`** inject raw HTML string (ข้ามการ escape) ใช้เฉพาะกับเนื้อหาที่เชื่อถือได้/sanitize แล้ว — ไม่งั้นมันคือช่องโหว่ XSS
+- **`{@render snippet()}`** render *snippet* — block markup ที่ใช้ซ้ำได้ของ Svelte 5 ซึ่งมาแทนกลไก `<slot>` เดิม snippet มีบทเรียนเต็มทีหลัง ตอนนี้แค่รู้ว่า `{@render …}` คือวิธีที่เนื้อหา snippet ลงมาใน markup
+
+```svelte
+{@html sanitizedMarkdown}
+
+{#snippet greeting(name)}
+  <p>Hello {name}</p>
+{/snippet}
+{@render greeting('world')}
+```
+
+<Callout title="สรุปหนึ่งบรรทัด">
+markup ของ Svelte ฝังค่าด้วย **`{expression}`** และแสดง control flow ด้วย **block** เฉพาะ: `{#if}/{:else}` สำหรับ conditional, `{#each … as item (id)}` สำหรับ keyed list (มี `{:else}` เป็น empty case), `{#await}` สำหรับ pending/then/catch ของ promise และ `{#key}` เพื่อบังคับสร้างใหม่ ส่วน **`{@html}`** inject raw HTML ที่เชื่อถือได้ และ **`{@render snippet()}`** render snippet ของ Svelte 5 (ตัวแทนของ `<slot>`)
+</Callout>
+
+export const quizTemplate = [
+  {
+    q: 'Svelte แสดง conditional rendering อย่างไร?',
+    options: [
+      'ด้วย `&&` ของ JavaScript ใน markup แบบ JSX',
+      'ด้วย block `{#if}…{:else}…{/if}` เฉพาะ',
+      'ด้วย attribute v-if',
+      'มัน render แบบ conditional ไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมถึงใส่ `(todo.id)` ใน block `{#each todos as todo (todo.id)}`?',
+    options: [
+      'เป็น syntax บังคับที่ไม่มีผลอะไร',
+      'มันให้ keyed identity ที่คงที่กับแต่ละ item เพื่อให้ compiler track item ได้ถูกต้องข้าม reorder',
+      'มัน sort list',
+      'มันจำกัดความยาว list',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`{#await promise}` ทำอะไร?',
+    options: [
+      'block การ render จนกว่า promise จะ resolve',
+      'จัดการ pending, resolved (`{:then}`) และ rejected (`{:catch}`) ของ promise แบบ inline ใน markup',
+      'cache promise',
+      'รัน promise บน server',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`{@render snippet()}` มีไว้ทำอะไร?',
+    options: [
+      'inject raw HTML',
+      'render snippet ของ Svelte 5 — block markup ที่ใช้ซ้ำได้ ซึ่งมาแทน `<slot>` เดิม',
+      'รัน store',
+      'กำหนด route',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/template-syntax" questions={quizTemplate} />
+
+<ProgressTracker client:visible id="foundations/template-syntax" />

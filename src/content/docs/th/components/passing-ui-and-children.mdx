@@ -1,0 +1,133 @@
+---
+title: 'Passing UI & Children'
+description: 'ส่ง markup เข้า component ผ่าน children snippet, named snippet props สำหรับ layout ที่ยืดหยุ่น และเทียบกับ React children และ render props'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## children snippet
+
+เมื่อคุณวาง markup ไว้ *ระหว่าง* tag ของ component, Svelte จะส่งมันให้ component เป็น snippet prop ชื่อ **`children`** component render มันด้วย `{@render children()}`
+
+```svelte
+<!-- Card.svelte -->
+<script>
+  let { children } = $props();
+</script>
+
+<div class="card">
+  {@render children()}     <!-- อะไรก็ตามที่ parent ใส่ nested เข้ามาอยู่ตรงนี้ -->
+</div>
+```
+
+```svelte
+<!-- Parent -->
+<Card>
+  <h2>Title</h2>
+  <p>markup ตรงนี้กลายเป็น children ของ card</p>
+</Card>
+```
+
+นี่คือตัวเทียบเท่าของ React `children` (หรือ default `<slot>` ของ Svelte 4) ใน Svelte 5: component ห่อที่ reuse ได้โดยไม่ต้องรู้ว่าห่ออะไร
+
+<Mermaid title="markup ที่ nested มาถึงเป็น children snippet" code={childrenDiagram} />
+
+export const childrenDiagram = `flowchart LR
+  parent["Card ...markup... Card"] --> prop["child รับ children snippet"]
+  prop --> render["render children()"]
+  render --> out["markup render ในการ์ด"]`;
+
+## Named snippet props สำหรับหลาย slot
+
+สำหรับ component ที่มีหลายจุดใส่ content (header, body, footer) ให้ส่ง **named snippets** เป็น props นิยามใน parent ด้วย `{#snippet name()}` *ภายใน* tag ของ component แล้ว child จะรับแต่ละอันเป็น prop
+
+```svelte
+<!-- Modal.svelte -->
+<script>
+  let { header, children, footer } = $props();
+</script>
+
+<div class="modal">
+  <div class="modal-header">{@render header()}</div>
+  <div class="modal-body">{@render children()}</div>
+  <div class="modal-footer">{@render footer()}</div>
+</div>
+```
+
+```svelte
+<Modal>
+  {#snippet header()}<h2>Confirm</h2>{/snippet}
+  <p>Are you sure?</p>                          <!-- default children -->
+  {#snippet footer()}<button>OK</button>{/snippet}
+</Modal>
+```
+
+## ส่งข้อมูลกลับด้วยพารามิเตอร์ของ snippet
+
+เพราะ snippet รับพารามิเตอร์ได้ component จึงส่งข้อมูล *ออก* ไปให้ markup ที่ parent ให้มาได้ — pattern ที่ React เรียกว่า **render props** child เรียก snippet พร้อมค่า และ snippet ของ parent รับมันไป:
+
+```svelte
+<!-- List.svelte -->
+<script>
+  let { items, row } = $props();
+</script>
+{#each items as item (item.id)}
+  {@render row(item)}       <!-- ส่ง item แต่ละตัวกลับไปให้ snippet ของ parent -->
+{/each}
+```
+
+```svelte
+<List items={products}>
+  {#snippet row(product)}
+    <li>{product.name} — ${product.price}</li>   <!-- parent ตัดสินใจ markup -->
+  {/snippet}
+</List>
+```
+
+child เป็นเจ้าของการวน iteration; parent เป็นเจ้าของ markup ต่อ item การกลับด้านนี้ — child ให้ข้อมูล, parent ให้การแสดงผล — คือ render-prop pattern ที่แสดงออกมาสวยงามด้วย snippet
+
+<Callout title="สรุปหนึ่งบรรทัด">
+markup ที่ nested ระหว่าง tag ของ component มาถึงเป็น **`children`** snippet, render ด้วย **`{@render children()}`** — ตัวเทียบเท่าของ React `children` ใน Svelte 5 สำหรับหลายจุดใส่ content ให้ส่ง **named snippet props** (`{#snippet header()}…` ภายใน tag) และเพราะ snippet รับ **พารามิเตอร์** ได้ child จึงส่งข้อมูลกลับไปให้ snippet ที่ parent ให้มาได้ — คือ render-prop pattern
+</Callout>
+
+export const quizChildren = [
+  {
+    q: 'component รับ markup ที่ nested ระหว่าง tag ของมันยังไง?',
+    options: [
+      'เป็น string prop',
+      'เป็น snippet prop ชื่อ `children`, render ด้วย `{@render children()}`',
+      'ผ่าน DOM',
+      'ไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ให้หลายจุดใส่ content แบบมีชื่อกับ component ยังไง?',
+    options: [
+      'ใช้หลาย component',
+      'named snippet props — `{#snippet header()}…{/snippet}` วางภายใน tag ของ component',
+      'CSS grid',
+      'store ต่อ slot',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'component ส่งข้อมูลออกไปให้ markup ที่ parent ให้มา (render props) ยังไง?',
+    options: [
+      'ผ่าน event เท่านั้น',
+      'โดย render snippet prop พร้อม argument — `{@render row(item)}` — ที่ snippet ของ parent รับไป',
+      'ผ่าน context เท่านั้น',
+      'ส่งข้อมูลกลับไม่ได้',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/passing-ui-and-children" questions={quizChildren} />
+
+<ProgressTracker client:visible id="components/passing-ui-and-children" />

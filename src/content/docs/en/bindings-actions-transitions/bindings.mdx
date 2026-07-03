@@ -1,0 +1,139 @@
+---
+title: 'Bindings'
+description: 'Two-way bindings — bind:value, bind:checked, bind:group, bind:this, and binding to component props — and how they are sugar over a value plus an event.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Two-way binding is sugar over value + event
+
+Normally data flows one way: state → the DOM. A **binding** adds the reverse edge, so a form element also writes back to state. `bind:value` is shorthand for "set the input's value from this state, and update this state on input."
+
+```svelte
+<script>
+  let name = $state('');
+</script>
+
+<input bind:value={name} />
+<p>Hello {name}</p>
+
+<!-- Equivalent, written by hand:
+<input value={name} oninput={(e) => name = e.currentTarget.value} /> -->
+```
+
+The binding keeps the two in sync automatically. It works on any input-like element: `bind:value` for text/number/select, `bind:checked` for checkboxes, `bind:files` for file inputs.
+
+## Groups: bind:group
+
+Radio buttons and checkbox groups that share one piece of state use **`bind:group`** — Svelte wires the whole set to a single variable.
+
+```svelte
+<script>
+  let flavor = $state('vanilla');       // radios: a single value
+  let toppings = $state([]);            // checkboxes: an array
+</script>
+
+<label><input type="radio" bind:group={flavor} value="vanilla" /> Vanilla</label>
+<label><input type="radio" bind:group={flavor} value="chocolate" /> Chocolate</label>
+
+<label><input type="checkbox" bind:group={toppings} value="nuts" /> Nuts</label>
+<label><input type="checkbox" bind:group={toppings} value="cherry" /> Cherry</label>
+```
+
+For radios, `flavor` holds the selected value; for checkboxes, `toppings` is an array of the checked values.
+
+## bind:this for element and component references
+
+To get a reference to the actual DOM node (or a component instance), use **`bind:this`**. It's set after the element mounts — read it in an effect or event handler, not during initial render.
+
+```svelte
+<script>
+  let canvas = $state();      // will hold the DOM node
+
+  $effect(() => {
+    const ctx = canvas.getContext('2d');   // safe: runs after mount
+    ctx.fillRect(0, 0, 50, 50);
+  });
+</script>
+
+<canvas bind:this={canvas} width="200" height="200"></canvas>
+```
+
+## Binding to component props
+
+A parent can bind to a child component's prop when the child declares that prop as `$bindable()` (from the reactivity module). This creates two-way data flow across the component boundary.
+
+```svelte
+<!-- Child.svelte -->
+<script>
+  let { value = $bindable() } = $props();
+</script>
+<input bind:value={value} />
+```
+
+```svelte
+<!-- Parent.svelte -->
+<script>
+  import Child from './Child.svelte';
+  let text = $state('hi');
+</script>
+<Child bind:value={text} />   <!-- parent's text and child's value stay in sync -->
+```
+
+Use component bindings deliberately — they let a child mutate a parent's state, which is powerful but can obscure data flow if overused. Props-down/events-up is often clearer for anything beyond simple form controls.
+
+<Callout title="The one-line takeaway">
+A **`bind:`** directive adds the reverse data edge (DOM → state) on top of the normal state → DOM flow — `bind:value` is sugar for a value plus an `oninput` handler. Use **`bind:group`** for radio/checkbox sets sharing one variable, **`bind:this`** to capture a DOM node or component instance (available after mount, read it in an effect), and **`bind:`** to a child's **`$bindable()`** prop for two-way flow across components — sparingly.
+</Callout>
+
+export const quizBindings = [
+  {
+    q: 'What is `bind:value={name}` shorthand for?',
+    options: [
+      'A one-time assignment',
+      'Setting the input value from state AND updating that state on input — a two-way link',
+      'A CSS binding',
+      'A server call',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What do you use for a set of radio buttons sharing one selected value?',
+    options: [
+      'bind:value on each',
+      '`bind:group` bound to a single variable',
+      'bind:this',
+      'A separate store per radio',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When is a `bind:this` reference available?',
+    options: [
+      'During the initial render, before mount',
+      'After the element mounts — read it in an effect or event handler',
+      'Never',
+      'Only on the server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What must a child declare to allow a parent to `bind:` to its prop?',
+    options: [
+      'export let',
+      'The prop as `$bindable()` inside `$props()`',
+      'A store',
+      'Nothing — all props are bindable',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/bindings" questions={quizBindings} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/bindings" />

@@ -1,0 +1,123 @@
+---
+title: 'Snippets & Render'
+description: 'Defining reusable markup with {#snippet}, rendering it with {@render}, snippet parameters, and how snippets replaced Svelte 4 slots.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Snippets: reusable chunks of markup
+
+A **snippet** is a named block of markup you can render multiple times. Define it with `{#snippet name(params)}…{/snippet}` and render it with `{@render name(args)}`. It's Svelte's way to stay DRY inside a template.
+
+```svelte
+<script>
+  let items = $state([
+    { name: 'Coffee', price: 3 },
+    { name: 'Tea', price: 2 },
+  ]);
+</script>
+
+{#snippet row(item)}
+  <tr><td>{item.name}</td><td>${item.price}</td></tr>
+{/snippet}
+
+<table>
+  {#each items as item (item.name)}
+    {@render row(item)}
+  {/each}
+</table>
+```
+
+The snippet `row` is defined once and rendered per item. Snippets take **parameters** like functions, so the same markup adapts to different data.
+
+<Mermaid title="Define once, render many times" code={snippetDiagram} />
+
+export const snippetDiagram = `flowchart LR
+  def["{#snippet row(item)} ... {/snippet}"] --> render1["{@render row(a)}"]
+  def --> render2["{@render row(b)}"]
+  render1 --> out["markup instances"]
+  render2 --> out`;
+
+## Snippets replaced slots
+
+In **Svelte 4**, you passed markup into a component with `<slot>` (and named slots via `<slot name="x">`). **Svelte 5 replaced that entirely with snippets** — they're more powerful because they can take parameters and are just values you pass around.
+
+```svelte
+<!-- Svelte 4 (old):  a component defined <slot /> and <slot name="header" /> -->
+<!-- Svelte 5 (new):  a component renders {@render children()} and {@render header()} -->
+```
+
+If you're reading older tutorials that use `<slot>`, the modern equivalent is a snippet rendered with `{@render}`. The next lesson covers exactly how a parent passes snippets (including the special `children` snippet) into a child.
+
+## Snippets are values
+
+Because a snippet is a value, you can pass it to another snippet, store it in a variable, or choose between snippets conditionally:
+
+```svelte
+{#snippet loading()}<p>Loading…</p>{/snippet}
+{#snippet ready(data)}<p>{data}</p>{/snippet}
+
+{#if isLoading}
+  {@render loading()}
+{:else}
+  {@render ready(result)}
+{/if}
+```
+
+This composability — snippets as first-class, parameterized values — is why they replaced the more rigid slot mechanism.
+
+<Callout title="The one-line takeaway">
+A **snippet** is a named, parameterized block of markup: define it with **`{#snippet name(params)}…{/snippet}`** and render it with **`{@render name(args)}`**. Snippets keep templates DRY and are **Svelte 5's replacement for `<slot>`** — more powerful because they take parameters and are first-class values you can pass around and choose between.
+</Callout>
+
+export const quizSnippets = [
+  {
+    q: 'How do you define and render a snippet?',
+    options: [
+      'With `<slot>` and `<template>`',
+      'Define with `{#snippet name()}…{/snippet}`, render with `{@render name()}`',
+      'With a store',
+      'With `use:snippet`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What did snippets replace in Svelte 5?',
+    options: [
+      'Props',
+      'The `<slot>` mechanism from Svelte 4',
+      'Stores',
+      'Events',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why are snippets more powerful than slots?',
+    options: [
+      'They are faster to type',
+      'They take parameters and are first-class values you can pass around and select between',
+      'They are styled automatically',
+      'They run on the server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Can a snippet take parameters?',
+    options: [
+      'No',
+      'Yes — like a function, e.g. `{#snippet row(item)}` rendered with `{@render row(x)}`',
+      'Only strings',
+      'Only on the server',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/snippets-and-render" questions={quizSnippets} />
+
+<ProgressTracker client:visible id="components/snippets-and-render" />

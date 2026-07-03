@@ -1,0 +1,123 @@
+---
+title: 'Snippets & Render'
+description: 'นิยาม markup ที่ reuse ได้ด้วย {#snippet}, render ด้วย {@render}, พารามิเตอร์ของ snippet และ snippet มาแทน slot ของ Svelte 4 อย่างไร'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Snippets: ก้อน markup ที่ reuse ได้
+
+**snippet** คือ block ของ markup ที่มีชื่อ ซึ่ง render ซ้ำได้หลายครั้ง นิยามด้วย `{#snippet name(params)}…{/snippet}` และ render ด้วย `{@render name(args)}` เป็นวิธีของ Svelte ที่ทำให้ template DRY
+
+```svelte
+<script>
+  let items = $state([
+    { name: 'Coffee', price: 3 },
+    { name: 'Tea', price: 2 },
+  ]);
+</script>
+
+{#snippet row(item)}
+  <tr><td>{item.name}</td><td>${item.price}</td></tr>
+{/snippet}
+
+<table>
+  {#each items as item (item.name)}
+    {@render row(item)}
+  {/each}
+</table>
+```
+
+snippet `row` นิยามครั้งเดียวและ render ต่อ item แต่ละตัว snippet รับ **พารามิเตอร์** ได้เหมือนฟังก์ชัน markup เดียวกันจึงปรับตามข้อมูลที่ต่างกันได้
+
+<Mermaid title="นิยามครั้งเดียว render หลายครั้ง" code={snippetDiagram} />
+
+export const snippetDiagram = `flowchart LR
+  def["snippet row(item) ... end"] --> render1["render row(a)"]
+  def --> render2["render row(b)"]
+  render1 --> out["instance ของ markup"]
+  render2 --> out`;
+
+## Snippets มาแทน slots
+
+ใน **Svelte 4** เราส่ง markup เข้า component ด้วย `<slot>` (และ named slot ผ่าน `<slot name="x">`) **Svelte 5 แทนที่สิ่งนั้นทั้งหมดด้วย snippets** — ซึ่งทรงพลังกว่าเพราะรับพารามิเตอร์ได้และเป็นแค่ค่าที่ส่งไปมาได้
+
+```svelte
+<!-- Svelte 4 (เดิม):  component นิยาม <slot /> และ <slot name="header" /> -->
+<!-- Svelte 5 (ใหม่):  component render {@render children()} และ {@render header()} -->
+```
+
+ถ้าคุณอ่าน tutorial เก่าที่ใช้ `<slot>` ตัวเทียบเท่าสมัยใหม่คือ snippet ที่ render ด้วย `{@render}` บทถัดไปจะอธิบายว่า parent ส่ง snippet (รวมถึง `children` snippet พิเศษ) เข้า child อย่างไร
+
+## Snippets เป็นค่า
+
+เพราะ snippet เป็นค่า คุณจึงส่งมันไปให้ snippet อื่น เก็บใน variable หรือเลือกระหว่าง snippet แบบมีเงื่อนไขได้:
+
+```svelte
+{#snippet loading()}<p>Loading…</p>{/snippet}
+{#snippet ready(data)}<p>{data}</p>{/snippet}
+
+{#if isLoading}
+  {@render loading()}
+{:else}
+  {@render ready(result)}
+{/if}
+```
+
+ความ composable นี้ — snippet เป็น first-class value ที่รับพารามิเตอร์ได้ — คือเหตุผลที่มันมาแทนกลไก slot ที่ยืดหยุ่นน้อยกว่า
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**snippet** คือ block ของ markup ที่มีชื่อและรับพารามิเตอร์: นิยามด้วย **`{#snippet name(params)}…{/snippet}`** และ render ด้วย **`{@render name(args)}`** snippet ทำให้ template DRY และเป็น **ตัวแทน `<slot>` ใน Svelte 5** — ทรงพลังกว่าเพราะรับพารามิเตอร์และเป็น first-class value ที่ส่งไปมาและเลือกได้
+</Callout>
+
+export const quizSnippets = [
+  {
+    q: 'นิยามและ render snippet ยังไง?',
+    options: [
+      'ด้วย `<slot>` และ `<template>`',
+      'นิยามด้วย `{#snippet name()}…{/snippet}`, render ด้วย `{@render name()}`',
+      'ด้วย store',
+      'ด้วย `use:snippet`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'snippet มาแทนอะไรใน Svelte 5?',
+    options: [
+      'props',
+      'กลไก `<slot>` ของ Svelte 4',
+      'Stores',
+      'events',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม snippet ถึงทรงพลังกว่า slot?',
+    options: [
+      'พิมพ์เร็วกว่า',
+      'มันรับพารามิเตอร์ได้และเป็น first-class value ที่ส่งไปมาและเลือกได้',
+      'มันถูก style อัตโนมัติ',
+      'มัน run บน server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'snippet รับพารามิเตอร์ได้ไหม?',
+    options: [
+      'ไม่ได้',
+      'ได้ — เหมือนฟังก์ชัน เช่น `{#snippet row(item)}` render ด้วย `{@render row(x)}`',
+      'ได้แค่ string',
+      'ได้แค่บน server',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/snippets-and-render" questions={quizSnippets} />
+
+<ProgressTracker client:visible id="components/snippets-and-render" />

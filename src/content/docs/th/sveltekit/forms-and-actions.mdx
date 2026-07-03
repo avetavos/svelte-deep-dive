@@ -1,0 +1,145 @@
+---
+title: 'Forms & Actions'
+description: 'form actions ใน +page.server.js, การอ่าน form data, การ return validation error ด้วย fail และ progressive enhancement ด้วย use:enhance'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## form POST ไปที่ actions
+
+SvelteKit จัดการการ submit form ด้วย **actions** — server function ใน `+page.server.js` ที่รับข้อมูลที่ส่งมา form HTML ธรรมดา `<form method="POST">` จะ post ไปหามัน ฟีเจอร์นี้จึงทำงานได้ *ก่อน JavaScript จะโหลดด้วยซ้ำ*
+
+```js
+// src/routes/login/+page.server.js
+import { fail, redirect } from '@sveltejs/kit';
+
+export const actions = {
+  default: async ({ request, cookies }) => {
+    const data = await request.formData();
+    const email = data.get('email');
+    const password = data.get('password');
+
+    if (!email || !password) {
+      // Return a 400 with the values so the form can re-render the error.
+      return fail(400, { email, missing: true });
+    }
+
+    const user = await authenticate(email, password);
+    if (!user) return fail(401, { email, incorrect: true });
+
+    cookies.set('session', user.token, { path: '/' });
+    redirect(303, '/dashboard');   // throw a redirect on success
+  },
+};
+```
+
+```svelte
+<!-- src/routes/login/+page.svelte -->
+<script>
+  let { form } = $props();    // the action's returned value (e.g. fail data)
+</script>
+
+<form method="POST">
+  <input name="email" value={form?.email ?? ''} />
+  <input name="password" type="password" />
+  {#if form?.incorrect}<p>Wrong email or password</p>{/if}
+  <button>Log in</button>
+</form>
+```
+
+ค่าที่ action return (รวมถึงข้อมูลจาก `fail(...)`) มาถึงเป็น **`form` prop** ตอนสำเร็จคุณ `redirect` ตอนล้มเหลวคุณ `fail(status, data)` เพื่อให้เพจ re-render พร้อม error และเก็บ input ของผู้ใช้ไว้
+
+## named actions
+
+หนึ่งเพจมีได้หลาย action — เช่น form login กับ form register ตั้งชื่อให้มัน แล้วเจาะไปที่ตัวใดตัวหนึ่งด้วย `action="?/name"`:
+
+```js
+export const actions = {
+  login:    async ({ request }) => { /* … */ },
+  register: async ({ request }) => { /* … */ },
+};
+```
+
+```svelte
+<form method="POST" action="?/login">…</form>
+<form method="POST" action="?/register">…</form>
+```
+
+## progressive enhancement ด้วย use:enhance
+
+form ข้างบนทำงานได้อยู่แล้วโดย **ไม่มี JavaScript** — browser post, server ตอบ, เพจ reload พอเพิ่ม **`use:enhance`** จาก `$app/forms` SvelteKit จะยกระดับให้เป็นการ submit แบบ AJAX ที่ลื่น (ไม่ reload ทั้งหน้า) อัปเดต `form` prop และ invalidate ข้อมูลของ `load` ให้อัตโนมัติ — ขณะที่ยังคง fallback แบบไม่มี JS ไว้
+
+```svelte
+<script>
+  import { enhance } from '$app/forms';
+</script>
+
+<form method="POST" use:enhance>   <!-- works without JS, better with it -->
+  …
+</form>
+```
+
+<Mermaid title="progressive enhancement: ทำงานได้ไม่มี JS ดีขึ้นเมื่อมี" code={enhanceDiagram} />
+
+export const enhanceDiagram = `flowchart TB
+  nojs["ไม่มี JS: browser POST form"] --> server["action รันบน server"]
+  js["มี use:enhance: AJAX submit ไม่ reload"] --> server
+  server --> result["สำเร็จ redirect หรือ fail data ไป form prop"]`;
+
+นี่คือลายเซ็นของ SvelteKit: สร้างด้วย form ธรรมดาที่ทำงานได้ทุกที่ แล้วค่อย enhance เพื่อประสบการณ์ที่ดีขึ้น — แทนที่จะเป็น form ที่ใช้ JS อย่างเดียวและพังเมื่อไม่มีมัน
+
+<Callout title="สรุปหนึ่งบรรทัด">
+จัดการการ submit form ด้วย **actions** ใน `+page.server.js` — `<form method="POST">` post ไปหามัน จึงทำงานได้ **โดยไม่มี JavaScript** อ่าน `await request.formData()`, return **`fail(status, data)`** สำหรับ validation error (มาถึงเป็น **`form` prop** พร้อมเก็บ input ไว้) หรือ **`redirect`** เมื่อสำเร็จ; ใช้ `action="?/name"` สำหรับ **named actions** เพิ่ม **`use:enhance`** (จาก `$app/forms`) เพื่อ submit แบบ AJAX ที่ลื่นขณะยังคง fallback แบบไม่มี JS — progressive enhancement
+</Callout>
+
+export const quizForms = [
+  {
+    q: 'form actions ของ SvelteKit อยู่ที่ไหน',
+    options: [
+      'ใน `+page.svelte`',
+      'ใน `+page.server.js` เป็น object `actions`',
+      'ใน global config',
+      'ใน `+server.js` เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'action รายงาน validation error ขณะเก็บ input ของผู้ใช้ไว้ยังไง',
+    options: [
+      'throw Error ทั่วไป',
+      'return `fail(status, data)` — data มาถึงเป็น `form` prop เพจจึง re-render พร้อม error',
+      'redirect ไปหน้า error',
+      'console.log error',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม form ของ SvelteKit ทำงานได้โดยไม่มี JavaScript',
+    options: [
+      'มันทำไม่ได้ — ต้องมี JS',
+      '`<form method="POST">` ธรรมดา post ไปที่ server action; browser จัดการเองแบบ native',
+      'มันใช้ service worker',
+      'มัน pre-render ทุก response',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`use:enhance` (จาก `$app/forms`) เพิ่มอะไร',
+    options: [
+      'ปิดการใช้งาน form',
+      'ยกระดับ form ธรรมดาให้ submit แบบ AJAX ที่ลื่น (ไม่ reload ทั้งหน้า) ขณะยังคง fallback แบบไม่มี JS',
+      'validate ฝั่ง client เท่านั้น',
+      'จัดสไตล์ form',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/forms-and-actions" questions={quizForms} />
+
+<ProgressTracker client:visible id="sveltekit/forms-and-actions" />

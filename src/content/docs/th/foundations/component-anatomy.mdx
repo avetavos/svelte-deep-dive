@@ -1,0 +1,130 @@
+---
+title: 'The Component Anatomy'
+description: 'สามส่วนของไฟล์ .svelte — script, markup และ scoped style — พวกมัน compile อย่างไร และทำไม style ถึง scope อยู่ที่ component โดย default'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## สามส่วน หนึ่งไฟล์
+
+Svelte component คือไฟล์ `.svelte` ที่มีได้ถึงสามส่วน:
+
+```svelte
+<script>
+  // 1. Logic: state, props, imports, functions.
+  let name = $state('world');
+</script>
+
+<!-- 2. Markup: HTML plus Svelte template syntax. -->
+<h1>Hello {name}!</h1>
+<input bind:value={name} />
+
+<style>
+  /* 3. Styles: scoped to THIS component by default. */
+  h1 { color: #ff3e00; }
+</style>
+```
+
+- block **`<script>`** คือ logic ของ component: state (ด้วย runes), component ที่ import เข้ามา และ function มันรันหนึ่งครั้งตอน component ถูกสร้าง
+- **markup** คือ HTML ที่เสริมด้วย template syntax ของ Svelte — `{expressions}`, block อย่าง `{#if}` และ binding นี่คือสิ่งที่ render
+- block **`<style>`** คือ CSS ที่โดย default จะ apply เฉพาะ component นี้
+
+ไม่มี boilerplate wrapper ไม่มี `return` ไม่มี `render()` — ไฟล์ *คือ* component
+
+<Mermaid title="สามส่วนของไฟล์ .svelte" code={anatomyDiagram} />
+
+export const anatomyDiagram = `flowchart LR
+  script["script: state, props, logic"] --> compile["Svelte compiler"]
+  markup["markup: HTML + template syntax"] --> compile
+  style["style: scoped CSS"] --> compile
+  compile --> comp["a component: JS + a stylesheet"]`;
+
+## scoped style โดย default
+
+block **`<style>`** ถูก **scope อยู่ที่ component** — Svelte เพิ่ม class เฉพาะให้ element ของ component แล้ว rewrite selector ของคุณให้ match เฉพาะพวกมัน เขียน `h1 { color: … }` แล้วมันจัด style ให้ `h1` ของ component นี้ ไม่ใช่ `h1` ทุกตัวบนหน้า
+
+```svelte
+<p>This paragraph is styled locally.</p>
+<style>
+  /* Compiles to something like p.svelte-abc123 { ... } — scoped, no leakage. */
+  p { font-weight: bold; }
+</style>
+```
+
+คุณได้ CSS ที่ local ต่อ component โดยใช้ selector ธรรมดา — ไม่มี naming convention ไม่มี CSS-in-JS เมื่อคุณตั้งใจจะให้มี rule แบบ global คุณ opt out ด้วย `:global(...)`:
+
+```svelte
+<style>
+  :global(body) { margin: 0; }        /* escape the scope on purpose */
+  .card :global(a) { color: teal; }    /* scoped .card, global descendant a */
+</style>
+```
+
+## TypeScript กับ script
+
+ใส่ `lang="ts"` ที่ script tag เพื่อเขียน TypeScript — compiler จะ type-check และ strip มันออก:
+
+```svelte
+<script lang="ts">
+  let count: number = $state(0);
+  function inc(): void { count++; }
+</script>
+```
+
+อย่างอื่นไม่เปลี่ยน; runes ถูก type (`$state<T>`) และ props ได้ typed interface (บทเรียนถัดไป) tooling ของ Svelte (`svelte-check`) type-check ไฟล์ `.svelte` รวมถึง markup ด้วย
+
+<Callout title="สรุปหนึ่งบรรทัด">
+ไฟล์ `.svelte` มีสามส่วนที่ไม่บังคับ: **`<script>`** (state, props, logic — รันหนึ่งครั้งตอนสร้าง), **markup** (HTML บวก template syntax) และ block **`<style>`** ที่ **scope อยู่ที่ component โดย default** (Svelte rewrite selector เพื่อไม่ให้ CSS leak; opt out ด้วย `:global(...)`) ไม่มี wrapper หรือ `render()` — ไฟล์ *คือ* component และ `lang="ts"` เปิด TypeScript
+</Callout>
+
+export const quizAnatomy = [
+  {
+    q: 'สามส่วนของไฟล์ .svelte คืออะไร?',
+    options: [
+      'imports, exports และ returns',
+      '`<script>` (logic), markup (HTML + template syntax) และ block `<style>`',
+      'ไฟล์ model, view, controller',
+      'props, state และ effects',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'โดย default block `<style>` ของ component apply ที่ไหน?',
+    options: [
+      'global ทั้งหน้า',
+      'scope เฉพาะ component นั้น — Svelte rewrite selector เพื่อไม่ให้ leak',
+      'เฉพาะ child component',
+      'ไม่มีที่ไหนจนกว่าจะ import',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำอย่างไรให้ style rule apply แบบ global โดยตั้งใจ?',
+    options: [
+      'ใส่ไว้ใน script',
+      'ห่อ selector ด้วย `:global(...)`',
+      'ใช้ `!important`',
+      'ทำไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใช้ TypeScript ใน Svelte component อย่างไร?',
+    options: [
+      'เปลี่ยนชื่อไฟล์เป็น .ts',
+      'ใส่ `lang="ts"` ที่ tag `<script>`',
+      'Svelte ไม่รองรับ TypeScript',
+      'import TS plugin ตอน runtime',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/component-anatomy" questions={quizAnatomy} />
+
+<ProgressTracker client:visible id="foundations/component-anatomy" />

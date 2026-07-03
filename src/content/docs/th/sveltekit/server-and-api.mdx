@@ -1,0 +1,123 @@
+---
+title: 'Server & API'
+description: 'API endpoint เดี่ยว ๆ ด้วย +server.js, request hooks และ locals, render option ราย route และ deployment adapters'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## API endpoint ด้วย +server.js
+
+ไฟล์ `+server.js` คือ route ที่ **ไม่มี UI** — เป็น HTTP endpoint เดี่ยว ๆ export function ที่ตั้งชื่อตาม HTTP method แต่ละตัว return `Response` ใช้กับ JSON API, webhook, การดาวน์โหลดไฟล์ หรืออะไรก็ตามที่ client ที่ไม่ใช่ browser เรียก
+
+```js
+// src/routes/api/posts/+server.js
+import { json, error } from '@sveltejs/kit';
+
+export async function GET({ url }) {
+  const page = Number(url.searchParams.get('page') ?? '1');
+  return json(await getPosts(page));      // json() sets the header + serializes
+}
+
+export async function POST({ request }) {
+  const body = await request.json();
+  if (!body.title) error(400, 'title required');   // throw a typed HTTP error
+  return json(await createPost(body), { status: 201 });
+}
+```
+
+**endpoint กับ form action ต่างกันยังไง:** ใช้ **form action** เมื่อ form ของเพจนั้น submit ไป server (มัน integrate กับ `use:enhance` และ `form` prop) ใช้ **`+server.js` endpoint** สำหรับ API ที่ใช้ซ้ำได้ ที่ถูกเรียกผ่าน fetch, mobile app หรือ third party
+
+## hooks: middleware สำหรับทุก request
+
+`src/hooks.server.js` export **`handle`** ซึ่งรันกับ *ทุก* request ก่อนถึง route — เป็นที่ทำ authentication, logging และเติมค่า `locals`
+
+```js
+// src/hooks.server.js
+export async function handle({ event, resolve }) {
+  const token = event.cookies.get('session');
+  event.locals.user = token ? await getUser(token) : null;  // available to load/actions
+  return resolve(event);   // continue to the route
+}
+```
+
+อะไรก็ตามที่คุณ set บน `event.locals` จะใช้ได้ในทุก server `load` และ action ของ request นั้น (ผ่าน `locals`) — นี่คือวิธีที่ current user ไหลผ่านทั้งแอป
+
+<Mermaid title="request ผ่าน handle แล้วจึงถึง route" code={hookDiagram} />
+
+export const hookDiagram = `flowchart LR
+  req["request เข้ามา"] --> handle["hooks: handle()\nset locals.user"]
+  handle --> route["route: load / action / +server"]
+  route --> resp["response"]`;
+
+## render mode ราย route และ adapters
+
+แต่ละ route เลือกวิธี render ของตัวเองได้ด้วย page option ที่ export จาก `+page.js`/`+page.server.js`:
+
+- `export const prerender = true` — render เป็นไฟล์ static ตอน build time (เหมาะกับเพจที่เหมือนกันสำหรับทุกคน)
+- `export const ssr = false` — ข้าม server rendering (เพจแบบ client-only)
+- `export const csr = false` — ไม่ส่ง client JS เลย (output static ล้วนสำหรับเพจนั้น)
+
+สุดท้าย **adapter** (ตั้งใน `svelte.config.js`) แพ็กแอปที่ build แล้วให้เข้ากับ platform เป้าหมาย:
+
+- **`adapter-auto`** — ตรวจจับ platform ทั่วไป (ค่า default ในโปรเจกต์ใหม่)
+- **`adapter-node`** — Node server เดี่ยว ๆ
+- **`adapter-cloudflare`** — Cloudflare Worker/Pages
+- **`adapter-static`** — static site ที่ prerender ทั้งหมด (ไม่ต้องมี server)
+
+คุณเลือก adapter ตามที่จะ deploy; โค้ดแอปเดียวกันรันได้ข้าม platform
+
+<Callout title="สรุปหนึ่งบรรทัด">
+สร้าง API เดี่ยว ๆ ด้วย **`+server.js`** — export `GET`/`POST`/… ที่ return `Response` (ใช้ `json()` และ `error()` จาก `@sveltejs/kit`); เลือก endpoint เมื่อต้องการ API ที่ใช้ซ้ำได้ และเลือก **form action** เมื่อ form ของเพจ submit `handle` ใน **`hooks.server.js`** รันกับทุก request เพื่อ set `event.locals` (เช่น user) คุมการ render ราย route ด้วย `prerender`/`ssr`/`csr` และแพ็กแอปเพื่อ deploy ด้วย **adapter** (auto/node/cloudflare/static)
+</Callout>
+
+export const quizServer = [
+  {
+    q: 'ไฟล์ `+server.js` คืออะไร',
+    options: [
+      'เพจที่มี UI',
+      'API endpoint เดี่ยว ๆ (ไม่มี UI) ที่ export function ตาม HTTP method และ return Response',
+      'layout',
+      'ไฟล์ config',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`handle` ใน `hooks.server.js` ทำอะไร',
+    options: [
+      'จัดสไตล์แอป',
+      'รันกับทุก request ก่อนถึง route — ใช้ทำ auth, logging และ set `event.locals`',
+      'นิยาม route',
+      'build โปรเจกต์',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำให้ route เดียว render เป็นไฟล์ static ตอน build time ยังไง',
+    options: [
+      'เปลี่ยนชื่อเป็น .html',
+      'export `const prerender = true` จาก route นั้น',
+      'ลบ load function ของมัน',
+      'ตั้ง output: static แบบ global',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'adapter ทำอะไร',
+    options: [
+      'fetch ข้อมูล',
+      'แพ็กแอปที่ build แล้วให้เข้ากับ platform เป้าหมาย (Node, Cloudflare, static, …) เพื่อ deploy',
+      'validate form',
+      'จัดการ CSS',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/server-and-api" questions={quizServer} />
+
+<ProgressTracker client:visible id="sveltekit/server-and-api" />

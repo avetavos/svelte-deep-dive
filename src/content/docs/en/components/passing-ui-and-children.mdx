@@ -1,0 +1,133 @@
+---
+title: 'Passing UI & Children'
+description: 'Passing markup into a component via the children snippet, named snippet props for flexible layouts, and how this compares to React children and render props.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The children snippet
+
+When you put markup *between* a component's tags, Svelte hands it to the component as a snippet prop named **`children`**. The component renders it with `{@render children()}`.
+
+```svelte
+<!-- Card.svelte -->
+<script>
+  let { children } = $props();
+</script>
+
+<div class="card">
+  {@render children()}     <!-- whatever the parent nested goes here -->
+</div>
+```
+
+```svelte
+<!-- Parent -->
+<Card>
+  <h2>Title</h2>
+  <p>Any markup here becomes the card's children.</p>
+</Card>
+```
+
+This is the Svelte 5 equivalent of React's `children` (or the Svelte 4 default `<slot>`): a reusable wrapper component that doesn't need to know what it wraps.
+
+<Mermaid title="Nested markup arrives as the children snippet" code={childrenDiagram} />
+
+export const childrenDiagram = `flowchart LR
+  parent["<Card> ...markup... </Card>"] --> prop["child receives children snippet"]
+  prop --> render["{@render children()}"]
+  render --> out["markup rendered inside the card"]`;
+
+## Named snippet props for multiple slots
+
+For components with several insertion points (a header, a body, a footer), pass **named snippets** as props. Define them in the parent with `{#snippet name()}` *inside* the component tags, and the child receives each as a prop.
+
+```svelte
+<!-- Modal.svelte -->
+<script>
+  let { header, children, footer } = $props();
+</script>
+
+<div class="modal">
+  <div class="modal-header">{@render header()}</div>
+  <div class="modal-body">{@render children()}</div>
+  <div class="modal-footer">{@render footer()}</div>
+</div>
+```
+
+```svelte
+<Modal>
+  {#snippet header()}<h2>Confirm</h2>{/snippet}
+  <p>Are you sure?</p>                          <!-- default children -->
+  {#snippet footer()}<button>OK</button>{/snippet}
+</Modal>
+```
+
+## Passing data back with snippet parameters
+
+Because snippets take parameters, a component can pass data *out* to the markup the parent provides — the pattern React calls **render props**. The child invokes the snippet with a value; the parent's snippet receives it:
+
+```svelte
+<!-- List.svelte -->
+<script>
+  let { items, row } = $props();
+</script>
+{#each items as item (item.id)}
+  {@render row(item)}       <!-- pass each item back to the parent's snippet -->
+{/each}
+```
+
+```svelte
+<List items={products}>
+  {#snippet row(product)}
+    <li>{product.name} — ${product.price}</li>   <!-- parent decides the markup -->
+  {/snippet}
+</List>
+```
+
+The child owns the iteration; the parent owns the per-item markup. This inversion — child provides data, parent provides presentation — is the render-prop pattern, expressed cleanly with snippets.
+
+<Callout title="The one-line takeaway">
+Markup nested between a component's tags arrives as the **`children`** snippet, rendered with **`{@render children()}`** — the Svelte 5 equivalent of React `children`. For multiple insertion points, pass **named snippet props** (`{#snippet header()}…` inside the tags). And because snippets take **parameters**, a child can pass data back to a parent-provided snippet — the render-prop pattern.
+</Callout>
+
+export const quizChildren = [
+  {
+    q: 'How does a component receive markup nested between its tags?',
+    options: [
+      'As a string prop',
+      'As a snippet prop named `children`, rendered with `{@render children()}`',
+      'Through the DOM',
+      'It cannot',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you provide multiple named insertion points to a component?',
+    options: [
+      'Multiple components',
+      'Named snippet props — `{#snippet header()}…{/snippet}` placed inside the component tags',
+      'CSS grid',
+      'A store per slot',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How does a Svelte component pass data out to parent-provided markup (render props)?',
+    options: [
+      'Via events only',
+      'By rendering a snippet prop with an argument — `{@render row(item)}` — which the parent\'s snippet receives',
+      'Through context only',
+      'It cannot pass data back',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/passing-ui-and-children" questions={quizChildren} />
+
+<ProgressTracker client:visible id="components/passing-ui-and-children" />

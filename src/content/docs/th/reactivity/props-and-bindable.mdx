@@ -1,0 +1,140 @@
+---
+title: 'Props & $bindable'
+description: 'ประกาศ input ของ component ด้วย $props (destructuring, default, rest, TypeScript), one-way data flow และการ opt in สู่ two-way binding ด้วย $bindable'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ประกาศ props ด้วย $props
+
+component รับ input จาก parent ผ่าน **`$props()`** ซึ่งคุณ destructure ออกมาเป็นค่าที่คาดหวัง อันนี้แทนที่ `export let` ของ Svelte 4
+
+```svelte
+<!-- Greeting.svelte -->
+<script>
+  let { name, greeting = 'Hello' } = $props();   // name required, greeting has a default
+</script>
+
+<p>{greeting}, {name}!</p>
+```
+
+```svelte
+<!-- parent -->
+<Greeting name="Ada" />
+<Greeting name="Grace" greeting="Hi" />
+```
+
+การ destructure ให้ toolkit เต็มของ JavaScript: **default** (`greeting = 'Hello'`), **rename** (`{ class: className }`) และ **rest** เพื่อเก็บที่เหลือ (`let { id, ...rest } = $props()`) ซึ่งเหมาะกับการ forward attribute ไปยัง element ด้วย `{...rest}`
+
+## Typing props
+
+ด้วย `lang="ts"` ให้ประกาศ `interface` แล้ว annotate ตอน destructure — Svelte จะ type-check การใช้งานฝั่ง parent ตามนั้น
+
+```svelte
+<script lang="ts">
+  interface Props {
+    name: string;
+    greeting?: string;      // optional
+    count?: number;
+  }
+  let { name, greeting = 'Hello', count = 0 }: Props = $props();
+</script>
+```
+
+## One-way data flow โดย default
+
+props ไหล **ลง**: parent ส่งค่า และ child อ่านมัน child ไม่ควร reassign prop เพื่อ "ส่งข้อมูลกลับ" นั่นทำลาย flow ทิศทางเดียว และ Svelte จะเตือน เมื่อ child ต้องสื่อสารขึ้นไป parent จะส่ง callback prop หรือทั้งคู่ share state ผ่าน binding
+
+```svelte
+<script>
+  // Parent passes a callback; child calls it — data flows up explicitly.
+  let { onincrement } = $props();
+</script>
+<button onclick={() => onincrement()}>+1</button>
+```
+
+## Two-way binding ด้วย $bindable
+
+บางครั้ง two-way binding เป็น design ที่สะอาดจริง ๆ — custom input component ที่ parent อยาก `bind:` ค่าของมัน ให้ mark prop นั้น **`$bindable()`** แล้ว parent จะ bind ได้
+
+```svelte
+<!-- FancyInput.svelte -->
+<script>
+  let { value = $bindable() } = $props();
+</script>
+
+<input bind:value={value} />
+```
+
+```svelte
+<!-- parent -->
+<script>
+  let name = $state('');
+</script>
+<FancyInput bind:value={name} />   <!-- two-way: parent's name stays in sync -->
+```
+
+<Mermaid title="props ไหลลง; $bindable เปิด channel สองทาง" code={propsDiagram} />
+
+export const propsDiagram = `flowchart TB
+  parent["Parent state"] -->|props ไหลลง| child["Child อ่าน props"]
+  child -->|callback prop| parent
+  parent <-->|bind: ด้วย $bindable| child`;
+
+two-way binding เป็น opt-in โดยตั้งใจ: prop ส่วนใหญ่ยังเป็นทางเดียว (reason ง่ายกว่า) และ `$bindable` เก็บไว้สำหรับ component ที่การ sync ค่าทั้งสองทางเป็น interface ที่เป็นธรรมชาติ
+
+<Callout title="สรุปบรรทัดเดียว">
+component ประกาศ input ด้วย **`let { … } = $props()`** (แทน `export let`) โดยใช้ **destructuring** ของ JavaScript สำหรับ default, rename และ rest — พร้อม `Props` interface สำหรับ TypeScript ข้อมูลไหล **ทางเดียวลง** โดย default; child สื่อสารขึ้นผ่าน **callback prop** เพื่ออนุญาต two-way binding จริง ๆ ให้ mark prop เป็น **`$bindable()`** เพื่อให้ parent `bind:` ได้ — opt-in สำหรับ component ที่การ sync สองทางเป็น design ธรรมชาติ
+</Callout>
+
+export const quizProps = [
+  {
+    q: 'component ใน Svelte 5 ประกาศ props ยังไง?',
+    options: [
+      '`export let name`',
+      '`let { name } = $props()` — destructure จาก $props rune',
+      '`this.props.name`',
+      '`inject(name)`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ให้ default value กับ prop ยังไง?',
+    options: [
+      'object defaults แยกต่างหาก',
+      'destructuring default: `let { greeting = \'Hello\' } = $props()`',
+      'ให้ default prop ไม่ได้',
+      'ด้วย $bindable',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'โดย default ข้อมูลไหลยังไงกับ props?',
+    options: [
+      'สองทางอัตโนมัติ',
+      'ทางเดียวลง — child ไม่ควร reassign prop และใช้ callback prop ส่งข้อมูลขึ้น',
+      'ขึ้นอย่างเดียว',
+      'ผ่าน global state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'จะให้ parent `bind:` กับ prop ของ child ยังไง?',
+    options: [
+      'ไม่ต้องทำอะไร — ทุก prop bind ได้',
+      'mark เป็น `$bindable()` ใน child: `let { value = $bindable() } = $props()`',
+      'ใช้ store',
+      'export setter',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/props-and-bindable" questions={quizProps} />
+
+<ProgressTracker client:visible id="reactivity/props-and-bindable" />

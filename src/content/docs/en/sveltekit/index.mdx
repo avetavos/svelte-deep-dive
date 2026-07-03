@@ -1,0 +1,87 @@
+---
+title: 'SvelteKit: Full-Stack Svelte'
+description: 'What SvelteKit adds on top of Svelte — routing, server-side rendering, data loading, form actions, endpoints, and deployment adapters — the framework for building real apps.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Svelte builds components; SvelteKit builds apps
+
+Svelte gives you components. **SvelteKit** is the official application framework built on top of it (and on Vite): it adds everything a real app needs — a router, server-side rendering, data loading, form handling, API endpoints, and deployment — so you don't assemble those yourself.
+
+The relationship mirrors React and Next.js, or Vue and Nuxt: the view library handles UI; the meta-framework handles the app.
+
+## What this module covers
+
+| Lesson | What you'll learn |
+|--------|-------------------|
+| Routing & pages | File-based routing, `+page.svelte`, layouts, dynamic routes |
+| Loading data | `load` functions, universal vs server-only, the `data` prop |
+| Forms & actions | Form `actions` and progressive enhancement with `use:enhance` |
+| Server & API | `+server.js` endpoints, hooks, render modes, and adapters |
+
+## The shape of a SvelteKit app
+
+Routes are files in `src/routes/`, and special filenames play specific roles:
+
+<Mermaid title="The files that make up a route" code={shapeDiagram} />
+
+export const shapeDiagram = `flowchart TB
+  route["a route folder in src/routes/"] --> page["+page.svelte — the UI"]
+  route --> pjs["+page.js / +page.server.js — load data + actions"]
+  route --> layout["+layout.svelte — shared shell"]
+  route --> server["+server.js — API endpoint"]
+  page --> ssr["rendered on the server (SSR) by default,\nthen hydrated on the client"]`;
+
+- **`+page.svelte`** is a route's page — a normal Svelte component.
+- **`+page.js` / `+page.server.js`** provide that page's data (via `load`) and its form `actions`.
+- **`+layout.svelte`** wraps child routes with a shared shell (nav, footer).
+- **`+server.js`** is a standalone API endpoint (JSON, webhooks) with no UI.
+
+By default SvelteKit renders pages on the **server** first (fast first paint, SEO), then hydrates them on the client for interactivity — the best of both worlds, and configurable per route.
+
+<Callout title="The one-line takeaway">
+**SvelteKit** is the official app framework on top of Svelte + Vite: it supplies file-based **routing** (`src/routes/` with special files like `+page.svelte`, `+layout.svelte`, `+server.js`), **server-side rendering** by default, **data loading** (`load`), **form actions**, **API endpoints**, and deployment **adapters**. Svelte builds components; SvelteKit builds the app around them.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'What is the relationship between Svelte and SvelteKit?',
+    options: [
+      'They are the same thing',
+      'Svelte is the component/view library; SvelteKit is the app framework (routing, SSR, data, endpoints) built on top of it',
+      'SvelteKit is an older version of Svelte',
+      'SvelteKit is a CSS tool',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Where do routes live in a SvelteKit app?',
+    options: [
+      'In a routes config array',
+      'As files under `src/routes/` — file-based routing',
+      'In the database',
+      'In `+router.js`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'By default, where does a SvelteKit page first render?',
+    options: [
+      'Only in the browser',
+      'On the server (SSR) first, then it hydrates on the client',
+      'It does not render until clicked',
+      'Only at build time',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="sveltekit/index" />

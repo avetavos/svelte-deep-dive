@@ -1,0 +1,125 @@
+---
+title: 'Forms & Inputs'
+description: 'การจัดการ form ในทางปฏิบัติใน Svelte — controlled input ด้วย bind:, validation ด้วย $derived และการจัดการ submit ด้วย onsubmit'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## controlled input ด้วย bind:
+
+form รวม binding, runes และ event เข้าด้วยกัน แต่ละ field bind กับ state; validation derive จาก state นั้น; submit อ่านมัน นี่คือรูปแบบของ form จริง:
+
+```svelte
+<script>
+  let email = $state('');
+  let password = $state('');
+
+  // validation DERIVE จาก field — ไม่เก็บแยกต่างหาก
+  let emailValid = $derived(/^[^@]+@[^@]+\.[^@]+$/.test(email));
+  let passwordValid = $derived(password.length >= 8);
+  let formValid = $derived(emailValid && passwordValid);
+</script>
+
+<input type="email" bind:value={email} placeholder="Email" />
+{#if email && !emailValid}<small>ใส่ email ที่ถูกต้อง</small>{/if}
+
+<input type="password" bind:value={password} placeholder="Password" />
+{#if password && !passwordValid}<small>อย่างน้อย 8 ตัวอักษร</small>{/if}
+```
+
+ไอเดียสำคัญ: **validation ถูก derive ไม่ใช่เก็บ** `emailValid` คำนวณใหม่อัตโนมัติทุกครั้งที่ `email` เปลี่ยน — ไม่มีขั้นตอน "revalidate" ให้ลืม นี่คือหลัก "derive อย่า sync" จากบท effect มาใช้กับ form
+
+## การจัดการ submit
+
+ผูก `onsubmit` เข้ากับ `<form>` และเรียก `e.preventDefault()` เพื่อหยุด navigation ปกติของ browser แล้วทำงานกับ state ที่รวบรวมมา:
+
+```svelte
+<script>
+  let submitting = $state(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();          // Svelte 5 ไม่มี on:submit|preventDefault modifier
+    if (!formValid) return;
+    submitting = true;
+    await createAccount({ email, password });
+    submitting = false;
+  }
+</script>
+
+<form onsubmit={handleSubmit}>
+  <!-- fields… -->
+  <button type="submit" disabled={!formValid || submitting}>
+    {submitting ? 'Creating…' : 'Sign up'}
+  </button>
+</form>
+```
+
+สังเกตว่า button ที่ disabled derive จาก `formValid` และ `submitting` — UI ถูกต้องเสมอโดยไม่ต้อง toggle เอง
+
+<Mermaid title="form: bind, derive, submit" code={formDiagram} />
+
+export const formDiagram = `flowchart LR
+  input["inputs (bind:value)"] --> state["field state"]
+  state --> valid["$derived validation"]
+  valid --> button["submit button enable/disable"]
+  button --> submit["onsubmit → preventDefault → ทำงาน"]`;
+
+## client-side เป็นแค่ครึ่งเรื่อง
+
+บทนี้จัดการ form ทั้งหมดบน client — โอเคสำหรับ local state และเคสง่าย ๆ แต่แอปจริงต้องการข้อมูลบน **server**: การ persist, auth, validation ที่เชื่อถือได้ นั่นคือสิ่งที่ **SvelteKit form actions** (โมดูลถัดไป) ให้มา — form แบบ progressive-enhancement ที่ทำงานทั้งมีและไม่มี JavaScript validate บน server client-side `bind:` + `$derived` ให้ UX ที่ตอบสนอง; SvelteKit ให้ pipeline แบบ full-stack
+
+<Callout title="สรุปหนึ่งบรรทัด">
+สร้าง form โดย **bind** แต่ละ field กับ state (`bind:value`), **derive** validation ด้วย `$derived` (ไม่เก็บ validity แยก — มันคำนวณใหม่อัตโนมัติ) และจัดการ **submit** ด้วย `onsubmit` + `e.preventDefault()` (Svelte 5 เลิก event modifier) derive `disabled` ของ submit button จาก validity และ flag `submitting` สำหรับการ persist จริงและ validation ที่ server เชื่อถือได้ หยิบ SvelteKit form actions มาใช้
+</Callout>
+
+export const quizForms = [
+  {
+    q: 'ควรจัดการ state ของ form validation ยังไง?',
+    options: [
+      'เก็บใน $state ของมันเองและ update เอง',
+      'derive ด้วย `$derived` จากค่า field เพื่อให้คำนวณใหม่อัตโนมัติ',
+      'คำนวณเฉพาะตอน submit',
+      'ใน store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'หยุด browser navigate ตอน submit form ใน Svelte 5 ยังไง?',
+    options: [
+      'ใช้ `on:submit|preventDefault`',
+      'เรียก `e.preventDefault()` ใน handler `onsubmit` (modifier หายไปใน Svelte 5)',
+      'return false',
+      'มันอัตโนมัติ',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมถึง derive ค่า `disabled` ของ submit button?',
+    options: [
+      'เพื่อให้ code ยาวขึ้น',
+      'เพื่อให้ state ของ button ถูกต้องอัตโนมัติเมื่อ validity และ flag submitting เปลี่ยน — ไม่ต้อง toggle เอง',
+      'มันคือ syntax ที่จำเป็น',
+      'เพื่อเลี่ยงการใช้ bind:',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'client-side form handling ไม่ได้ให้อะไร?',
+    options: [
+      'UX ที่ตอบสนอง',
+      'server persistence และ server-side validation ที่เชื่อถือได้ (นั่นคือสิ่งที่ SvelteKit form actions เพิ่ม)',
+      'two-way binding',
+      'derived validation',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/forms-and-inputs" questions={quizForms} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/forms-and-inputs" />

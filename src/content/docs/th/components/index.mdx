@@ -1,0 +1,78 @@
+---
+title: 'Components & Composition'
+description: 'component ใน Svelte ประกอบกันยังไง — snippets กับ {@render}, การส่ง UI เป็น children, การแชร์ข้อมูลด้วย context และ component lifecycle'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ประกอบเกินกว่าแค่ props
+
+props ส่ง *ค่า* ลงไป แต่ UI จริงต้องส่ง *markup* ลงไปด้วย (เช่น card ที่ห่อ content อะไรก็ได้) ต้องแชร์ข้อมูลข้าม subtree โดยไม่ต้อง drill props ผ่านทุกชั้น และต้อง run setup ตอน component mount โมดูลนี้ครอบคลุมเครื่องมือ composition เหล่านั้น:
+
+- **Snippets** (`{#snippet}` / `{@render}`) — ก้อน markup ที่ reuse ได้ และเป็นตัวแทน `<slot>` เดิมใน Svelte 5
+- **การส่ง UI** — parent ส่ง markup ให้ child ผ่าน `children` snippet และ named snippet props
+- **Context** (`setContext` / `getContext`) — แชร์ข้อมูลลง component tree โดยไม่ต้อง prop drilling
+- **Lifecycle** (`onMount` / `onDestroy` / `tick`) — run code ในจังหวะที่กำหนด
+
+## โมดูลนี้ครอบคลุมอะไรบ้าง
+
+| บทเรียน | สิ่งที่จะได้เรียน |
+|--------|-------------------|
+| Snippets & render | `{#snippet}` และ `{@render}` แทน `<slot>` |
+| Passing UI & children | `children` snippet และ named snippet props |
+| The context API | `setContext` / `getContext` โดยไม่ต้อง prop drilling |
+| Lifecycle | `onMount`, `onDestroy`, `tick` และ `$effect` |
+
+<Mermaid title="เครื่องมือ composition" code={overviewDiagram} />
+
+export const overviewDiagram = `flowchart TB
+  comp["composing components"] --> snip["snippets: markup ที่ reuse ได้"]
+  comp --> children["ส่ง UI ลงไปเป็น children"]
+  comp --> ctx["context: ข้อมูลลง subtree"]
+  comp --> life["lifecycle: code ตอน mount / destroy"]`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+นอกจากส่งค่าด้วย props, Svelte ประกอบ UI ด้วย **snippets** (`{#snippet}`/`{@render}` — ตัวแทน `<slot>` ใน Svelte 5), **ส่ง markup ลงไป** ผ่าน `children` snippet, **context** (`setContext`/`getContext`) เพื่อแชร์ข้อมูลลง subtree โดยไม่ต้อง prop drilling และ **lifecycle** hook (`onMount`/`onDestroy`/`tick`) — แม้ว่า `$effect` จะครอบคลุมงาน lifecycle ส่วนใหญ่แล้ว
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'อะไรมาแทน `<slot>` ใน Svelte 5?',
+    options: [
+      'props',
+      'Snippets — `{#snippet}` และ `{@render}`',
+      'Context',
+      'Stores',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'context (`setContext`/`getContext`) แก้ปัญหาอะไร?',
+    options: [
+      'การจัด style',
+      'แชร์ข้อมูลลง component tree โดยไม่ต้อง drill props ผ่านทุกชั้น',
+      'routing',
+      'animation',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใน Svelte 5 อะไรครอบคลุมเคสส่วนใหญ่ที่เคยใช้ lifecycle hook ใน Svelte 4?',
+    options: [
+      'Stores',
+      '`$effect`',
+      'props',
+      'Actions',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="components/index" />

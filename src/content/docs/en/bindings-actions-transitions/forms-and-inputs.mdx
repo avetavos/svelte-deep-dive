@@ -1,0 +1,125 @@
+---
+title: 'Forms & Inputs'
+description: 'Practical form handling in Svelte — controlled inputs with bind:, validation with $derived, and submit handling with onsubmit.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Controlled inputs with bind:
+
+Forms bring bindings, runes, and events together. Each field binds to state; validation derives from that state; submit reads it. Here's the shape of a real form:
+
+```svelte
+<script>
+  let email = $state('');
+  let password = $state('');
+
+  // Validation is DERIVED from the fields — never stored separately.
+  let emailValid = $derived(/^[^@]+@[^@]+\.[^@]+$/.test(email));
+  let passwordValid = $derived(password.length >= 8);
+  let formValid = $derived(emailValid && passwordValid);
+</script>
+
+<input type="email" bind:value={email} placeholder="Email" />
+{#if email && !emailValid}<small>Enter a valid email</small>{/if}
+
+<input type="password" bind:value={password} placeholder="Password" />
+{#if password && !passwordValid}<small>At least 8 characters</small>{/if}
+```
+
+The key idea: **validation is derived, not stored.** `emailValid` recomputes automatically whenever `email` changes — there's no "revalidate" step to forget. This is the "derive, don't sync" principle from the effects lesson, applied to forms.
+
+## Handling submit
+
+Attach `onsubmit` to the `<form>` and call `e.preventDefault()` to stop the browser's native navigation, then act on the collected state:
+
+```svelte
+<script>
+  let submitting = $state(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();          // Svelte 5 has no on:submit|preventDefault modifier
+    if (!formValid) return;
+    submitting = true;
+    await createAccount({ email, password });
+    submitting = false;
+  }
+</script>
+
+<form onsubmit={handleSubmit}>
+  <!-- fields… -->
+  <button type="submit" disabled={!formValid || submitting}>
+    {submitting ? 'Creating…' : 'Sign up'}
+  </button>
+</form>
+```
+
+Note the disabled button derives from `formValid` and `submitting` — the UI stays correct without any manual toggling.
+
+<Mermaid title="A form: bind, derive, submit" code={formDiagram} />
+
+export const formDiagram = `flowchart LR
+  input["inputs (bind:value)"] --> state["field state"]
+  state --> valid["$derived validation"]
+  valid --> button["submit button enabled/disabled"]
+  button --> submit["onsubmit → preventDefault → act"]`;
+
+## Client-side is only half the story
+
+This lesson handles forms entirely on the client — fine for local state and simple cases. But real apps need the data on a **server**: persistence, auth, validation you can trust. That's what **SvelteKit form actions** (a later module) provide — progressive-enhancement forms that work with and without JavaScript, validated on the server. Client-side `bind:` + `$derived` gives you responsive UX; SvelteKit gives you the full-stack pipeline.
+
+<Callout title="The one-line takeaway">
+Build forms by **binding** each field to state (`bind:value`), **deriving** validation with `$derived` (never storing validity separately — it recomputes automatically), and handling **submit** with `onsubmit` + `e.preventDefault()` (Svelte 5 dropped event modifiers). Derive the submit button's `disabled` from validity and a `submitting` flag. For real persistence and server-trusted validation, reach for SvelteKit form actions.
+</Callout>
+
+export const quizForms = [
+  {
+    q: 'How should form validation state be managed?',
+    options: [
+      'Stored in its own $state and manually updated',
+      'Derived with `$derived` from the field values, so it recomputes automatically',
+      'Computed only on submit',
+      'In a store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you prevent the browser navigating on form submit in Svelte 5?',
+    options: [
+      'Use `on:submit|preventDefault`',
+      'Call `e.preventDefault()` inside the `onsubmit` handler (modifiers are gone in Svelte 5)',
+      'Return false',
+      'It is automatic',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why derive the submit button\'s `disabled` value?',
+    options: [
+      'To make the code longer',
+      'So the button state stays correct automatically as validity and a submitting flag change — no manual toggling',
+      'It is required syntax',
+      'To avoid using bind:',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does client-side form handling NOT give you?',
+    options: [
+      'Responsive UX',
+      'Server persistence and trusted server-side validation (that is what SvelteKit form actions add)',
+      'Two-way binding',
+      'Derived validation',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/forms-and-inputs" questions={quizForms} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/forms-and-inputs" />

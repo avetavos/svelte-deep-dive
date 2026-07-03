@@ -1,0 +1,131 @@
+---
+title: 'Actions'
+description: 'use: directive — ผูก behavior แบบ imperative เข้ากับ element ตอน mount, action lifecycle และการ integrate library ที่ไม่ใช่ Svelte'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## action คือฟังก์ชันที่ run บน element
+
+บางครั้งคุณต้องการเข้าถึง DOM node แบบ imperative — เพื่อ init charting library, trap focus, ตั้ง tooltip หรือ detect click นอก element **action** ห่อ logic นั้นเป็นฟังก์ชันที่ reuse ได้ ผูกด้วย `use:` directive
+
+action คือฟังก์ชันที่รับ DOM `node` (และพารามิเตอร์ optional) ตอน element mount และอาจ return object ที่มี method `update` และ `destroy`:
+
+```svelte
+<script>
+  // action: (node, params?) => { update?, destroy? }
+  function tooltip(node, text) {
+    const el = document.createElement('div');
+    el.className = 'tooltip';
+    el.textContent = text;
+
+    function show() { document.body.appendChild(el); }
+    function hide() { el.remove(); }
+    node.addEventListener('mouseenter', show);
+    node.addEventListener('mouseleave', hide);
+
+    return {
+      update(newText) { el.textContent = newText; },   // params เปลี่ยน
+      destroy() {                                       // element กำลัง unmount
+        node.removeEventListener('mouseenter', show);
+        node.removeEventListener('mouseleave', hide);
+        el.remove();
+      },
+    };
+  }
+</script>
+
+<button use:tooltip={'Save your work'}>Save</button>
+```
+
+<Mermaid title="action lifecycle" code={actionDiagram} />
+
+export const actionDiagram = `flowchart LR
+  mount["element mount"] --> run["action(node, params) run"]
+  run --> update["params เปลี่ยน → update(newParams)"]
+  update --> update
+  update --> destroy["element unmount → destroy()"]`;
+
+## ตัวอย่างในทางปฏิบัติ: click-outside
+
+action เด่นมากสำหรับ behavior DOM ที่ cross-cutting action `clickOutside` dispatch เมื่อ click ลงนอก node — เหมาะสำหรับปิด dropdown และ modal:
+
+```svelte
+<script>
+  function clickOutside(node, callback) {
+    function handle(e) {
+      if (!node.contains(e.target)) callback();
+    }
+    document.addEventListener('click', handle, true);
+    return {
+      destroy() { document.removeEventListener('click', handle, true); },
+    };
+  }
+
+  let open = $state(false);
+</script>
+
+{#if open}
+  <div class="menu" use:clickOutside={() => (open = false)}>…</div>
+{/if}
+```
+
+## ทำไม action แทน effect
+
+คุณ *อาจ* ทำบางส่วนนี้ด้วย `bind:this` บวก `$effect` action ดีกว่าเมื่อ behavior นั้น **reuse ได้ข้าม element** และ **self-contained** (setup + teardown ในที่เดียว): method `destroy` การันตี cleanup และการส่งพารามิเตอร์ด้วย `use:action={params}` ทำให้มัน declarative ที่จุดเรียก หยิบ action มาใช้เมื่อคุณอยากบอกว่า "element นี้ behave เหมือน *X*" และ reuse *X* ได้ทุกที่
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**action** คือฟังก์ชันที่ reuse ได้ ผูกด้วย **`use:action`** ซึ่งรับ DOM `node` (บวกพารามิเตอร์ optional) ตอน element mount และ return method **`update`** (params เปลี่ยน) กับ **`destroy`** (element unmount) แบบ optional มันคือ escape hatch ที่สะอาดสำหรับ behavior DOM แบบ imperative ที่ self-contained — library ภายนอก, focus management, click-outside — พร้อม teardown ที่การันตี reuse ได้ดีกว่าคู่ `bind:this` + `$effect`
+</Callout>
+
+export const quizActions = [
+  {
+    q: 'ฟังก์ชัน action รับอะไรตอน element mount?',
+    options: [
+      'component instance',
+      'DOM `node` (และพารามิเตอร์ optional)',
+      'store value',
+      'ไม่รับอะไร',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'method `destroy` ของ action ทำอะไร?',
+    options: [
+      'ลบ component',
+      'run cleanup ตอน element unmount (remove listener, teardown library)',
+      'reset state',
+      're-render element',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เมื่อไร action เหมาะกว่า `bind:this` + `$effect`?',
+    options: [
+      'ไม่มีวัน',
+      'เมื่อ behavior reuse ได้ข้าม element และ self-contained (setup + teardown ที่การันตีในที่เดียว)',
+      'เมื่อต้องการ styling',
+      'เมื่อต้องการ route',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ผูก action พร้อมพารามิเตอร์เข้ากับ element ยังไง?',
+    options: [
+      '`action:use={params}`',
+      '`use:action={params}`',
+      '`bind:action={params}`',
+      '`on:action={params}`',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/actions" questions={quizActions} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/actions" />

@@ -1,0 +1,128 @@
+---
+title: 'Routing & Pages'
+description: 'file-based routing ใน src/routes, page และ layout, dynamic route parameter, error page และ client-side navigation'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## folder คือ route
+
+ใน SvelteKit โครงสร้าง folder ใต้ `src/routes/` *คือ* โครงสร้าง URL ไฟล์ `+page.svelte` ทำให้ folder ของมันกลายเป็นเพจที่เข้าถึงได้
+
+```text
+src/routes/
+├── +page.svelte              →  /
+├── about/
+│   └── +page.svelte          →  /about
+├── blog/
+│   ├── +page.svelte          →  /blog
+│   └── [slug]/
+│       └── +page.svelte      →  /blog/:slug   (dynamic)
+└── +layout.svelte            →  wraps every page
+```
+
+<Mermaid title="folder แมปเป็น URL" code={routeDiagram} />
+
+export const routeDiagram = `flowchart LR
+  f1["routes/+page.svelte"] --> u1["/"]
+  f2["routes/about/+page.svelte"] --> u2["/about"]
+  f3["routes/blog/[slug]/+page.svelte"] --> u3["/blog/:slug"]`;
+
+## dynamic parameter
+
+วงเล็บเหลี่ยมในชื่อ folder จะจับ segment ของ URL ไว้ `src/routes/blog/[slug]/+page.svelte` จะ match `/blog/hello` และค่านั้นจะอยู่ที่ `params.slug` (ใน `load` function — บทเรียนถัดไป) รูปแบบต่าง ๆ:
+
+- `[slug]` — parameter ที่บังคับต้องมี
+- `[...rest]` — rest parameter ที่ match ได้หลาย segment (`/docs/a/b/c`)
+- `[[optional]]` — optional parameter ที่ match ได้แม้ไม่มีค่า
+
+## layout ครอบ page
+
+`+layout.svelte` มีผลกับ folder ของมันและทุก route ที่อยู่ข้างใต้ — เป็นที่วางองค์ประกอบที่ใช้ร่วมกันอย่าง header และ footer มัน render child route ผ่าน `children` snippet:
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script>
+  let { children } = $props();   // the active child page
+</script>
+
+<nav>…site navigation…</nav>
+
+<main>
+  {@render children()}           <!-- the current page renders here -->
+</main>
+
+<footer>© 2026</footer>
+```
+
+layout **ซ้อนกันได้** (nest): layout ที่อยู่ลึกกว่าในต้นไม้จะถูกครอบด้วยตัวที่อยู่เหนือขึ้นไป คุณจึงประกอบ global shell กับ shell เฉพาะแต่ละส่วนได้
+
+## error page และ navigation
+
+- **`+error.svelte`** ใน folder หนึ่งจะ render เมื่อ `load` ใน subtree นั้น throw — เป็น error boundary แบบ scoped มันอ่าน error ผ่าน `page.error` (จาก `$app/state`)
+- **navigation** ใช้ลิงก์ `<a href="/blog">` ปกติ SvelteKit จะ intercept ไว้เพื่อทำ client-side navigation ที่เร็ว (ไม่ reload ทั้งหน้า) ส่วนการ navigate แบบ programmatic ให้เรียก `goto('/blog')` จาก `$app/navigation`
+
+```svelte
+<script>
+  import { goto } from '$app/navigation';
+</script>
+
+<a href="/about">About</a>                     <!-- client-side nav -->
+<button onclick={() => goto('/dashboard')}>Go</button>
+```
+
+<Callout title="สรุปหนึ่งบรรทัด">
+routing ของ SvelteKit เป็น **file-based**: folder ใต้ `src/routes/` กลายเป็น URL และ **`+page.svelte`** ทำให้เกิดเพจ จับ segment ของ URL ด้วย **`[slug]`** (หรือ `[...rest]` / `[[optional]]`), แชร์องค์ประกอบร่วมด้วย **`+layout.svelte`** ที่ซ้อนกันได้ (ซึ่ง render เพจผ่าน `{@render children()}`) และ scope error ด้วย **`+error.svelte`** ลิงก์ `<a>` ธรรมดาทำ client-side navigation ที่เร็ว ส่วนในโค้ดใช้ `goto()` จาก `$app/navigation`
+</Callout>
+
+export const quizRouting = [
+  {
+    q: 'route ของเพจใน SvelteKit นิยามยังไง',
+    options: [
+      'ลงทะเบียนใน routes array',
+      'เพิ่มไฟล์ `+page.svelte` ใน folder ใต้ `src/routes/` — path ของ folder คือ URL',
+      'export route object',
+      'ตั้งชื่อไฟล์เป็น page.html',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'folder `src/routes/blog/[slug]/` สร้างอะไร',
+    options: [
+      'เพจ static ที่ /blog/slug',
+      'dynamic route ที่ match /blog/:slug โดยค่า segment อยู่ที่ `params.slug`',
+      'layout',
+      'API endpoint',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`+layout.svelte` มีไว้ทำอะไร',
+    options: [
+      'นิยาม CSS เท่านั้น',
+      'ครอบ folder และทุก route ที่ซ้อนอยู่ด้วย UI ร่วม โดย render เพจผ่าน `{@render children()}`',
+      'fetch ข้อมูล',
+      'จัดการการ submit form',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'navigate แบบ programmatic ใน SvelteKit ทำยังไง',
+    options: [
+      'ใช้ window.location เท่านั้น',
+      'เรียก `goto(\'/path\')` จาก `$app/navigation`',
+      'ใช้ component `<Link>`',
+      'navigate ในโค้ดไม่ได้',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/routing-and-pages" questions={quizRouting} />
+
+<ProgressTracker client:visible id="sveltekit/routing-and-pages" />

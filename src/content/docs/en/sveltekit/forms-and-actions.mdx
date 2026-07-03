@@ -1,0 +1,145 @@
+---
+title: 'Forms & Actions'
+description: 'Form actions in +page.server.js, reading form data, returning validation errors with fail, and progressive enhancement with use:enhance.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Forms POST to actions
+
+SvelteKit handles form submissions with **actions** — server functions in `+page.server.js` that receive the submitted data. A plain HTML `<form method="POST">` posts to them, so the feature works *before any JavaScript loads*.
+
+```js
+// src/routes/login/+page.server.js
+import { fail, redirect } from '@sveltejs/kit';
+
+export const actions = {
+  default: async ({ request, cookies }) => {
+    const data = await request.formData();
+    const email = data.get('email');
+    const password = data.get('password');
+
+    if (!email || !password) {
+      // Return a 400 with the values so the form can re-render the error.
+      return fail(400, { email, missing: true });
+    }
+
+    const user = await authenticate(email, password);
+    if (!user) return fail(401, { email, incorrect: true });
+
+    cookies.set('session', user.token, { path: '/' });
+    redirect(303, '/dashboard');   // throw a redirect on success
+  },
+};
+```
+
+```svelte
+<!-- src/routes/login/+page.svelte -->
+<script>
+  let { form } = $props();    // the action's returned value (e.g. fail data)
+</script>
+
+<form method="POST">
+  <input name="email" value={form?.email ?? ''} />
+  <input name="password" type="password" />
+  {#if form?.incorrect}<p>Wrong email or password</p>{/if}
+  <button>Log in</button>
+</form>
+```
+
+The action's return value (including `fail(...)` data) arrives as the **`form` prop**. On success you `redirect`; on failure you `fail(status, data)` so the page re-renders with the error and the user's input preserved.
+
+## Named actions
+
+One page can have several actions — a login form and a register form, say. Name them and target one with `action="?/name"`:
+
+```js
+export const actions = {
+  login:    async ({ request }) => { /* … */ },
+  register: async ({ request }) => { /* … */ },
+};
+```
+
+```svelte
+<form method="POST" action="?/login">…</form>
+<form method="POST" action="?/register">…</form>
+```
+
+## Progressive enhancement with use:enhance
+
+The form above already works with **no JavaScript** — the browser posts, the server responds, the page reloads. Add **`use:enhance`** from `$app/forms` and SvelteKit upgrades it to a smooth AJAX submission (no full reload), automatically updating the `form` prop and invalidating `load` data — while keeping the no-JS fallback.
+
+```svelte
+<script>
+  import { enhance } from '$app/forms';
+</script>
+
+<form method="POST" use:enhance>   <!-- works without JS, better with it -->
+  …
+</form>
+```
+
+<Mermaid title="Progressive enhancement: works without JS, better with it" code={enhanceDiagram} />
+
+export const enhanceDiagram = `flowchart TB
+  nojs["No JS: browser POSTs the form"] --> server["action runs on the server"]
+  js["With use:enhance: AJAX submit, no reload"] --> server
+  server --> result["redirect on success, or fail data → form prop"]`;
+
+This is SvelteKit's signature move: build with plain forms that work everywhere, then enhance for a better experience — instead of a JS-only form that breaks without it.
+
+<Callout title="The one-line takeaway">
+Handle form submissions with **actions** in `+page.server.js` — a `<form method="POST">` posts to them, so they work with **no JavaScript**. Read `await request.formData()`, return **`fail(status, data)`** for validation errors (arriving as the **`form` prop`**, preserving input) or **`redirect`** on success; use `action="?/name"` for **named actions**. Add **`use:enhance`** (from `$app/forms`) for smooth AJAX submission while keeping the no-JS fallback — progressive enhancement.
+</Callout>
+
+export const quizForms = [
+  {
+    q: 'Where do SvelteKit form actions live?',
+    options: [
+      'In `+page.svelte`',
+      'In `+page.server.js` as an `actions` object',
+      'In a global config',
+      'In `+server.js` only',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How does an action report a validation error while keeping the user\'s input?',
+    options: [
+      'Throw a generic Error',
+      'Return `fail(status, data)` — the data arrives as the `form` prop so the page re-renders with the error',
+      'Redirect to an error page',
+      'console.log the error',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why do SvelteKit forms work without JavaScript?',
+    options: [
+      'They do not — JS is required',
+      'A plain `<form method="POST">` posts to the server action; the browser handles it natively',
+      'They use a service worker',
+      'They pre-render every response',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `use:enhance` (from `$app/forms`) add?',
+    options: [
+      'It disables the form',
+      'It upgrades the plain form to a smooth AJAX submission (no full reload) while keeping the no-JS fallback',
+      'It validates on the client only',
+      'It styles the form',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="sveltekit/forms-and-actions" questions={quizForms} />
+
+<ProgressTracker client:visible id="sveltekit/forms-and-actions" />

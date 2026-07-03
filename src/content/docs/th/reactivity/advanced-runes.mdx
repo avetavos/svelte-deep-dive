@@ -1,0 +1,130 @@
+---
+title: 'Advanced Runes'
+description: 'debug ด้วย $inspect, อ่านโดยไม่ subscribe ด้วย untrack และ share reactive state ข้าม component ด้วย .svelte.js module'
+sidebar:
+  order: 6
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## $inspect: debug แบบ reactive
+
+`$inspect` log ค่า reactive และ **log ใหม่ทุกครั้งที่มันเปลี่ยน** — เป็นเครื่องมือ dev-only (กลายเป็น no-op ใน production build) ต่างจาก `console.log` ธรรมดาที่ fire ครั้งเดียว `$inspect` track argument ของมันและรายงานทุก update
+
+```svelte
+<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+
+  $inspect(count, doubled);   // logs on every change, dev only
+</script>
+```
+
+คุณ chain `.with(fn)` เพื่อรัน logic เองในแต่ละการเปลี่ยนได้ (เช่น `console.trace` ว่าการเปลี่ยนมาจากไหน)
+
+## untrack: อ่านโดยไม่ depend
+
+ภายใน `$derived` หรือ `$effect` ทุกค่า reactive ที่คุณอ่านจะกลายเป็น dependency บางครั้งคุณอยากอ่านค่า *โดยไม่* สร้าง dependency นั้น — เพื่อให้ effect ไม่รันซ้ำตอนมันเปลี่ยน **`untrack`** (import จาก `svelte`) ทำแบบนั้น
+
+```svelte
+<script>
+  import { untrack } from 'svelte';
+
+  let count = $state(0);
+  let config = $state({ verbose: true });
+
+  $effect(() => {
+    // re-run when count changes, but NOT when config.verbose changes:
+    const verbose = untrack(() => config.verbose);
+    if (verbose) console.log(count);
+  });
+</script>
+```
+
+## reactive state นอก component
+
+runes ไม่ได้จำกัดแค่ไฟล์ `.svelte` ใน module แบบ **`.svelte.js`** หรือ **`.svelte.ts`** คุณใช้ `$state` และ `$derived` เพื่อเก็บ reactive state ที่ component ไหนก็ import ได้ — เป็นรากฐานของ shared state ทั้งแอปโดยไม่ต้องใช้ store
+
+```js
+// counter.svelte.js
+export function createCounter() {
+  let count = $state(0);
+  return {
+    get count() { return count; },   // expose via a getter to preserve reactivity
+    increment() { count++; },
+  };
+}
+```
+
+```svelte
+<script>
+  import { createCounter } from './counter.svelte.js';
+  const counter = createCounter();
+</script>
+
+<button onclick={counter.increment}>{counter.count}</button>
+```
+
+<Mermaid title="shared reactive state อยู่ใน .svelte.js module" code={sharedDiagram} />
+
+export const sharedDiagram = `flowchart LR
+  mod[".svelte.js module: $state + getter"] --> a["Component A import มัน"]
+  mod --> b["Component B import มัน"]
+  a --> sync["ทั้งคู่ sync กัน"]
+  b --> sync`;
+
+จุดสำคัญ: **expose การเข้าถึงผ่าน getter (หรือ object/class) ไม่ใช่ค่า primitive ที่ reassign ตรง ๆ** primitive ที่ export ตรง ๆ จะถูก copy ตอน import และเสีย reactivity; getter อ่าน reactive source ตัวจริงทุกครั้ง pattern นี้ — factory หรือ class ใน `.svelte.js` module — คือทางเลือกยุคใหม่แทน store ซึ่งครอบคลุมเต็มในโมดูล State & Stores สั้น ๆ `$host` เป็น advanced rune ที่เกี่ยวข้อง ใช้เฉพาะตอน compile component เป็น custom element เพื่อเข้าถึง host element
+
+<Callout title="สรุปบรรทัดเดียว">
+**`$inspect(...)`** คือ dev-only reactive logging ที่ fire ใหม่ทุกการเปลี่ยน (chain `.with()` เพื่อจัดการเอง) **`untrack(() => x)`** อ่านค่า reactive ภายใน effect/derived *โดยไม่* ทำให้เป็น dependency และ runes ทำงานใน **`.svelte.js` / `.svelte.ts` module** ดังนั้นคุณเก็บ shared reactive state นอก component ได้ — expose ผ่าน **getter** (หรือ object/class) เพื่อให้ reactivity รอดข้าม import boundary pattern module นั้นคือวิธี share state ยุคใหม่แบบไม่ต้องใช้ store
+</Callout>
+
+export const quizAdvanced = [
+  {
+    q: 'อะไรทำให้ `$inspect(count)` ต่างจาก `console.log(count)`?',
+    options: [
+      'ไม่มีอะไรต่าง',
+      '`$inspect` log ใหม่ทุกการเปลี่ยนของค่าที่ track และเป็น dev-only (no-op ใน production)',
+      'มัน log ลงไฟล์',
+      'มันหยุดการทำงาน',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`untrack(() => config.verbose)` ทำอะไรภายใน effect?',
+    options: [
+      'ลบ config.verbose',
+      'อ่านค่าโดยไม่สร้าง dependency ดังนั้น effect จะไม่รันซ้ำตอนมันเปลี่ยน',
+      'ทำให้มันเป็น reactive',
+      'รันบน server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใช้ runes นอก component แบบ `.svelte` ได้ที่ไหน?',
+    options: [
+      'ไม่ได้เลย',
+      'ใน `.svelte.js` / `.svelte.ts` module',
+      'เฉพาะในไฟล์ config',
+      'เฉพาะในไฟล์ TypeScript',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ตอน share `$state` จาก module ทำไมต้อง expose ผ่าน getter?',
+    options: [
+      'เพื่อ code สั้นลง',
+      'primitive ที่ export ตรง ๆ จะถูก copy ตอน import และเสีย reactivity; getter อ่าน reactive source ตัวจริงทุกครั้ง',
+      'JavaScript บังคับให้ใช้ getter',
+      'เพื่อทำให้ read-only',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/advanced-runes" questions={quizAdvanced} />
+
+<ProgressTracker client:visible id="reactivity/advanced-runes" />

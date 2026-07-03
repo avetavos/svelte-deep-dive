@@ -1,0 +1,68 @@
+---
+title: 'Tooling, Testing & Production'
+description: 'workflow รอบ ๆ code Svelte ของคุณ — scaffold ด้วย sv CLI, TypeScript, testing ด้วย Vitest และ Testing Library และการ ship ขึ้น production'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## จาก component สู่แอปที่ ship แล้ว
+
+ตอนนี้คุณรู้จัก Svelte ในฐานะภาษาแล้ว โมดูลนี้คือ workflow *รอบ ๆ* มัน — วิธี scaffold โปรเจกต์, รักษา type ให้ปลอดภัย, พิสูจน์ว่ามันทำงาน และเอาไปให้ผู้ใช้จริง ไม่มีอะไรเป็น magic เฉพาะ Svelte — มันคืองาน craft ปกติของโปรเจกต์ที่ใช้ Vite โดยมีเครื่องมือรสชาติ Svelte ชี้ให้เห็นตรงจุด
+
+## โมดูลนี้ครอบคลุมอะไร
+
+| บทเรียน | สิ่งที่คุณจะได้เรียน |
+|--------|-------------------|
+| Project & tooling | scaffold ด้วย `sv create`, Vite และ `svelte-check` |
+| TypeScript with Svelte | type ให้ rune, props, snippet และ generic component |
+| Testing | Vitest, `@testing-library/svelte` และ Playwright |
+| Performance & deploy | output ที่เล็ก, adapter, prerendering และ production build |
+
+## toolchain แบบมองรวม
+
+<Mermaid title="อะไรอยู่รอบ ๆ Svelte component ของคุณ" code={toolDiagram} />
+
+export const toolDiagram = `flowchart LR
+  sv["sv CLI: scaffold"] --> vite["Vite: dev server + build"]
+  vite --> check["svelte-check: types + diagnostics"]
+  vite --> test["Vitest + Playwright: tests"]
+  vite --> adapter["SvelteKit adapter: deploy target"]
+  adapter --> prod["production site"]`;
+
+แกนหลัก: Svelte compile ออกมาเป็น output ที่เล็กโดย default และเครื่องมือรอบ ๆ (Vite, `svelte-check`, Vitest, adapter) ก็คือ JavaScript toolchain สมัยใหม่แบบเดียวกับที่คุณใช้ที่อื่น ๆ ส่วนใหญ่จึงย้ายมาจาก framework อื่นได้ตรง ๆ
+
+<Callout title="The one-line takeaway">
+โมดูลนี้คือ **workflow รอบ ๆ Svelte**: scaffold ด้วย **`sv` CLI**, develop และ build บน **Vite**, รักษา type ให้ตรงด้วย **`svelte-check`**, พิสูจน์ behaviour ด้วย **Vitest + Testing Library + Playwright** และ deploy ผ่าน **SvelteKit adapter** ตัว compiler ให้ output ที่เล็กและเร็วมาอยู่แล้ว — toolchain ที่เหลือคือเครื่องมือ JavaScript สมัยใหม่มาตรฐาน บวกชิ้นส่วนที่รู้จัก Svelte ไม่กี่ตัว
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'โปรเจกต์ Svelte/SvelteKit สมัยใหม่ใช้ build tool อะไรเป็นฐาน?',
+    options: [
+      'Webpack อย่างเดียว',
+      'Vite',
+      'Rollup ที่ตั้งค่าเองด้วยมือ',
+      'ไม่มี build tool',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`svelte-check` ทำอะไร?',
+    options: [
+      'รันแอปบน production',
+      'type-check และรายงาน diagnostics ทั่วไฟล์ .svelte รวมถึงในส่วน markup ด้วย',
+      'minify CSS',
+      'deploy เว็บไซต์',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="tooling-and-production/index" />

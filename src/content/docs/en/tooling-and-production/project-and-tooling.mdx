@@ -1,0 +1,106 @@
+---
+title: 'Project & Tooling'
+description: 'Scaffolding a project with the sv CLI, how Vite drives development and builds, the editor extension, and svelte-check for diagnostics.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Scaffolding with the `sv` CLI
+
+The current way to start a Svelte or SvelteKit project is the **`sv` CLI**. One command scaffolds the project and can add integrations (TypeScript, Prettier, ESLint, Tailwind, testing) interactively:
+
+```bash
+npx sv create my-app
+cd my-app
+npm install
+npm run dev
+```
+
+`sv create` replaced the older `npm create svelte@latest` flow. It sets up a SvelteKit project by default (the recommended way to build Svelte apps), wires up Vite, and lets you opt into add-ons up front. There's also `npx sv add <name>` to add an integration to an existing project later.
+
+<Callout title="Svelte vs SvelteKit">
+`sv create` scaffolds a **SvelteKit** app — the official framework that adds routing, data loading, and server rendering around Svelte components. You *can* use the Svelte compiler standalone (embedded in another Vite app, or as a component library), but for building an application, SvelteKit is the default and everything in this course's SvelteKit module builds on this scaffold.
+</Callout>
+
+## Vite drives everything
+
+A Svelte project runs on **Vite**. In development, Vite serves your modules over native ESM with **hot module replacement** — edit a component and the change appears without a full reload, preserving state where possible. For production, `vite build` bundles and optimizes the output.
+
+```json
+{
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  }
+}
+```
+
+The Svelte integration for Vite (`@sveltejs/vite-plugin-svelte`, wired up for you by `sv create`) is what runs the compiler on your `.svelte` files during dev and build. You rarely touch it directly.
+
+<Mermaid title="The dev and build pipeline" code={pipelineDiagram} />
+
+export const pipelineDiagram = `flowchart LR
+  code["your .svelte / .ts files"] --> vite["Vite + svelte plugin"]
+  vite --> dev["dev: HMR server"]
+  vite --> build["build: compiled, bundled output"]`;
+
+## Editor support and `svelte-check`
+
+Two tools keep the authoring experience honest:
+
+- **The Svelte editor extension** (official, for VS Code and others) gives syntax highlighting, autocompletion, and inline diagnostics for `.svelte` files — including type errors inside the markup, not just the script.
+- **`svelte-check`** is the command-line equivalent: it type-checks and lints your whole project, including expressions in templates, so you catch errors in CI that the editor would show you locally.
+
+```bash
+npm run check      # runs svelte-check across the project
+```
+
+Because `svelte-check` understands `.svelte` files end to end, it catches mistakes a plain `tsc` would miss — a wrong prop type passed in markup, a typo in a template expression, an unused CSS selector. Prettier and ESLint (with their Svelte plugins, offered by `sv create`) round out formatting and linting.
+
+<Callout title="The one-line takeaway">
+Scaffold with **`npx sv create`** (the current CLI, replacing `npm create svelte`) — it sets up a **SvelteKit** app on **Vite** with optional TypeScript/Prettier/ESLint/testing. Vite gives you **HMR** in dev and an optimized **`vite build`** for production. Keep quality high with the **Svelte editor extension** and **`svelte-check`**, which type-check `.svelte` files including the markup — catching errors plain `tsc` cannot.
+</Callout>
+
+export const quizTooling = [
+  {
+    q: 'What is the current command to scaffold a new Svelte/SvelteKit project?',
+    options: [
+      'npm create svelte@latest',
+      'npx sv create',
+      'npx create-svelte-app',
+      'svelte new',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does Vite provide during development?',
+    options: [
+      'A production database',
+      'A dev server with hot module replacement (HMR)',
+      'Type checking only',
+      'Nothing — Svelte has its own server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why use `svelte-check` instead of plain `tsc`?',
+    options: [
+      'It is faster at everything',
+      'It understands .svelte files end to end, type-checking expressions in the markup that tsc cannot see',
+      'It deploys the app',
+      'It replaces Vite',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="tooling-and-production/project-and-tooling" questions={quizTooling} />
+
+<ProgressTracker client:visible id="tooling-and-production/project-and-tooling" />

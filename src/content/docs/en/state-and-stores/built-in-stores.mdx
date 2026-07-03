@@ -1,0 +1,129 @@
+---
+title: 'Built-in Stores'
+description: 'The writable, readable, and derived helpers from svelte/store — how each works, how to read them with the $ prefix, and when stores still earn their place.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## writable — the workhorse
+
+`writable(initial)` from `svelte/store` creates a store you can read *and* write. It has three methods: `set(value)` (replace), `update(fn)` (change based on the current value), and `subscribe(fn)` (the contract).
+
+```js
+// stores/count.js
+import { writable } from 'svelte/store';
+
+export const count = writable(0);
+```
+
+```svelte
+<script>
+  import { count } from './stores/count.js';
+</script>
+
+<button onclick={() => count.update((n) => n + 1)}>increment</button>
+<button onclick={() => count.set(0)}>reset</button>
+<p>{$count}</p>   <!-- $ reads the value and re-renders -->
+```
+
+Any component that imports `count` shares the same store — writing in one place updates everywhere it's read. That's shared state in one line.
+
+## readable — a value you can't set from outside
+
+`readable(initial, start)` creates a store whose value is controlled by a **start function**, not by consumers. The start function receives `set` (and `update`), runs when the first subscriber arrives, and returns a **stop** function that runs when the last subscriber leaves — perfect for wrapping a push-based source.
+
+```js
+// stores/time.js — a clock nobody can set from outside
+import { readable } from 'svelte/store';
+
+export const time = readable(new Date(), (set) => {
+  const id = setInterval(() => set(new Date()), 1000);
+  return () => clearInterval(id);   // cleanup when no one is listening
+});
+```
+
+The start/stop lifecycle means the interval only runs while something is actually subscribed — no wasted work.
+
+## derived — computed from other stores
+
+`derived(source, fn)` builds a new store from one or more existing stores, recomputing when any source changes.
+
+```js
+import { derived } from 'svelte/store';
+import { count } from './count.js';
+
+export const doubled = derived(count, ($count) => $count * 2);
+
+// From multiple stores — pass an array:
+export const summary = derived(
+  [count, doubled],
+  ([$count, $doubled]) => `${$count} doubled is ${$doubled}`
+);
+```
+
+<Mermaid title="The three built-in stores" code={storesDiagram} />
+
+export const storesDiagram = `flowchart LR
+  w["writable: set, update, subscribe"] --> use["read with $ in a component"]
+  r["readable: start/stop controls the value"] --> use
+  d["derived: computed from other stores"] --> use`;
+
+## When stores still earn their place
+
+With runes available, reach for stores when you specifically want the **contract**: wrapping an external push source (`readable` around a WebSocket), interoperating with observables, or working in existing store-based code. For plain app state shared across components, a runed module (next lesson) is usually simpler.
+
+<Callout title="The one-line takeaway">
+`svelte/store` gives you three helpers: **`writable`** (read + write via `set`/`update`/`subscribe`), **`readable`** (value controlled by a start/stop function — ideal for wrapping a push source like a timer or socket), and **`derived`** (computed from one or more stores, recomputing on change). Read any of them in a component with the **`$`** prefix. They remain the right tool when you need the subscribe *contract* or interop; for plain shared app state, prefer runes.
+</Callout>
+
+export const quizBuiltin = [
+  {
+    q: 'What three methods does a `writable` store have?',
+    options: [
+      'get, put, delete',
+      '`set`, `update`, and `subscribe`',
+      'read, write, watch',
+      'push, pop, peek',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is special about a `readable` store\'s start function?',
+    options: [
+      'It runs on every render',
+      'It runs when the first subscriber arrives and returns a stop function that runs when the last one leaves',
+      'It must return a promise',
+      'It can only set a string',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `derived(count, $count => $count * 2)` produce?',
+    options: [
+      'A writable store',
+      'A store whose value is computed from `count`, recomputing whenever `count` changes',
+      'A one-time snapshot',
+      'A plain number',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When should you still prefer a store over runes?',
+    options: [
+      'Never',
+      'When you need the subscribe contract — wrapping an external push source, interop with observables, or existing store-based code',
+      'For all component-local state',
+      'Only in SvelteKit load functions',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/built-in-stores" questions={quizBuiltin} />
+
+<ProgressTracker client:visible id="state-and-stores/built-in-stores" />

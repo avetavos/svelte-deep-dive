@@ -1,0 +1,126 @@
+---
+title: 'The $effect Rune'
+description: 'Synchronizing with the outside world using $effect, cleanup functions, $effect.pre, and the crucial guidance that you usually do not need an effect.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Effects synchronize with the outside world
+
+`$effect` runs a function after the DOM has updated, and re-runs it whenever the reactive values it reads change. It is for **side effects** — synchronizing Svelte state with things outside Svelte: the DOM directly, a third-party library, a subscription, a timer, logging, `localStorage`.
+
+```svelte
+<script>
+  let count = $state(0);
+
+  $effect(() => {
+    // Runs after render, and again whenever count changes.
+    document.title = `Count: ${count}`;
+  });
+</script>
+```
+
+Dependencies are tracked automatically, exactly like `$derived` — the effect reads `count`, so it re-runs when `count` changes. No dependency array.
+
+## Cleanup
+
+If an effect sets something up that must be torn down — an interval, an event listener, a subscription — **return a cleanup function**. Svelte runs it before the effect re-runs and when the component is destroyed.
+
+```svelte
+<script>
+  let seconds = $state(0);
+
+  $effect(() => {
+    const id = setInterval(() => seconds++, 1000);
+    return () => clearInterval(id);   // cleanup: runs before re-run and on destroy
+  });
+</script>
+```
+
+## $effect.pre
+
+`$effect` runs **after** the DOM updates. Occasionally you need to read the DOM *before* it updates — for example, to capture scroll position before new content pushes it. **`$effect.pre`** runs before the DOM update instead, with the same tracking and cleanup rules.
+
+```svelte
+<script>
+  let messages = $state([]);
+
+  $effect.pre(() => {
+    messages.length;                 // track the dependency
+    // read scroll position BEFORE the DOM updates with new messages
+  });
+</script>
+```
+
+## You probably do not need an effect
+
+This is the most important guidance in the module. Effects are an escape hatch, and reaching for them to manage *internal* state is the most common Svelte 5 mistake. Before writing an effect, ask:
+
+- **Computing a value from state?** Use `$derived`, not an effect that assigns state.
+- **Responding to a user action?** Do the work in the event handler (`onclick`), not in an effect watching a variable.
+- **Mirroring a prop into state?** Usually a design smell — derive from the prop instead.
+
+<Mermaid title="Choosing the right tool" code={effectDiagram} />
+
+export const effectDiagram = `flowchart TB
+  q["Need to react to state?"] --> derive["Computing a value? → $derived"]
+  q --> handler["From a user action? → event handler"]
+  q --> effect["Syncing with something OUTSIDE Svelte? → $effect"]`;
+
+An effect is the right tool only when you are bridging to something Svelte doesn't control — the document title, a canvas, a websocket, `localStorage`, an analytics call. If the work stays inside Svelte's reactive world, a rune like `$derived` almost always fits better.
+
+<Callout title="The one-line takeaway">
+`$effect(fn)` runs **after the DOM updates** and re-runs when its tracked reads change — for **side effects that bridge to the outside world** (DOM, subscriptions, timers, `localStorage`). Return a **cleanup function** to tear down subscriptions/intervals; use **`$effect.pre`** to run before the DOM updates. Crucially, **you usually do not need an effect**: derive computed values with `$derived`, do action-driven work in event handlers, and reserve `$effect` for genuine external synchronization.
+</Callout>
+
+export const quizEffect = [
+  {
+    q: 'What is `$effect` for?',
+    options: [
+      'Computing values from state',
+      'Side effects that synchronize with the outside world — DOM, subscriptions, timers, localStorage',
+      'Declaring props',
+      'Styling components',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you tear down a subscription or interval created in an effect?',
+    options: [
+      'Call onDestroy separately',
+      'Return a cleanup function from the effect — it runs before the next run and on destroy',
+      'You cannot clean up',
+      'Set the state to null',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'You want to compute `fullName` from `first` and `last`. What should you use?',
+    options: [
+      'An `$effect` that assigns `fullName`',
+      '`$derived` — do not use an effect to compute a value',
+      'A store',
+      'onMount',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the difference between `$effect` and `$effect.pre`?',
+    options: [
+      'They are identical',
+      '`$effect` runs after the DOM updates; `$effect.pre` runs before it',
+      '`$effect.pre` cannot track dependencies',
+      '`$effect.pre` runs on the server only',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/effect-rune" questions={quizEffect} />
+
+<ProgressTracker client:visible id="reactivity/effect-rune" />

@@ -1,0 +1,135 @@
+---
+title: 'Events & Attributes'
+description: 'Svelte 5 event handlers (onclick, not on:click), attribute shorthands and spreads, and the class and style directives.'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Events are just properties now
+
+In Svelte 5, DOM event handlers are **regular attributes** named like the property: `onclick`, `oninput`, `onsubmit`. You pass a function, exactly as you would in plain HTML/JS.
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>+1</button>
+<input oninput={(e) => console.log(e.currentTarget.value)} />
+```
+
+This is a deliberate change from **Svelte 4**, which used a special `on:click` directive. If you read older code or tutorials, you'll see `on:click={handler}` — the modern equivalent is `onclick={handler}`. The new form is just a property, so it composes naturally and can be spread with other attributes.
+
+<Callout title="Svelte 4 vs Svelte 5 events">
+Svelte 4: `<button on:click={handler}>` — a framework directive. Svelte 5: `<button onclick={handler}>` — a plain property. Event *modifiers* (`on:click|preventDefault`) are also gone in 5; you call `e.preventDefault()` inside the handler, or use a small wrapper. This is one of the most visible Svelte 4 → 5 changes.
+</Callout>
+
+## Attribute shorthands and spreads
+
+When a variable has the same name as the attribute, use the shorthand `{value}`:
+
+```svelte
+<script>
+  let src = $state('/logo.png');
+  let alt = $state('Logo');
+</script>
+
+<img {src} {alt} />            <!-- shorthand for src={src} alt={alt} -->
+```
+
+Spread a whole object of attributes with `{...obj}` — handy for forwarding props to an element:
+
+```svelte
+<script>
+  let { ...rest } = $props();   // collect remaining props
+</script>
+
+<button {...rest}>click</button>   <!-- forward them all to the button -->
+```
+
+## The class and style directives
+
+Toggling classes and inline styles reactively is common enough that Svelte gives them dedicated directives.
+
+**`class:name={condition}`** adds the class when the condition is truthy:
+
+```svelte
+<div class:active={isActive} class:done={isDone}>…</div>
+```
+
+Svelte 5 also lets you pass an object or array to the plain `class` attribute (like the popular `clsx` helper):
+
+```svelte
+<div class={{ active: isActive, done: isDone }}>…</div>
+```
+
+**`style:prop={value}`** sets an inline CSS property reactively:
+
+```svelte
+<div style:color={textColor} style:font-size="{size}px">…</div>
+```
+
+Both compile to precise updates — when `isActive` flips, only that class is toggled; when `textColor` changes, only that style property is set.
+
+<Mermaid title="Directives compile to surgical updates" code={directiveDiagram} />
+
+export const directiveDiagram = `flowchart LR
+  cls["class:active={isActive}"] --> u1["toggle exactly that class"]
+  sty["style:color={textColor}"] --> u2["set exactly that CSS property"]
+  ev["onclick={handler}"] --> u3["attach a plain event listener"]`;
+
+<Callout title="The one-line takeaway">
+Svelte 5 event handlers are **plain properties** — `onclick={handler}`, not Svelte 4's `on:click` directive (and event modifiers are gone — call `e.preventDefault()` yourself). Use the **`{value}` shorthand** when a variable matches the attribute name, **`{...obj}`** to spread attributes, and the **`class:name={cond}`** and **`style:prop={value}`** directives (or an object passed to `class`) to toggle classes and styles reactively — all of which compile to surgical DOM updates.
+</Callout>
+
+export const quizEvents = [
+  {
+    q: 'How do you attach a click handler in Svelte 5?',
+    options: [
+      '`on:click={handler}`',
+      '`onclick={handler}` — a plain property',
+      '`@click="handler"`',
+      '`v-on:click`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What changed about events from Svelte 4 to Svelte 5?',
+    options: [
+      'Nothing',
+      'Svelte 4 used the `on:click` directive (with modifiers); Svelte 5 uses plain properties like `onclick` and drops modifiers',
+      'Events were removed',
+      'Events now require a store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `<img {src} {alt} />` mean?',
+    options: [
+      'It is invalid syntax',
+      'Shorthand for `src={src} alt={alt}` when the variable names match the attributes',
+      'It clears the attributes',
+      'It spreads an object',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `class:active={isActive}` do?',
+    options: [
+      'Always adds the active class',
+      'Adds the `active` class only when `isActive` is truthy, updating precisely when it changes',
+      'Renames the element',
+      'Sets an inline style',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/events-and-attributes" questions={quizEvents} />
+
+<ProgressTracker client:visible id="foundations/events-and-attributes" />

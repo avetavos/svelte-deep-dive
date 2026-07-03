@@ -1,0 +1,94 @@
+---
+title: 'Reactivity with Runes'
+description: 'runes คือสัญญาณของ compiler ที่ทำให้ค่าเป็น reactive ภาพรวมของ $state, $derived, $effect, $props และการเปลี่ยนจาก Svelte 4 มา Svelte 5'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Runes: reactivity แบบชัดเจน
+
+**rune** คือสัญญาณของ compiler — คำที่ขึ้นต้นด้วย `$` และหน้าตาเหมือน function — ที่บอก Svelte ว่า "ค่านี้เป็น reactive" runes ไม่ได้ถูก import และไม่ได้ถูกเรียกตอน runtime เหมือน function ปกติ compiler จะรู้จักมันและ generate กลไก reactivity ขึ้นมารอบ ๆ
+
+```svelte
+<script>
+  let count = $state(0);        // reactive state
+  let double = $derived(count * 2);  // recomputed when count changes
+  $effect(() => console.log(double)); // runs when double changes
+</script>
+```
+
+model ทั้งหมดคือ: **mark ค่าที่เป็น reactive ด้วย runes แล้ว compiler จะต่อ dependency graph ให้เอง** คุณไม่ต้องเขียน dependency array หรือ code สำหรับ subscribe เลย — compiler เห็นว่า `double` อ่าน `count` และ effect อ่าน `double` แล้วเชื่อมให้
+
+## การเปลี่ยนจาก Svelte 4 มา Svelte 5
+
+runes คือการเปลี่ยนแปลงหลักใน Svelte 5 มัน**แทนที่** กลไกของ Svelte 4 สามอย่างด้วยระบบเดียวที่สอดคล้องกัน:
+
+| Svelte 4 | Svelte 5 |
+|----------|----------|
+| `let count = 0` (top-level `let` เป็น reactive โดยปริยาย) | `let count = $state(0)` |
+| `$: double = count * 2` (reactive statement) | `let double = $derived(count * 2)` |
+| `$: { … }` (reactive block, side effect) | `$effect(() => { … })` |
+| `export let name` (props) | `let { name } = $props()` |
+
+ทำไมถึงเปลี่ยน? ใน Svelte 4 reactivity เป็นแบบ *implicit* — `let` ธรรมดาที่ด้านบนของ component เป็น reactive แต่ code เดียวกันในไฟล์ `.js` กลับไม่เป็น และ `$:` ก็มี edge case ที่งง runes ทำให้ reactivity **ชัดเจนและ portable**: `$state` มีความหมายเหมือนกันทั้งใน component และใน `.svelte.js` module และกฎก็เหมือนกันหมด
+
+<Mermaid title="runes mark reactivity แล้ว compiler ต่อ graph" code={runeDiagram} />
+
+export const runeDiagram = `flowchart LR
+  state["$state คือ reactive source"] --> derived["$derived recompute จาก sources"]
+  derived --> effect["$effect ทำงานเมื่อค่าที่อ่านเปลี่ยน"]
+  props["$props คือ input จาก parent"] --> derived`;
+
+## โมดูลนี้ครอบคลุมอะไร
+
+- **`$state`** — reactive state, deep โดย default สำหรับ object และ array
+- **`$derived`** — ค่าที่ cache ไว้ คำนวณจากค่า reactive อื่น
+- **`$effect`** — sync กับโลกภายนอก (และทำไมส่วนใหญ่คุณไม่ควรใช้)
+- **`$props` / `$bindable`** — input ของ component และ two-way binding
+- **Advanced** — `$inspect`, `untrack` และ shared reactive state ใน `.svelte.js` module
+
+<Callout title="สรุปบรรทัดเดียว">
+**runes** คือสัญญาณของ compiler ที่ขึ้นต้นด้วย `$` ทำให้ reactivity **ชัดเจน**: `$state` (reactive state), `$derived` (computed value), `$effect` (side effect) และ `$props` (input) ใน Svelte 5 พวกมัน**แทนที่** reactivity แบบ implicit ของ Svelte 4 (`let`), `$:` statement และ `export let` props — ด้วยระบบเดียวที่ทำงานเหมือนกันทั้งใน component และ `.svelte.js` module คุณ mark ว่าอะไรเป็น reactive แล้ว compiler ต่อ dependency graph ให้
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'rune คืออะไร?',
+    options: [
+      'runtime function ที่ import จาก svelte',
+      'สัญญาณของ compiler ที่ขึ้นต้นด้วย `$` ซึ่ง mark ค่าให้เป็น reactive',
+      'CSS directive',
+      'store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใน Svelte 5 อะไรมาแทน reactive statement `$: double = count * 2` ของ Svelte 4?',
+    options: [
+      'ไม่มีอะไรเปลี่ยน',
+      '`let double = $derived(count * 2)`',
+      '`$effect(() => double = count * 2)`',
+      'store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม Svelte 5 ถึงเอา runes เข้ามา?',
+    options: [
+      'เพิ่ม syntax เพื่อความเท่',
+      'ทำให้ reactivity ชัดเจนและ portable — กฎเดียวกันทั้งใน component และ .svelte.js module',
+      'เพื่อเอา reactivity ออก',
+      'เพื่อให้เหมือน React',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="reactivity/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="reactivity/index" />

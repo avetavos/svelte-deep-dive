@@ -1,0 +1,123 @@
+---
+title: 'Runes vs Stores'
+description: 'การเปลี่ยนแปลงใน Svelte 5 — $state ใน .svelte.js module ให้ shared reactive state โดยไม่ต้องมีพิธีของ store พร้อมเปรียบเทียบและเมื่อไรควรใช้อะไร'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## counter ตัวเดียวกัน สองวิธี
+
+ก่อน Svelte 5 การ share reactive state ข้ามคอมโพเนนต์หมายถึง store ตอนนี้คุณเอา `$state` ไปไว้ใน module แล้ว export ได้ runes ทำงานนอกคอมโพเนนต์ได้ — แต่เฉพาะในไฟล์นามสกุล **`.svelte.js`** หรือ **`.svelte.ts`** ซึ่งบอก compiler ให้เปิดการประมวลผล rune
+
+**เวอร์ชัน store:**
+
+```js
+// counter.js
+import { writable } from 'svelte/store';
+export const count = writable(0);
+```
+
+```svelte
+<script>
+  import { count } from './counter.js';
+</script>
+<button onclick={() => count.update((n) => n + 1)}>{$count}</button>
+```
+
+**เวอร์ชัน runes:**
+
+```js
+// counter.svelte.js  ← note the .svelte.js extension
+export const counter = $state({ value: 0 });
+```
+
+```svelte
+<script>
+  import { counter } from './counter.svelte.js';
+</script>
+<button onclick={() => counter.value++}>{counter.value}</button>
+```
+
+ไม่มี `writable` ไม่มี `set`/`update` ไม่มี prefix `$` — คุณอ่านและ mutate `counter.value` เหมือน object ธรรมดา และมัน reactive ทุกที่ที่ใช้
+
+## ทำไมต้อง export object ไม่ใช่ค่าเปล่า ๆ
+
+สังเกตว่าเวอร์ชัน runes export `{ value: 0 }` ไม่ใช่ `0` การ export `let x = $state(0)` เปล่า ๆ จะคง link ข้าม module boundary ไว้ไม่ได้ — การ import มันจะ copy ค่าและเสีย reactivity ไป การ export **object** (หรือฟังก์ชันที่ return reactive state) ทำให้ทุกคนยังชี้ไปที่ reactive proxy ตัวเดียวกัน ดังนั้น mutation ที่ `counter.value` จึงกระจายไป นี่คือ gotcha ข้อเดียวของ module-level runes
+
+## เทียบกันข้าง ๆ
+
+| | Store (`writable`) | Runes (`.svelte.js`) |
+|---|---|---|
+| อ่านในคอมโพเนนต์ | `$count` | `counter.value` |
+| อัปเดต | `count.set(x)` / `count.update(fn)` | `counter.value = x` |
+| นอกคอมโพเนนต์ | ใช้ได้ทุกที่ | ต้องใช้ `.svelte.js`/`.svelte.ts` |
+| subscribe contract | มี (interop, observable) | ไม่มี |
+| พิธีการ | มากกว่า (method, `$`) | น้อยกว่า (อ่าน/เขียนตรง ๆ) |
+
+<Mermaid title="เลือก runes หรือ stores" code={chooseDiagram} />
+
+export const chooseDiagram = `flowchart TB
+  q["share reactive state ไหม"] --> interop["ต้องการ subscribe contract ไหม (observable, external push source)"]
+  interop --> yes["ใช่: ใช้ store"]
+  interop --> no["ไม่: export state จาก .svelte.js module"]`;
+
+## เมื่อไรควรใช้อะไร
+
+- **runes (default)** app state ที่ share ส่วนใหญ่ — cart, theme, current-user object ง่ายกว่า boilerplate น้อยกว่า และ mental model เดียวกับ component-local state
+- **stores** เมื่อคุณต้องการ *contract*: ห่อ WebSocket หรือ push source อื่นด้วย `readable`, interop กับ observable แบบ RxJS หรือดูแล code ที่ใช้ store อยู่แล้ว stores ไม่ใช่ของเก่า — มันคือเครื่องมือเฉพาะทาง
+
+<Callout title="สรุปหนึ่งบรรทัด">
+Svelte 5 ให้คุณ **export `$state` จาก `.svelte.js`/`.svelte.ts` module** สำหรับ shared reactive state — อ่านและ mutate มันเหมือน object ธรรมดา ไม่ต้องมีพิธี `writable`/`set`/`$` ให้ export เป็น **object** (ไม่ใช่ค่าเปล่า ๆ) เพื่อให้ reactive link รอดจากการ import ใช้ **runes สำหรับ shared app state ส่วนใหญ่** และเลือก **stores เมื่อต้องการ subscribe contract** (external push source, observable interop, code เดิม)
+</Callout>
+
+export const quizVs = [
+  {
+    q: 'คุณใช้ runes สำหรับ state นอกคอมโพเนนต์ยังไง?',
+    options: [
+      'ไฟล์ .js ใด ๆ ก็ใช้ได้',
+      'เอา `$state` ไปไว้ในไฟล์นามสกุล `.svelte.js` หรือ `.svelte.ts`',
+      'ห่อด้วย writable ก่อน',
+      'ใช้ runes นอกคอมโพเนนต์ไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมต้อง export object อย่าง `$state({ value: 0 })` แทน `$state(0)` เปล่า ๆ?',
+    options: [
+      'object เร็วกว่า',
+      'การ import ค่าเปล่า ๆ จะ copy มันและเสีย reactivity object ทำให้ทุกคนยังชี้ไปที่ reactive proxy ตัวเดียวกัน',
+      'ค่าเปล่า ๆ ใช้ไม่ได้',
+      'ไม่มีผลอะไร',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ในเวอร์ชัน runes คุณอัปเดต shared state ยังไง?',
+    options: [
+      'เรียก `counter.set(x)`',
+      'mutate มันตรง ๆ: `counter.value = x` (หรือ `counter.value++`)',
+      'dispatch action',
+      'ใช้ `$counter = x`',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เมื่อไรที่ stores เป็นตัวเลือกที่ดีกว่า runes?',
+    options: [
+      'สำหรับ state ทั้งหมด',
+      'เมื่อคุณต้องการ subscribe contract — ห่อ external push source, observable interop หรือ code ที่ใช้ store อยู่แล้ว',
+      'ไม่มีวัน',
+      'เฉพาะสำหรับตัวเลข',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-and-stores/runes-vs-stores" questions={quizVs} />
+
+<ProgressTracker client:visible id="state-and-stores/runes-vs-stores" />

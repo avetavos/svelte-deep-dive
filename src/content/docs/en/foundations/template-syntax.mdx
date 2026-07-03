@@ -1,0 +1,138 @@
+---
+title: 'Template Syntax'
+description: 'Expressions, the logic blocks {#if}, {#each}, {#await}, and {#key}, plus {@html} and {@render} — how Svelte markup expresses dynamic UI.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Expressions
+
+Any `{expression}` in markup embeds a JavaScript value. Because Svelte tracks reactivity through runes, when the expression depends on reactive state, the compiler updates that spot automatically.
+
+```svelte
+<script>
+  let user = $state({ name: 'Ada', points: 42 });
+</script>
+
+<p>{user.name} has {user.points} points</p>
+<p>{user.points > 40 ? 'VIP' : 'member'}</p>   <!-- any JS expression -->
+<img src={user.avatar} alt={user.name} />       <!-- in attributes too -->
+```
+
+## Logic blocks
+
+Unlike JSX (which uses JavaScript `&&` and `.map()`), Svelte has dedicated **block** syntax for control flow. It reads like HTML and the compiler optimizes it directly.
+
+**Conditionals — `{#if}`:**
+
+```svelte
+{#if loggedIn}
+  <p>Welcome back</p>
+{:else if guest}
+  <p>Browsing as guest</p>
+{:else}
+  <button onclick={login}>Log in</button>
+{/if}
+```
+
+**Lists — `{#each}`** (with a keyed identity via the `(item.id)` expression, so the compiler tracks items across reorders):
+
+```svelte
+{#each todos as todo (todo.id)}
+  <li>{todo.text}</li>
+{:else}
+  <li>No todos yet</li>   <!-- rendered when the list is empty -->
+{/each}
+```
+
+**Async — `{#await}`** handles a promise's pending, resolved, and rejected states inline:
+
+```svelte
+{#await fetchUser()}
+  <p>Loading…</p>
+{:then user}
+  <p>Hello {user.name}</p>
+{:catch error}
+  <p>Failed: {error.message}</p>
+{/await}
+```
+
+<Mermaid title="The template blocks and what each expresses" code={blockDiagram} />
+
+export const blockDiagram = `flowchart TB
+  tmpl["Svelte markup"] --> ifb["{#if} conditional branches"]
+  tmpl --> each["{#each} lists (keyed by id)"]
+  tmpl --> awaitb["{#await} promise states"]
+  tmpl --> key["{#key} destroy and recreate on change"]`;
+
+The `{#key expression}` block destroys and recreates its contents whenever the expression changes — useful to force a re-mount (resetting state or replaying a transition).
+
+## Rendering raw HTML and snippets
+
+- **`{@html string}`** injects a raw HTML string (bypassing escaping). Use it only for trusted/sanitized content — it's an XSS vector otherwise.
+- **`{@render snippet()}`** renders a *snippet* — Svelte 5's reusable markup block that replaces the old `<slot>` mechanism. Snippets get a full lesson later; for now, know that `{@render …}` is how snippet content lands in the markup.
+
+```svelte
+{@html sanitizedMarkdown}
+
+{#snippet greeting(name)}
+  <p>Hello {name}</p>
+{/snippet}
+{@render greeting('world')}
+```
+
+<Callout title="The one-line takeaway">
+Svelte markup embeds values with **`{expression}`** and expresses control flow with dedicated **blocks**: `{#if}/{:else}` for conditionals, `{#each … as item (id)}` for keyed lists (with an `{:else}` empty case), `{#await}` for a promise's pending/then/catch states, and `{#key}` to force re-creation. **`{@html}`** injects trusted raw HTML, and **`{@render snippet()}`** renders a Svelte 5 snippet (the replacement for `<slot>`).
+</Callout>
+
+export const quizTemplate = [
+  {
+    q: 'How does Svelte express conditional rendering?',
+    options: [
+      'With JavaScript `&&` in the markup like JSX',
+      'With a dedicated `{#if}…{:else}…{/if}` block',
+      'With a v-if attribute',
+      'It cannot render conditionally',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why add `(todo.id)` to an `{#each todos as todo (todo.id)}` block?',
+    options: [
+      'It is required syntax with no effect',
+      'It gives each item a stable keyed identity so the compiler tracks items correctly across reorders',
+      'It sorts the list',
+      'It limits the list length',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does `{#await promise}` do?',
+    options: [
+      'Blocks rendering until the promise resolves',
+      'Handles the promise\'s pending, resolved (`{:then}`), and rejected (`{:catch}`) states inline in markup',
+      'Caches the promise',
+      'Runs the promise on the server',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is `{@render snippet()}` for?',
+    options: [
+      'Injecting raw HTML',
+      'Rendering a Svelte 5 snippet — the reusable markup block that replaces the old `<slot>`',
+      'Running a store',
+      'Defining a route',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/template-syntax" questions={quizTemplate} />
+
+<ProgressTracker client:visible id="foundations/template-syntax" />

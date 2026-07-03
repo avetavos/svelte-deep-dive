@@ -1,0 +1,125 @@
+---
+title: 'Lifecycle'
+description: 'onMount, onDestroy และ tick — lifecycle function ที่ยังมีประโยชน์ใน Svelte 5 และ $effect ครอบคลุมงานส่วนใหญ่ที่ lifecycle hook เคยทำอย่างไร'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## $effect ครอบคลุมงาน lifecycle ส่วนใหญ่
+
+ใน Svelte 4 เราหยิบ lifecycle hook (`onMount`, `beforeUpdate`, `afterUpdate`) มาใช้กับอะไรก็ตามที่เกี่ยวกับ DOM หรือ timing ใน Svelte 5 **`$effect` ครอบคลุมส่วนใหญ่ของสิ่งนั้น**: มัน run หลัง DOM update, run ซ้ำเมื่อ dependency เปลี่ยน และ cleanup function ที่ return จัดการการ teardown
+
+```svelte
+<script>
+  let count = $state(0);
+
+  $effect(() => {
+    document.title = `Count: ${count}`;   // run หลัง mount และทุกครั้งที่เปลี่ยน
+    return () => { document.title = 'App'; };  // cleanup ตอน destroy / ก่อน run ซ้ำ
+  });
+</script>
+```
+
+ดังนั้นก่อนหยิบ lifecycle function ให้ถามว่า effect เหมาะไหม บ่อยครั้งมันเหมาะ
+
+## onMount และ onDestroy
+
+lifecycle function สองตัวยังมีประโยชน์จริง:
+
+- **`onMount(fn)`** run ครั้งเดียวหลัง component render ลง DOM ครั้งแรก **เฉพาะใน browser** (ไม่เคยระหว่าง SSR) เป็นที่ที่เหมาะสำหรับ setup ที่ browser-only: วัด DOM, init canvas หรือ map library, เริ่ม interval ถ้า `fn` return function มันจะถูกเรียกตอน destroy
+- **`onDestroy(fn)`** run เมื่อ component ถูกลบ — สำหรับ cleanup ที่ไม่ผูกกับ effect ตัวใดตัวหนึ่ง (unsubscribe, clear timer)
+
+```svelte
+<script>
+  import { onMount, onDestroy } from 'svelte';
+
+  onMount(() => {
+    const chart = new Chart(canvasEl);   // library ที่ browser-only
+    return () => chart.destroy();         // cleanup ตอน unmount
+  });
+
+  onDestroy(() => console.log('gone'));
+</script>
+```
+
+ความต่างสำคัญจาก `$effect`: `onMount` run **ครั้งเดียวพอดี** และ **เฉพาะใน browser** ซึ่งเป็นสิ่งที่คุณต้องการเป๊ะ ๆ สำหรับ initialization ครั้งเดียวแบบ browser-only effect ที่ไม่อ่าน reactive state ก็ run ครั้งเดียวเหมือนกัน แต่ `onMount` บอก intent ชัดและการันตีว่า run เฉพาะ browser
+
+<Mermaid title="จังหวะ lifecycle ของ component" code={lifeDiagram} />
+
+export const lifeDiagram = `flowchart LR
+  create["component ถูกสร้าง"] --> mount["onMount (browser, ครั้งเดียว)"]
+  mount --> effects["$effect run หลัง DOM update"]
+  effects --> effects
+  effects --> destroy["onDestroy + cleanup ของ effect"]`;
+
+## tick: รอให้ DOM update
+
+Svelte batch การ update DOM เมื่อคุณเปลี่ยน state และต้องการให้ DOM สะท้อนมัน *ก่อน* บรรทัดถัดไป run (เพื่อวัด element หรือ focus input ที่เพิ่งแสดง) **`await tick()`** resolve เมื่อ pending changes ถูก apply แล้ว
+
+```svelte
+<script>
+  import { tick } from 'svelte';
+
+  async function addAndScroll() {
+    items.push(newItem);
+    await tick();                 // รอให้ row ใหม่อยู่ใน DOM
+    list.scrollTop = list.scrollHeight;
+  }
+</script>
+```
+
+<Callout title="สรุปหนึ่งบรรทัด">
+ใน Svelte 5 **`$effect`** จัดการงานส่วนใหญ่ที่ lifecycle hook เคยทำ — มัน run หลัง DOM update และ cleanup ตอน destroy lifecycle function สองตัวยังสำคัญ: **`onMount`** (ครั้งเดียว, browser-only — เหมาะกับการวัด DOM และ library ที่ browser-only) และ **`onDestroy`** (teardown ที่ไม่ผูกกับ effect) **`await tick()`** รอให้ batched DOM update ของ Svelte apply ก่อนคุณอ่านหรือทำอะไรกับ DOM
+</Callout>
+
+export const quizLifecycle = [
+  {
+    q: 'ใน Svelte 5 อะไรครอบคลุมเคส lifecycle-hook เดิมส่วนใหญ่?',
+    options: [
+      'Stores',
+      '`$effect` — run หลัง DOM update, run ซ้ำเมื่อ dependency เปลี่ยน, cleanup ตอน destroy',
+      'Context',
+      'props',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'อะไรคือจุดเด่นของ `onMount`?',
+    options: [
+      'มัน run ทุก update',
+      'มัน run ครั้งเดียวพอดี เฉพาะใน browser (ไม่เคยระหว่าง SSR) — เหมาะกับ setup ที่ browser-only',
+      'มัน run บน server',
+      'มันแทน $state',
+    ],
+    answer: 1,
+  },
+  {
+    q: '`await tick()` ทำอะไร?',
+    options: [
+      'รอหนึ่งวินาที',
+      'resolve เมื่อ Svelte apply pending DOM update แล้ว เพื่อให้คุณวัดหรือทำอะไรกับ DOM ที่ update แล้ว',
+      'ทำลาย component',
+      'fetch data',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ควร init charting library ที่ browser-only ที่ไหน?',
+    options: [
+      'ใน top-level script ระหว่าง SSR',
+      'ใน `onMount` ซึ่ง run เฉพาะใน browser หลัง render ครั้งแรก',
+      'ใน derived',
+      'ใน getContext',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/lifecycle" questions={quizLifecycle} />
+
+<ProgressTracker client:visible id="components/lifecycle" />

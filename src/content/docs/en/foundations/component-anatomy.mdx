@@ -1,0 +1,130 @@
+---
+title: 'The Component Anatomy'
+description: 'The three parts of a .svelte file — script, markup, and scoped style — how they compile, and why styles are component-scoped by default.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Three parts, one file
+
+A Svelte component is a `.svelte` file with up to three sections:
+
+```svelte
+<script>
+  // 1. Logic: state, props, imports, functions.
+  let name = $state('world');
+</script>
+
+<!-- 2. Markup: HTML plus Svelte template syntax. -->
+<h1>Hello {name}!</h1>
+<input bind:value={name} />
+
+<style>
+  /* 3. Styles: scoped to THIS component by default. */
+  h1 { color: #ff3e00; }
+</style>
+```
+
+- The **`<script>`** block is the component's logic: state (with runes), imported components, and functions. It runs once when the component is created.
+- The **markup** is HTML enhanced with Svelte's template syntax — `{expressions}`, blocks like `{#if}`, and bindings. This is what renders.
+- The **`<style>`** block is CSS that, by default, applies only to this component.
+
+There's no boilerplate wrapper, no `return`, no `render()` — the file *is* the component.
+
+<Mermaid title="The three parts of a .svelte file" code={anatomyDiagram} />
+
+export const anatomyDiagram = `flowchart LR
+  script["script: state, props, logic"] --> compile["Svelte compiler"]
+  markup["markup: HTML + template syntax"] --> compile
+  style["style: scoped CSS"] --> compile
+  compile --> comp["a component: JS + a stylesheet"]`;
+
+## Scoped styles by default
+
+The `<style>` block is **scoped to the component** — Svelte adds a unique class to the component's elements and rewrites your selectors to match only them. Write `h1 { color: … }` and it styles this component's `h1`, not every `h1` on the page.
+
+```svelte
+<p>This paragraph is styled locally.</p>
+<style>
+  /* Compiles to something like p.svelte-abc123 { ... } — scoped, no leakage. */
+  p { font-weight: bold; }
+</style>
+```
+
+You get component-local CSS with plain selectors — no naming conventions, no CSS-in-JS. When you deliberately want a global rule, you opt out with `:global(...)`:
+
+```svelte
+<style>
+  :global(body) { margin: 0; }        /* escape the scope on purpose */
+  .card :global(a) { color: teal; }    /* scoped .card, global descendant a */
+</style>
+```
+
+## TypeScript and the script
+
+Add `lang="ts"` to the script tag to write TypeScript — the compiler type-checks and strips it:
+
+```svelte
+<script lang="ts">
+  let count: number = $state(0);
+  function inc(): void { count++; }
+</script>
+```
+
+Everything else is unchanged; runes are typed (`$state<T>`), and props get typed interfaces (a later lesson). Svelte's tooling (`svelte-check`) type-checks `.svelte` files including the markup.
+
+<Callout title="The one-line takeaway">
+A `.svelte` file has three optional parts: a **`<script>`** (state, props, logic — runs once on creation), the **markup** (HTML plus template syntax), and a **`<style>`** block that is **scoped to the component by default** (Svelte rewrites selectors so CSS doesn't leak; opt out with `:global(...)`). There's no wrapper or `render()` — the file *is* the component, and `lang="ts"` turns on TypeScript.
+</Callout>
+
+export const quizAnatomy = [
+  {
+    q: 'What are the three parts of a .svelte file?',
+    options: [
+      'imports, exports, and returns',
+      'A `<script>` (logic), the markup (HTML + template syntax), and a `<style>` block',
+      'model, view, controller files',
+      'props, state, and effects',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'By default, where does a component\'s `<style>` block apply?',
+    options: [
+      'Globally to the whole page',
+      'Scoped to that component only — Svelte rewrites selectors so they do not leak',
+      'Only to child components',
+      'Nowhere until imported',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you make a style rule apply globally on purpose?',
+    options: [
+      'Put it in the script',
+      'Wrap the selector in `:global(...)`',
+      'Use `!important`',
+      'You cannot',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you use TypeScript in a Svelte component?',
+    options: [
+      'Rename the file to .ts',
+      'Add `lang="ts"` to the `<script>` tag',
+      'Svelte does not support TypeScript',
+      'Import a TS plugin at runtime',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/component-anatomy" questions={quizAnatomy} />
+
+<ProgressTracker client:visible id="foundations/component-anatomy" />

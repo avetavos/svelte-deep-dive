@@ -1,0 +1,79 @@
+---
+title: 'Bindings, Actions & Transitions'
+description: 'Two-way bindings, use: actions for imperative DOM work, transitions and animations, and practical form handling — the tools that connect Svelte to the DOM and to motion.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## Connecting components to the DOM and to motion
+
+Runes give you reactive state; this module covers the directives that connect that state to real DOM elements and to visual motion:
+
+- **Bindings** (`bind:`) create a two-way link between state and a DOM property — the input updates the state, and the state updates the input.
+- **Actions** (`use:`) run imperative setup code on an element when it mounts — the escape hatch for third-party libraries, focus, tooltips, and click-outside.
+- **Transitions & animations** (`transition:`, `animate:`) declaratively animate elements as they enter, leave, and reorder.
+
+## What this module covers
+
+| Lesson | What you'll learn |
+|--------|-------------------|
+| Bindings | `bind:value`, `bind:this`, `bind:group`, and component bindings |
+| Actions | The `use:` directive and the action lifecycle |
+| Transitions & animations | `transition:`/`in:`/`out:` and `animate:flip` |
+| Forms & inputs | Controlled inputs, validation, and submit handling |
+
+<Mermaid title="Three ways Svelte reaches the DOM" code={overviewDiagram} />
+
+export const overviewDiagram = `flowchart TB
+  state["reactive state (runes)"] --> bind["bind: two-way link to DOM props"]
+  state --> action["use: imperative setup on an element"]
+  state --> trans["transition: / animate: declarative motion"]
+  bind --> dom["the DOM"]
+  action --> dom
+  trans --> dom`;
+
+<Callout title="The one-line takeaway">
+This module covers the directives that link reactive state to the DOM: **`bind:`** for two-way data flow, **`use:`** actions for imperative element setup (third-party libs, focus, click-outside), and **`transition:`/`animate:`** for declarative enter/leave/reorder motion. Together they're how Svelte components meet real elements and visual polish.
+</Callout>
+
+export const quizIndex = [
+  {
+    q: 'What does a `bind:` directive create?',
+    options: [
+      'A one-way render',
+      'A two-way link between state and a DOM property (the element updates state, state updates the element)',
+      'A CSS animation',
+      'A network request',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is a `use:` action for?',
+    options: [
+      'Styling an element',
+      'Running imperative setup code on an element when it mounts — for third-party libraries, focus, tooltips, etc.',
+      'Defining a route',
+      'Creating a store',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What do `transition:` and `animate:` directives do?',
+    options: [
+      'Fetch data',
+      'Declaratively animate elements as they enter, leave, and reorder',
+      'Validate forms',
+      'Bind inputs',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/index" questions={quizIndex} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/index" />

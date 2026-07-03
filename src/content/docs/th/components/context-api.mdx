@@ -1,0 +1,116 @@
+---
+title: 'The Context API'
+description: 'setContext และ getContext สำหรับแชร์ข้อมูลลง component tree โดยไม่ต้อง prop drilling, รวม context กับ runed state และควรใช้เมื่อไร'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## context หลีกเลี่ยง prop drilling
+
+เมื่อ component ที่ nested หลายตัวต้องการข้อมูลเดียวกัน — theme, user ปัจจุบัน, shared state ของ form — การส่งผ่านทุก component กลางในฐานะ props (**prop drilling**) น่ารำคาญและรก **context** ให้ ancestor set ค่าที่ descendant ไหนก็อ่านได้โดยตรง
+
+- **`setContext(key, value)`** — เรียกใน component ตอน initialization; ทำให้ `value` ใช้ได้กับ descendant ทุกตัวภายใต้ `key`
+- **`getContext(key)`** — เรียกใน descendant ไหนก็ได้; อ่านค่าของ ancestor ที่ใกล้ที่สุดสำหรับ `key`
+
+```svelte
+<!-- Parent.svelte -->
+<script>
+  import { setContext } from 'svelte';
+  setContext('theme', 'dark');
+</script>
+<slot-like-children />
+```
+
+```svelte
+<!-- DeepChild.svelte (ลึกแค่ไหนก็ได้) -->
+<script>
+  import { getContext } from 'svelte';
+  const theme = getContext('theme');   // 'dark' — ไม่ต้อง thread props ผ่านมา
+</script>
+<div class={theme}>…</div>
+```
+
+<Mermaid title="context ไหลลงไปหา descendant ทุกตัว" code={ctxDiagram} />
+
+export const ctxDiagram = `flowchart TB
+  parent["Ancestor: setContext theme value"] --> mid["component กลาง\n(ไม่ต้องใช้ props)"]
+  mid --> child["Descendant: getContext theme"]`;
+
+## reactive context ด้วย runes
+
+`setContext` run ครั้งเดียวตอน init — *ค่า* ที่มันเก็บไม่ reactive ในตัวเอง ถ้าจะแชร์ข้อมูลที่ **reactive** ให้ใส่ runed object เข้า context แล้วอ่าน property ของมันใน descendant; เพราะ `$state` object เป็น deeply reactive การเปลี่ยนแปลงจึงกระจายไป
+
+```svelte
+<!-- เก็บ runed object ไม่ใช่ plain snapshot -->
+<script>
+  import { setContext } from 'svelte';
+  let cart = $state({ items: [] });
+  setContext('cart', cart);          // descendant เห็น update ของ cart.items แบบ live
+</script>
+```
+
+pattern ที่พบบ่อยคือ factory เล็ก ๆ ที่สร้าง runed state และจับคู่ `setContext`/`getContext` ไว้หลัง helper function ที่มี type เพื่อให้ผู้ใช้แค่เรียก `getCart()`
+
+## context vs props vs global state
+
+- **Props** — ดีที่สุดสำหรับข้อมูล parent→child ตรง ๆ ชัดเจนและ trace ง่าย
+- **Context** — ดีที่สุดเมื่อข้อมูลต้องใช้โดย descendant *หลายตัว* ในความลึกต่างกัน (theme, auth, shared state ของ widget) และ scope อยู่ใน subtree
+- **Module state** (`.svelte.js`) — ดีที่สุดสำหรับ state ที่ global จริง ๆ แต่ต้องระวัง SSR (module singleton ถูกแชร์ข้าม request บน server — โมดูล state-management อธิบายเรื่องนี้)
+
+สิ่งสำคัญคือ context เป็น **ต่อ component tree และต่อ render** ดังนั้นบน server แต่ละ request จึงได้ context ของตัวเอง — ทำให้มันเป็นวิธีแชร์ state ระดับ request แบบ SSR-safe ไม่เหมือน module-level singleton
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**`setContext(key, value)`** (เรียกตอน init) แชร์ข้อมูลกับ descendant ทุกตัว อ่านผ่าน **`getContext(key)`** — กำจัด prop drilling ค่าที่เก็บไม่ reactive ในตัวเอง จึงต้องใส่ **runed `$state` object** เข้า context เพื่อแชร์ข้อมูลที่ update แบบ live เลือก context เหนือ props เมื่อ descendant หลายตัวต้องการข้อมูล และเพราะ context scope ต่อ tree และต่อ render มันจึงเป็นตัวเลือก **SSR-safe** สำหรับ state ระดับ request
+</Callout>
+
+export const quizContext = [
+  {
+    q: 'context แก้ปัญหาอะไร?',
+    options: [
+      'การจัด style component',
+      'แชร์ข้อมูลกับ descendant หลายตัวโดยไม่ต้อง thread ผ่านทุก component กลางในฐานะ props',
+      'server rendering',
+      'animation',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'แชร์ข้อมูลที่ reactive ผ่าน context ยังไง?',
+    options: [
+      'setContext reactive เสมอ',
+      'ใส่ runed `$state` object เข้า context; descendant อ่าน property ของมันและเห็น update แบบ live',
+      'ใช้ store prefix ใน setContext',
+      'แชร์ข้อมูล reactive ไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม context ถึงปลอดภัยกว่า module-level singleton สำหรับ state ระดับ request บน server?',
+    options: [
+      'มันเร็วกว่า',
+      'context scope ต่อ component tree และต่อ render แต่ละ SSR request จึงได้ของตัวเอง — module singleton ถูกแชร์ข้าม request',
+      'มันใช้ memory น้อยกว่า',
+      'ไม่ต่างกัน',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ควรเลือก props เหนือ context เมื่อไร?',
+    options: [
+      'เสมอ',
+      'สำหรับข้อมูล parent→child ตรง ๆ ที่ต้องการ flow ที่ชัดและ trace ได้',
+      'ไม่มีวัน',
+      'แค่บน server',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="components/context-api" questions={quizContext} />
+
+<ProgressTracker client:visible id="components/context-api" />

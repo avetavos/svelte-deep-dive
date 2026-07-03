@@ -1,0 +1,131 @@
+---
+title: 'Actions'
+description: 'The use: directive — attaching imperative behavior to an element when it mounts, the action lifecycle, and integrating non-Svelte libraries.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## An action is a function that runs on an element
+
+Sometimes you need imperative access to a DOM node — to initialize a charting library, trap focus, set up a tooltip, or detect clicks outside. An **action** packages that logic as a reusable function attached with the `use:` directive.
+
+An action is a function that receives the DOM `node` (and optional parameters) when the element mounts, and may return an object with `update` and `destroy` methods:
+
+```svelte
+<script>
+  // An action: (node, params?) => { update?, destroy? }
+  function tooltip(node, text) {
+    const el = document.createElement('div');
+    el.className = 'tooltip';
+    el.textContent = text;
+
+    function show() { document.body.appendChild(el); }
+    function hide() { el.remove(); }
+    node.addEventListener('mouseenter', show);
+    node.addEventListener('mouseleave', hide);
+
+    return {
+      update(newText) { el.textContent = newText; },   // params changed
+      destroy() {                                       // element unmounting
+        node.removeEventListener('mouseenter', show);
+        node.removeEventListener('mouseleave', hide);
+        el.remove();
+      },
+    };
+  }
+</script>
+
+<button use:tooltip={'Save your work'}>Save</button>
+```
+
+<Mermaid title="The action lifecycle" code={actionDiagram} />
+
+export const actionDiagram = `flowchart LR
+  mount["element mounts"] --> run["action(node, params) runs"]
+  run --> update["params change → update(newParams)"]
+  update --> update
+  update --> destroy["element unmounts → destroy()"]`;
+
+## A practical example: click-outside
+
+Actions shine for cross-cutting DOM behavior. A `clickOutside` action dispatches when a click lands outside the node — perfect for closing dropdowns and modals:
+
+```svelte
+<script>
+  function clickOutside(node, callback) {
+    function handle(e) {
+      if (!node.contains(e.target)) callback();
+    }
+    document.addEventListener('click', handle, true);
+    return {
+      destroy() { document.removeEventListener('click', handle, true); },
+    };
+  }
+
+  let open = $state(false);
+</script>
+
+{#if open}
+  <div class="menu" use:clickOutside={() => (open = false)}>…</div>
+{/if}
+```
+
+## Why actions instead of an effect
+
+You *could* do some of this with `bind:this` plus a `$effect`. Actions are better when the behavior is **reusable across elements** and **self-contained** (setup + teardown in one place): the `destroy` method guarantees cleanup, and passing parameters with `use:action={params}` keeps it declarative at the call site. Reach for an action when you want to say "this element behaves like *X*" and reuse *X* everywhere.
+
+<Callout title="The one-line takeaway">
+An **action** is a reusable function attached with **`use:action`** that receives the DOM `node` (plus optional params) when the element mounts and returns optional **`update`** (params changed) and **`destroy`** (element unmounting) methods. It's the clean escape hatch for imperative, self-contained DOM behavior — third-party libraries, focus management, click-outside — with guaranteed teardown, more reusable than a `bind:this` + `$effect` pair.
+</Callout>
+
+export const quizActions = [
+  {
+    q: 'What does an action function receive when the element mounts?',
+    options: [
+      'The component instance',
+      'The DOM `node` (and optional parameters)',
+      'The store value',
+      'Nothing',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does an action\'s `destroy` method do?',
+    options: [
+      'Deletes the component',
+      'Runs cleanup when the element unmounts (remove listeners, tear down libraries)',
+      'Resets state',
+      'Re-renders the element',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When is an action a better fit than a `bind:this` + `$effect`?',
+    options: [
+      'Never',
+      'When the behavior is reusable across elements and self-contained (setup + guaranteed teardown in one place)',
+      'When you need styling',
+      'When you need a route',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How do you attach an action with a parameter to an element?',
+    options: [
+      '`action:use={params}`',
+      '`use:action={params}`',
+      '`bind:action={params}`',
+      '`on:action={params}`',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="bindings-actions-transitions/actions" questions={quizActions} />
+
+<ProgressTracker client:visible id="bindings-actions-transitions/actions" />
