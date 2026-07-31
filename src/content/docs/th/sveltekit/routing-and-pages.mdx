@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## folder คือ route
 
-ใน SvelteKit โครงสร้าง folder ใต้ `src/routes/` *คือ* โครงสร้าง URL ไฟล์ `+page.svelte` ทำให้ folder ของมันกลายเป็นเพจที่เข้าถึงได้
+ใน SvelteKit โครงสร้าง folder ใต้ `src/routes/` *คือ* โครงสร้าง URL ไฟล์ `+page.svelte` ทำให้ folder ของตัวเองกลายเป็นเพจที่เข้าถึงได้
 
 ```text
 src/routes/
@@ -43,7 +43,7 @@ export const routeDiagram = `flowchart LR
 
 ## layout ครอบ page
 
-`+layout.svelte` มีผลกับ folder ของมันและทุก route ที่อยู่ข้างใต้ — เป็นที่วางองค์ประกอบที่ใช้ร่วมกันอย่าง header และ footer มัน render child route ผ่าน `children` snippet:
+`+layout.svelte` มีผลกับ folder ของตัวเองและทุก route ที่อยู่ข้างใต้ — เป็นที่วางองค์ประกอบที่ใช้ร่วมกันอย่าง header และ footer โดย layout render child route ผ่าน `children` snippet:
 
 ```svelte
 <!-- src/routes/+layout.svelte -->
@@ -64,7 +64,7 @@ layout **ซ้อนกันได้** (nest): layout ที่อยู่�
 
 ## error page และ navigation
 
-- **`+error.svelte`** ใน folder หนึ่งจะ render เมื่อ `load` ใน subtree นั้น throw — เป็น error boundary แบบ scoped มันอ่าน error ผ่าน `page.error` (จาก `$app/state`)
+- **`+error.svelte`** ใน folder หนึ่งจะ render เมื่อ `load` ใน subtree นั้น throw — เป็น error boundary แบบ scoped ที่อ่าน error ผ่าน `page.error` (จาก `$app/state`)
 - **navigation** ใช้ลิงก์ `<a href="/blog">` ปกติ SvelteKit จะ intercept ไว้เพื่อทำ client-side navigation ที่เร็ว (ไม่ reload ทั้งหน้า) ส่วนการ navigate แบบ programmatic ให้เรียก `goto('/blog')` จาก `$app/navigation`
 
 ```svelte

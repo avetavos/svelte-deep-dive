@@ -56,7 +56,7 @@ export const snippetDiagram = `flowchart LR
 
 ## Snippets เป็นค่า
 
-เพราะ snippet เป็นค่า คุณจึงส่งมันไปให้ snippet อื่น เก็บใน variable หรือเลือกระหว่าง snippet แบบมีเงื่อนไขได้:
+เพราะ snippet เป็นค่า คุณจึงส่ง snippet ไปให้ snippet อื่น เก็บใน variable หรือเลือกระหว่าง snippet แบบมีเงื่อนไขได้:
 
 ```svelte
 {#snippet loading()}<p>Loading…</p>{/snippet}
@@ -69,7 +69,7 @@ export const snippetDiagram = `flowchart LR
 {/if}
 ```
 
-ความ composable นี้ — snippet เป็น first-class value ที่รับพารามิเตอร์ได้ — คือเหตุผลที่มันมาแทนกลไก slot ที่ยืดหยุ่นน้อยกว่า
+ความ composable นี้ — snippet เป็น first-class value ที่รับพารามิเตอร์ได้ — คือเหตุผลที่มาแทนกลไก slot ที่ยืดหยุ่นน้อยกว่า
 
 <Callout title="สรุปหนึ่งบรรทัด">
 **snippet** คือ block ของ markup ที่มีชื่อและรับพารามิเตอร์: นิยามด้วย **`{#snippet name(params)}…{/snippet}`** และ render ด้วย **`{@render name(args)}`** snippet ทำให้ template DRY และเป็น **ตัวแทน `<slot>` ใน Svelte 5** — ทรงพลังกว่าเพราะรับพารามิเตอร์และเป็น first-class value ที่ส่งไปมาและเลือกได้
@@ -100,9 +100,9 @@ export const quizSnippets = [
     q: 'ทำไม snippet ถึงทรงพลังกว่า slot?',
     options: [
       'พิมพ์เร็วกว่า',
-      'มันรับพารามิเตอร์ได้และเป็น first-class value ที่ส่งไปมาและเลือกได้',
-      'มันถูก style อัตโนมัติ',
-      'มัน run บน server',
+      'รับพารามิเตอร์ได้และเป็น first-class value ที่ส่งไปมาและเลือกได้',
+      'ถูก style อัตโนมัติ',
+      'run บน server',
     ],
     answer: 1,
   },

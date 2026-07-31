@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## runtime framework เทียบกับ compiler
 
-UI framework ส่วนใหญ่เป็น **runtime** library คุณส่ง framework ไปที่ browser แล้วตอน runtime มันคอยดูแล virtual DOM, re-run component เมื่อ state เปลี่ยน, diff tree ใหม่กับ tree เก่า แล้วนำความต่างไปใช้ กลไกพวกนั้น — reconciler, scheduler — คือ code ที่ user ต้องดาวน์โหลดและ CPU ต้องรันทุกครั้งที่อัปเดต
+UI framework ส่วนใหญ่เป็น **runtime** library คุณส่ง framework ไปที่ browser แล้ว framework นั้นคอยดูแล virtual DOM ตอน runtime, re-run component เมื่อ state เปลี่ยน, diff tree ใหม่กับ tree เก่า แล้วนำความต่างไปใช้ กลไกพวกนั้น — reconciler, scheduler — คือ code ที่ user ต้องดาวน์โหลดและ CPU ต้องรันทุกครั้งที่อัปเดต
 
 Svelte ย้ายงานออกจาก browser ไปไว้ที่ **build step** Svelte compiler อ่าน component ของคุณล่วงหน้า หาให้ชัดว่า DOM node ไหนขึ้นกับ state ตัวไหน แล้ว emit JavaScript ธรรมดาที่อัปเดตเฉพาะ node เหล่านั้น ไม่มี virtual DOM ให้ส่ง ไม่มีการ diff ตอน runtime
 
@@ -34,11 +34,11 @@ export const compileDiagram = `flowchart TB
 - **runtime ทำงานน้อยลง** เมื่อ `count` เปลี่ยน ไม่มี tree ให้สร้างใหม่และ diff — code ที่ generate ไว้อัปเดต text node เดียวที่แสดง `count` การอัปเดตเลยเจาะจงโดยธรรมชาติ
 - **indirection น้อยลง** ช่องว่างระหว่าง "สิ่งที่ฉันเขียน" กับ "สิ่งที่รัน" นั้นเล็ก: output ของ compiler ใกล้เคียงกับที่คุณจะเขียนเอง
 
-นี่คือเหตุผลที่บางครั้งเรียก Svelte ว่า *"the disappearing framework"* — ส่วนใหญ่ของมัน compile หายไป เหลือแค่ logic ของคุณบวก helper layer บาง ๆ
+นี่คือเหตุผลที่บางครั้งเรียก Svelte ว่า *"the disappearing framework"* — ส่วนใหญ่ของตัวเอง compile หายไป เหลือแค่ logic ของคุณบวก helper layer บาง ๆ
 
 ## จริง ๆ แล้ว compiler สร้างอะไรออกมา
 
-ให้ component ที่มี `let count = $state(0)` และ `<p>{count}</p>` compiler เห็นแบบ static ว่า text node นี้ขึ้นกับ `count` มัน generate code ที่ (1) สร้าง `<p>` หนึ่งครั้ง และ (2) register ว่าเมื่อ `count` เปลี่ยน ให้อัปเดตเนื้อหาของ text node เฉพาะจุดนี้ — ไม่มีอย่างอื่น คูณด้วยทั้งแอปแล้วคุณจะได้การอัปเดตที่แตะเฉพาะสิ่งที่เปลี่ยน โดยไม่มี runtime bookkeeping มาคอยหาว่า *อะไร* เปลี่ยน
+ให้ component ที่มี `let count = $state(0)` และ `<p>{count}</p>` compiler เห็นแบบ static ว่า text node นี้ขึ้นกับ `count` แล้ว generate code ที่ (1) สร้าง `<p>` หนึ่งครั้ง และ (2) register ว่าเมื่อ `count` เปลี่ยน ให้อัปเดตเนื้อหาของ text node เฉพาะจุดนี้ — ไม่มีอย่างอื่น คูณด้วยทั้งแอปแล้วคุณจะได้การอัปเดตที่แตะเฉพาะสิ่งที่เปลี่ยน โดยไม่มี runtime bookkeeping มาคอยหาว่า *อะไร* เปลี่ยน
 
 ```svelte
 <script>
@@ -52,7 +52,7 @@ export const compileDiagram = `flowchart TB
 คุณเขียน component แบบ declarative ส่วน compiler เขียน code DOM แบบ imperative ให้ การแบ่งงานแบบนี้คือคุณค่าทั้งหมด
 
 <Callout title="สรุปหนึ่งบรรทัด">
-runtime framework ส่ง **virtual DOM และ diffing reconciler** ไปที่ browser ส่วน Svelte เป็น **compiler** ที่ทำการวิเคราะห์นั้นตอน build time แล้ว emit code อัปเดต DOM แบบ imperative ที่แม่นยำแทน ผลตอบแทนคือ **bundle เล็กลงและ runtime ทำงานน้อยลง** — เมื่อ state เปลี่ยน code ที่ generate ไว้อัปเดตเฉพาะ node ที่ขึ้นกับมัน ไม่มี tree ให้สร้างใหม่หรือ diff "framework" ส่วนใหญ่ compile หายไป
+runtime framework ส่ง **virtual DOM และ diffing reconciler** ไปที่ browser ส่วน Svelte เป็น **compiler** ที่วิเคราะห์นั้นตอน build time แล้ว emit code อัปเดต DOM แบบ imperative ที่แม่นยำแทน ผลตอบแทนคือ **bundle เล็กลงและ runtime ทำงานน้อยลง** — เมื่อ state เปลี่ยน code ที่ generate ไว้อัปเดตเฉพาะ node ที่ขึ้นกับ state นั้น ไม่มี tree ให้สร้างใหม่หรือ diff "framework" ส่วนใหญ่ compile หายไป
 </Callout>
 
 export const quizWhy = [
@@ -62,7 +62,7 @@ export const quizWhy = [
       'ตอน build time',
       'ใน browser ตอน runtime โดยใช้ framework code ที่ส่งไป (reconciler)',
       'บน server เท่านั้น',
-      'มันไม่ diff',
+      'ไม่ diff',
     ],
     answer: 1,
   },
@@ -72,7 +72,7 @@ export const quizWhy = [
       'gzip หนักกว่า',
       'ไม่มี virtual DOM / reconciler ให้ส่ง — component compile เป็น code อัปเดตแบบ imperative เท่าที่ต้องการ',
       'Svelte ห้าม component ใหญ่',
-      'มันตัด CSS ออก',
+      'ตัด CSS ออก',
     ],
     answer: 1,
   },
@@ -89,10 +89,10 @@ export const quizWhy = [
   {
     q: 'ทำไมถึงเรียก Svelte ว่า "the disappearing framework"?',
     options: [
-      'มันถูก deprecate แล้ว',
+      'ถูก deprecate แล้ว',
       'ส่วนใหญ่ของ framework compile หายไปตอน build time เหลือแค่ logic ของคุณบวก helper layer บาง ๆ',
-      'มันซ่อน code ของคุณ',
-      'มันไม่มี component',
+      'ซ่อน code ของคุณ',
+      'ไม่มี component',
     ],
     answer: 1,
   },

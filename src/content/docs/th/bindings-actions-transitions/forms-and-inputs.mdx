@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## controlled input ด้วย bind:
 
-form รวม binding, runes และ event เข้าด้วยกัน แต่ละ field bind กับ state; validation derive จาก state นั้น; submit อ่านมัน นี่คือรูปแบบของ form จริง:
+form รวม binding, runes และ event เข้าด้วยกัน แต่ละ field bind กับ state; validation derive จาก state นั้น; submit อ่านค่าจาก state เดียวกัน นี่คือรูปแบบของ form จริง:
 
 ```svelte
 <script>
@@ -74,14 +74,14 @@ export const formDiagram = `flowchart LR
 บทนี้จัดการ form ทั้งหมดบน client — โอเคสำหรับ local state และเคสง่าย ๆ แต่แอปจริงต้องการข้อมูลบน **server**: การ persist, auth, validation ที่เชื่อถือได้ นั่นคือสิ่งที่ **SvelteKit form actions** (โมดูลถัดไป) ให้มา — form แบบ progressive-enhancement ที่ทำงานทั้งมีและไม่มี JavaScript validate บน server client-side `bind:` + `$derived` ให้ UX ที่ตอบสนอง; SvelteKit ให้ pipeline แบบ full-stack
 
 <Callout title="สรุปหนึ่งบรรทัด">
-สร้าง form โดย **bind** แต่ละ field กับ state (`bind:value`), **derive** validation ด้วย `$derived` (ไม่เก็บ validity แยก — มันคำนวณใหม่อัตโนมัติ) และจัดการ **submit** ด้วย `onsubmit` + `e.preventDefault()` (Svelte 5 เลิก event modifier) derive `disabled` ของ submit button จาก validity และ flag `submitting` สำหรับการ persist จริงและ validation ที่ server เชื่อถือได้ หยิบ SvelteKit form actions มาใช้
+สร้าง form โดย **bind** แต่ละ field กับ state (`bind:value`), **derive** validation ด้วย `$derived` (ไม่เก็บ validity แยก — เพราะคำนวณใหม่อัตโนมัติ) และจัดการ **submit** ด้วย `onsubmit` + `e.preventDefault()` (Svelte 5 เลิก event modifier) derive `disabled` ของ submit button จาก validity และ flag `submitting` สำหรับการ persist จริงและ validation ที่ server เชื่อถือได้ หยิบ SvelteKit form actions มาใช้
 </Callout>
 
 export const quizForms = [
   {
     q: 'ควรจัดการ state ของ form validation ยังไง?',
     options: [
-      'เก็บใน $state ของมันเองและ update เอง',
+      'เก็บใน $state ของตัวเองและ update เอง',
       'derive ด้วย `$derived` จากค่า field เพื่อให้คำนวณใหม่อัตโนมัติ',
       'คำนวณเฉพาะตอน submit',
       'ใน store',
@@ -94,7 +94,7 @@ export const quizForms = [
       'ใช้ `on:submit|preventDefault`',
       'เรียก `e.preventDefault()` ใน handler `onsubmit` (modifier หายไปใน Svelte 5)',
       'return false',
-      'มันอัตโนมัติ',
+      'อัตโนมัติ',
     ],
     answer: 1,
   },
@@ -103,7 +103,7 @@ export const quizForms = [
     options: [
       'เพื่อให้ code ยาวขึ้น',
       'เพื่อให้ state ของ button ถูกต้องอัตโนมัติเมื่อ validity และ flag submitting เปลี่ยน — ไม่ต้อง toggle เอง',
-      'มันคือ syntax ที่จำเป็น',
+      'เป็น syntax ที่จำเป็น',
       'เพื่อเลี่ยงการใช้ bind:',
     ],
     answer: 1,

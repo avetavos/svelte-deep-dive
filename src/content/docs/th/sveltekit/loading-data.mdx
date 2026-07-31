@@ -65,7 +65,7 @@ export async function load({ locals }) {
 `load` ใน **`+layout.js` / `+layout.server.js`** ให้ข้อมูลกับ layout *และ* ทุก child page — เหมาะกับสิ่งที่ทุกเพจต้องใช้ (current user, site settings) child page จะ merge ข้อมูลจาก layout กับของตัวเอง
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**`load`** function return ข้อมูลของเพจ ซึ่งมาถึงเป็น **`data` prop** (`let { data } = $props()`); มันรันก่อน render ข้อมูลจึงอยู่ใน SSR HTML ตั้งแต่แรก ใช้ **`+page.js`** (universal — server แล้ว client) กับข้อมูลที่ปลอดภัยทุกที่ และ **`+page.server.js`** (server-only) เมื่อโค้ดแตะ **database, secret, private env หรือ auth cookie** ส่วน `load` ของ **`+layout`** แชร์ข้อมูลให้ทุก child route
+**`load`** function return ข้อมูลของเพจ ซึ่งมาถึงเป็น **`data` prop** (`let { data } = $props()`); `load` รันก่อน render ข้อมูลจึงอยู่ใน SSR HTML ตั้งแต่แรก ใช้ **`+page.js`** (universal — server แล้ว client) กับข้อมูลที่ปลอดภัยทุกที่ และ **`+page.server.js`** (server-only) เมื่อโค้ดแตะ **database, secret, private env หรือ auth cookie** ส่วน `load` ของ **`+layout`** แชร์ข้อมูลให้ทุก child route
 </Callout>
 
 export const quizLoad = [

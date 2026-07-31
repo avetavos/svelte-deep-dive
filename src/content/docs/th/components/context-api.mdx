@@ -43,7 +43,7 @@ export const ctxDiagram = `flowchart TB
 
 ## reactive context ด้วย runes
 
-`setContext` run ครั้งเดียวตอน init — *ค่า* ที่มันเก็บไม่ reactive ในตัวเอง ถ้าจะแชร์ข้อมูลที่ **reactive** ให้ใส่ runed object เข้า context แล้วอ่าน property ของมันใน descendant; เพราะ `$state` object เป็น deeply reactive การเปลี่ยนแปลงจึงกระจายไป
+`setContext` run ครั้งเดียวตอน init — *ค่า* ที่เก็บไม่ reactive ในตัวเอง ถ้าจะแชร์ข้อมูลที่ **reactive** ให้ใส่ runed object เข้า context แล้วอ่าน property ของตัวเองใน descendant; เพราะ `$state` object เป็น deeply reactive การเปลี่ยนแปลงจึงกระจายไป
 
 ```svelte
 <!-- เก็บ runed object ไม่ใช่ plain snapshot -->
@@ -62,10 +62,10 @@ pattern ที่พบบ่อยคือ factory เล็ก ๆ ที่�
 - **Context** — ดีที่สุดเมื่อข้อมูลต้องใช้โดย descendant *หลายตัว* ในความลึกต่างกัน (theme, auth, shared state ของ widget) และ scope อยู่ใน subtree
 - **Module state** (`.svelte.js`) — ดีที่สุดสำหรับ state ที่ global จริง ๆ แต่ต้องระวัง SSR (module singleton ถูกแชร์ข้าม request บน server — โมดูล state-management อธิบายเรื่องนี้)
 
-สิ่งสำคัญคือ context เป็น **ต่อ component tree และต่อ render** ดังนั้นบน server แต่ละ request จึงได้ context ของตัวเอง — ทำให้มันเป็นวิธีแชร์ state ระดับ request แบบ SSR-safe ไม่เหมือน module-level singleton
+สิ่งสำคัญคือ context เป็น **ต่อ component tree และต่อ render** ดังนั้นบน server แต่ละ request จึงได้ context ของตัวเอง — ทำให้ context เป็นวิธีแชร์ state ระดับ request แบบ SSR-safe ไม่เหมือน module-level singleton
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**`setContext(key, value)`** (เรียกตอน init) แชร์ข้อมูลกับ descendant ทุกตัว อ่านผ่าน **`getContext(key)`** — กำจัด prop drilling ค่าที่เก็บไม่ reactive ในตัวเอง จึงต้องใส่ **runed `$state` object** เข้า context เพื่อแชร์ข้อมูลที่ update แบบ live เลือก context เหนือ props เมื่อ descendant หลายตัวต้องการข้อมูล และเพราะ context scope ต่อ tree และต่อ render มันจึงเป็นตัวเลือก **SSR-safe** สำหรับ state ระดับ request
+**`setContext(key, value)`** (เรียกตอน init) แชร์ข้อมูลกับ descendant ทุกตัว อ่านผ่าน **`getContext(key)`** — กำจัด prop drilling ค่าที่เก็บไม่ reactive ในตัวเอง จึงต้องใส่ **runed `$state` object** เข้า context เพื่อแชร์ข้อมูลที่ update แบบ live เลือก context เหนือ props เมื่อ descendant หลายตัวต้องการข้อมูล และเพราะ context scope ต่อ tree และต่อ render context จึงเป็นตัวเลือก **SSR-safe** สำหรับ state ระดับ request
 </Callout>
 
 export const quizContext = [
@@ -83,7 +83,7 @@ export const quizContext = [
     q: 'แชร์ข้อมูลที่ reactive ผ่าน context ยังไง?',
     options: [
       'setContext reactive เสมอ',
-      'ใส่ runed `$state` object เข้า context; descendant อ่าน property ของมันและเห็น update แบบ live',
+      'ใส่ runed `$state` object เข้า context; descendant อ่าน property ของตัวเองและเห็น update แบบ live',
       'ใช้ store prefix ใน setContext',
       'แชร์ข้อมูล reactive ไม่ได้',
     ],
@@ -92,9 +92,9 @@ export const quizContext = [
   {
     q: 'ทำไม context ถึงปลอดภัยกว่า module-level singleton สำหรับ state ระดับ request บน server?',
     options: [
-      'มันเร็วกว่า',
+      'เร็วกว่า',
       'context scope ต่อ component tree และต่อ render แต่ละ SSR request จึงได้ของตัวเอง — module singleton ถูกแชร์ข้าม request',
-      'มันใช้ memory น้อยกว่า',
+      'ใช้ memory น้อยกว่า',
       'ไม่ต่างกัน',
     ],
     answer: 1,

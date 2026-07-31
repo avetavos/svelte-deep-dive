@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ประกาศ reactive state
 
-`$state` สร้างค่า reactive อ่านมันเหมือนตัวแปรปกติ และ reassign มันเหมือนตัวแปรปกติ — compiler ทำให้ทุกการอ่านเป็น dependency และทุกการเขียนเป็น trigger
+`$state` สร้างค่า reactive ที่คุณอ่านและ reassign ได้เหมือนตัวแปรปกติ — compiler ทำให้ทุกการอ่านเป็น dependency และทุกการเขียนเป็น trigger
 
 ```svelte
 <script>
@@ -26,7 +26,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## Deep reactivity ผ่าน proxy
 
-เมื่อคุณส่ง object หรือ array เข้า `$state` Svelte จะห่อมันด้วย **proxy** เพื่อให้ *mutation* — ไม่ใช่แค่การ reassign — เป็น reactive การ push เข้า array หรือ set nested property จะ trigger update
+เมื่อคุณส่ง object หรือ array เข้า `$state` Svelte จะห่อค่านั้นด้วย **proxy** เพื่อให้ *mutation* — ไม่ใช่แค่การ reassign — เป็น reactive การ push เข้า array หรือ set nested property จะ trigger update
 
 ```svelte
 <script>
@@ -69,7 +69,7 @@ export const stateDiagram = `flowchart LR
 
 ## เอา plain copy: $state.snapshot
 
-เพราะ object แบบ `$state` คือ proxy การส่งมันเข้า code ที่คาดหวัง object ธรรมดา (`console.log` ที่โชว์ Proxy, `structuredClone`, library ภายนอก) อาจเซอร์ไพรส์ **`$state.snapshot`** คืน copy ที่เป็น plain และไม่ reactive
+เพราะ object แบบ `$state` คือ proxy การส่งต่อเข้า code ที่คาดหวัง object ธรรมดา (`console.log` ที่โชว์ Proxy, `structuredClone`, library ภายนอก) อาจเซอร์ไพรส์ **`$state.snapshot`** คืน copy ที่เป็น plain และไม่ reactive
 
 ```svelte
 <script>
@@ -83,7 +83,7 @@ export const stateDiagram = `flowchart LR
 ```
 
 <Callout title="สรุปบรรทัดเดียว">
-`$state(value)` สร้าง reactive state ที่คุณอ่านและ reassign เหมือนตัวแปรปกติ สำหรับ **object และ array มันคือ deep proxy** ดังนั้น *mutation* (`arr.push`, `obj.x = …`) เป็น reactive — ไม่ต้องสร้าง object ใหม่แบบ React ใช้ **`$state.raw`** กับค่าที่คุณแค่ replace ทั้งก้อน (reactive ตอน reassign ไม่ใช่ตอน mutate) เพื่อเลี่ยง overhead ของ proxy และใช้ **`$state.snapshot(x)`** เพื่อเอา plain copy ที่ไม่ใช่ proxy ไป log, clone หรือส่งให้ code ภายนอก
+`$state(value)` สร้าง reactive state ที่คุณอ่านและ reassign เหมือนตัวแปรปกติ สำหรับ **object และ array จะได้ deep proxy** ดังนั้น *mutation* (`arr.push`, `obj.x = …`) เป็น reactive — ไม่ต้องสร้าง object ใหม่แบบ React ใช้ **`$state.raw`** กับค่าที่คุณแค่ replace ทั้งก้อน (reactive ตอน reassign ไม่ใช่ตอน mutate) เพื่อเลี่ยง overhead ของ proxy และใช้ **`$state.snapshot(x)`** เพื่อเอา plain copy ที่ไม่ใช่ proxy ไป log, clone หรือส่งให้ code ภายนอก
 </Callout>
 
 export const quizState = [
@@ -91,7 +91,7 @@ export const quizState = [
     q: 'ใน Svelte 5 คุณ update `$state` ยังไง?',
     options: [
       'เรียก setter เช่น setCount(1)',
-      'reassign หรือ mutate มันตามปกติ — `count++` หรือ `obj.x = 1` สำหรับ $state object',
+      'reassign หรือ mutate ได้ตามปกติ — `count++` หรือ `obj.x = 1` สำหรับ $state object',
       'dispatch action',
       'เรียก $state.update()',
     ],
@@ -103,7 +103,7 @@ export const quizState = [
       'array เป็น reactive เสมอใน JavaScript',
       'Svelte ห่อ array ด้วย proxy จึง track mutation ได้ (deep reactivity)',
       'push คืน array ใหม่',
-      'มันไม่ reactive — ต้อง reassign',
+      'ไม่ reactive — ต้อง reassign',
     ],
     answer: 1,
   },

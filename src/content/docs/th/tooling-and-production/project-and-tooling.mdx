@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-`sv create` มาแทน flow เดิม `npm create svelte@latest` มันตั้งค่าโปรเจกต์ SvelteKit ให้เป็น default (วิธีที่แนะนำในการสร้างแอป Svelte), wire up Vite ให้ และให้คุณเลือก add-on ตั้งแต่ต้น มี `npx sv add <name>` สำหรับเพิ่ม integration เข้าโปรเจกต์ที่มีอยู่แล้วภายหลังด้วย
+`sv create` มาแทน flow เดิม `npm create svelte@latest` โดยตั้งค่าโปรเจกต์ SvelteKit ให้เป็น default (วิธีที่แนะนำในการสร้างแอป Svelte), wire up Vite ให้ และให้คุณเลือก add-on ตั้งแต่ต้น มี `npx sv add <name>` สำหรับเพิ่ม integration เข้าโปรเจกต์ที่มีอยู่แล้วภายหลังด้วย
 
 <Callout title="Svelte vs SvelteKit">
 `sv create` จะ scaffold แอป **SvelteKit** — framework ทางการที่เพิ่ม routing, data loading และ server rendering รอบ ๆ Svelte component คุณ *ใช้* Svelte compiler แบบ standalone ก็ได้ (ฝังในแอป Vite อื่น หรือทำเป็น component library) แต่สำหรับการสร้างแอปพลิเคชัน SvelteKit คือ default และทุกอย่างในโมดูล SvelteKit ของคอร์สนี้ต่อยอดจาก scaffold นี้
@@ -42,7 +42,7 @@ npm run dev
 }
 ```
 
-Svelte integration ของ Vite (`@sveltejs/vite-plugin-svelte` ที่ `sv create` wire ให้แล้ว) คือสิ่งที่รัน compiler บนไฟล์ `.svelte` ตอน dev และ build คุณแทบไม่ต้องแตะมันตรง ๆ
+Svelte integration ของ Vite (`@sveltejs/vite-plugin-svelte` ที่ `sv create` wire ให้แล้ว) คือสิ่งที่รัน compiler บนไฟล์ `.svelte` ตอน dev และ build คุณแทบไม่ต้องแตะ plugin ตัวนี้ตรง ๆ
 
 <Mermaid title="pipeline ของ dev และ build" code={pipelineDiagram} />
 
@@ -62,10 +62,10 @@ export const pipelineDiagram = `flowchart LR
 npm run check      # runs svelte-check across the project
 ```
 
-เพราะ `svelte-check` เข้าใจไฟล์ `.svelte` แบบครบวงจร มันจึงจับ error ที่ `tsc` ธรรมดาจะมองไม่เห็น — prop type ที่ส่งผิดใน markup, typo ใน template expression, CSS selector ที่ไม่ได้ใช้ Prettier และ ESLint (พร้อม plugin ของ Svelte ที่ `sv create` เสนอให้) เติมเรื่อง formatting และ linting ให้ครบ
+เพราะ `svelte-check` เข้าใจไฟล์ `.svelte` แบบครบวงจร จึงจับ error ที่ `tsc` ธรรมดามองไม่เห็น — prop type ที่ส่งผิดใน markup, typo ใน template expression, CSS selector ที่ไม่ได้ใช้ Prettier และ ESLint (พร้อม plugin ของ Svelte ที่ `sv create` เสนอให้) เติมเรื่อง formatting และ linting ให้ครบ
 
 <Callout title="The one-line takeaway">
-scaffold ด้วย **`npx sv create`** (CLI ปัจจุบัน แทน `npm create svelte`) — มันตั้งค่าแอป **SvelteKit** บน **Vite** พร้อม TypeScript/Prettier/ESLint/testing แบบเลือกได้ Vite ให้ **HMR** ตอน dev และ **`vite build`** ที่ optimize แล้วสำหรับ production รักษาคุณภาพด้วย **Svelte editor extension** และ **`svelte-check`** ที่ type-check ไฟล์ `.svelte` รวม markup — จับ error ที่ `tsc` ธรรมดาทำไม่ได้
+scaffold ด้วย **`npx sv create`** (CLI ปัจจุบัน แทน `npm create svelte`) — คำสั่งนี้ตั้งค่าแอป **SvelteKit** บน **Vite** พร้อม TypeScript/Prettier/ESLint/testing แบบเลือกได้ Vite ให้ **HMR** ตอน dev และ **`vite build`** ที่ optimize แล้วสำหรับ production รักษาคุณภาพด้วย **Svelte editor extension** และ **`svelte-check`** ที่ type-check ไฟล์ `.svelte` รวม markup — จับ error ที่ `tsc` ธรรมดาทำไม่ได้
 </Callout>
 
 export const quizTooling = [
@@ -92,10 +92,10 @@ export const quizTooling = [
   {
     q: 'ทำไมใช้ `svelte-check` แทน `tsc` ธรรมดา?',
     options: [
-      'มันเร็วกว่าในทุกเรื่อง',
-      'มันเข้าใจไฟล์ .svelte แบบครบวงจร type-check expression ใน markup ที่ tsc มองไม่เห็น',
-      'มัน deploy แอป',
-      'มันแทน Vite',
+      'เร็วกว่าในทุกเรื่อง',
+      'เข้าใจไฟล์ .svelte แบบครบวงจร type-check expression ใน markup ที่ tsc มองไม่เห็น',
+      'deploy แอป',
+      'แทน Vite',
     ],
     answer: 1,
   },

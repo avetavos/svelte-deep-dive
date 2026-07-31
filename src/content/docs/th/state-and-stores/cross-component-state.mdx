@@ -35,7 +35,7 @@ export function toggle() {
 
 ## แพทเทิร์น 2: per-subtree instance ด้วย context
 
-เมื่อคุณต้องการ state ที่ share *ภายใน subtree* แต่ **แยกกันต่อ instance** — และปลอดภัยภายใต้ SSR — ให้ผสม runed class/object กับ **`setContext`** / **`getContext`** parent สร้าง state แล้วเอาไปไว้ใน context descendant อ่านมัน แต่ละ instance ของคอมโพเนนต์ได้ของตัวเอง สร้างตอน render ของ request นั้น
+เมื่อคุณต้องการ state ที่ share *ภายใน subtree* แต่ **แยกกันต่อ instance** — และปลอดภัยภายใต้ SSR — ให้ผสม runed class/object กับ **`setContext`** / **`getContext`** parent สร้าง state แล้วเอาไปไว้ใน context ส่วน descendant อ่านค่าไปใช้ แต่ละ instance ของคอมโพเนนต์ได้ของตัวเอง สร้างตอน render ของ request นั้น
 
 ```svelte
 <!-- Parent.svelte -->

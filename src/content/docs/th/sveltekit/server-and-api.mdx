@@ -30,7 +30,7 @@ export async function POST({ request }) {
 }
 ```
 
-**endpoint กับ form action ต่างกันยังไง:** ใช้ **form action** เมื่อ form ของเพจนั้น submit ไป server (มัน integrate กับ `use:enhance` และ `form` prop) ใช้ **`+server.js` endpoint** สำหรับ API ที่ใช้ซ้ำได้ ที่ถูกเรียกผ่าน fetch, mobile app หรือ third party
+**endpoint กับ form action ต่างกันยังไง:** ใช้ **form action** เมื่อ form ของเพจนั้น submit ไป server (integrate กับ `use:enhance` และ `form` prop ได้เลย) ใช้ **`+server.js` endpoint** สำหรับ API ที่ใช้ซ้ำได้ ที่ถูกเรียกผ่าน fetch, mobile app หรือ third party
 
 ## hooks: middleware สำหรับทุก request
 
@@ -101,7 +101,7 @@ export const quizServer = [
     options: [
       'เปลี่ยนชื่อเป็น .html',
       'export `const prerender = true` จาก route นั้น',
-      'ลบ load function ของมัน',
+      'ลบ load function ของตัวเอง',
       'ตั้ง output: static แบบ global',
     ],
     answer: 1,

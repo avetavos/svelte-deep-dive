@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## Computed value
 
-`$derived` ประกาศค่าที่คำนวณจากค่า reactive อื่น มันจะ recompute อัตโนมัติทุกครั้งที่ค่าที่มันอ่านเปลี่ยน — และมัน **cache** ไว้ ดังนั้นจะ recompute เฉพาะตอน dependency เปลี่ยนจริง ๆ
+`$derived` ประกาศค่าที่คำนวณจากค่า reactive อื่น จะ recompute อัตโนมัติทุกครั้งที่ค่าที่อ่านเปลี่ยน — และ **cache** ไว้ ดังนั้นจะ recompute เฉพาะตอน dependency เปลี่ยนจริง ๆ
 
 ```svelte
 <script>
@@ -24,7 +24,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <p>{double} — {label}</p>
 ```
 
-คุณไม่ต้อง list dependency เลย compiler เห็นว่า `double` อ่าน `count` แล้ว rebuild `double` ตอน `count` เปลี่ยนพอดี ค่า derived เป็น read-only — คุณไม่ assign ค่าให้มัน มันคือ function ของ input
+คุณไม่ต้อง list dependency เลย compiler เห็นว่า `double` อ่าน `count` แล้ว rebuild `double` ตอน `count` เปลี่ยนพอดี ค่า derived เป็น read-only — คุณไม่ assign ค่าให้ตรง ๆ เพราะเป็น function ของ input
 
 ## logic ซับซ้อน: $derived.by
 
@@ -77,7 +77,7 @@ export const derivedDiagram = `flowchart LR
 </script>
 ```
 
-กฎง่าย ๆ: **ถ้าค่าหนึ่งคำนวณได้จาก state อื่น ให้ derive มัน — อย่าเก็บแล้ว sync** derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า เก็บ `$effect` ไว้ใช้กับ side effect จริง ๆ (บทหน้า) ไม่ใช่คำนวณค่า
+กฎง่าย ๆ: **ถ้าค่าหนึ่งคำนวณได้จาก state อื่น ให้ derive ค่านั้นออกมา — อย่าเก็บแล้ว sync** derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า เก็บ `$effect` ไว้ใช้กับ side effect จริง ๆ (บทหน้า) ไม่ใช่คำนวณค่า
 
 <Callout title="สรุปบรรทัดเดียว">
 `$derived(expression)` (หรือ **`$derived.by(() => { … })`** สำหรับ logic หลาย statement) ประกาศ **ค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น** recompute อัตโนมัติเมื่อ dependency ที่ track เปลี่ยน — ไม่ต้อง list dependency เอง เลือก derive ค่าดีกว่าเก็บใน `$state` แล้ว sync ด้วย `$effect`: derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า
@@ -88,7 +88,7 @@ export const quizDerived = [
     q: '`$derived` ทำอะไร?',
     options: [
       'สร้าง writable state',
-      'ประกาศค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น recompute เมื่อมันเปลี่ยน',
+      'ประกาศค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น recompute เมื่อค่าต้นทางเปลี่ยน',
       'ทำ side effect',
       'fetch data',
     ],
@@ -110,7 +110,7 @@ export const quizDerived = [
       'คุณส่ง dependency array',
       'compiler track ว่าการคำนวณ derived อ่าน `count`',
       'คุณเรียก subscribe method',
-      'มัน recompute ทุก render',
+      'recompute ทุก render',
     ],
     answer: 1,
   },

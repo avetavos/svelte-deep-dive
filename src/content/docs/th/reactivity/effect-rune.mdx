@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## effect sync กับโลกภายนอก
 
-`$effect` รัน function หลัง DOM update แล้ว และรันซ้ำทุกครั้งที่ค่า reactive ที่มันอ่านเปลี่ยน มันมีไว้สำหรับ **side effect** — sync state ของ Svelte กับสิ่งที่อยู่นอก Svelte: DOM ตรง ๆ, library ภายนอก, subscription, timer, logging, `localStorage`
+`$effect` รัน function หลัง DOM update แล้ว และรันซ้ำทุกครั้งที่ค่า reactive ที่อ่านเปลี่ยน มีไว้สำหรับ **side effect** — sync state ของ Svelte กับสิ่งที่อยู่นอก Svelte: DOM ตรง ๆ, library ภายนอก, subscription, timer, logging, `localStorage`
 
 ```svelte
 <script>
@@ -25,11 +25,11 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </script>
 ```
 
-dependency ถูก track อัตโนมัติ เหมือน `$derived` เป๊ะ — effect อ่าน `count` มันจึงรันซ้ำเมื่อ `count` เปลี่ยน ไม่ต้องมี dependency array
+dependency ถูก track อัตโนมัติ เหมือน `$derived` เป๊ะ — effect อ่าน `count` จึงรันซ้ำเมื่อ `count` เปลี่ยน ไม่ต้องมี dependency array
 
 ## Cleanup
 
-ถ้า effect ตั้งอะไรบางอย่างที่ต้อง tear down — interval, event listener, subscription — ให้ **return cleanup function** Svelte จะรันมันก่อน effect รันซ้ำ และตอน component ถูก destroy
+ถ้า effect ตั้งอะไรบางอย่างที่ต้อง tear down — interval, event listener, subscription — ให้ **return cleanup function** Svelte จะรัน cleanup ก่อน effect รันซ้ำ และตอน component ถูก destroy
 
 ```svelte
 <script>
@@ -44,7 +44,7 @@ dependency ถูก track อัตโนมัติ เหมือน `$deri
 
 ## $effect.pre
 
-`$effect` รัน **หลัง** DOM update บางครั้งคุณต้องอ่าน DOM *ก่อน* มัน update — เช่น จับ scroll position ก่อน content ใหม่จะดันมันไป **`$effect.pre`** รันก่อน DOM update แทน โดยมีกฎ track และ cleanup เหมือนกัน
+`$effect` รัน **หลัง** DOM update บางครั้งคุณต้องอ่าน DOM *ก่อน* DOM update — เช่น จับ scroll position ก่อน content ใหม่จะดันตำแหน่งไป **`$effect.pre`** รันก่อน DOM update แทน โดยมีกฎ track และ cleanup เหมือนกัน
 
 ```svelte
 <script>
@@ -59,7 +59,7 @@ dependency ถูก track อัตโนมัติ เหมือน `$deri
 
 ## ส่วนใหญ่คุณไม่ต้องใช้ effect
 
-นี่คือแนวทางที่สำคัญที่สุดในโมดูล effect คือ escape hatch และการหยิบมันมาจัดการ state *ภายใน* คือความผิดพลาดที่พบบ่อยที่สุดใน Svelte 5 ก่อนเขียน effect ให้ถามว่า:
+นี่คือแนวทางที่สำคัญที่สุดในโมดูล effect คือ escape hatch และการหยิบมาจัดการ state *ภายใน* คือความผิดพลาดที่พบบ่อยที่สุดใน Svelte 5 ก่อนเขียน effect ให้ถามว่า:
 
 - **คำนวณค่าจาก state?** ใช้ `$derived` ไม่ใช่ effect ที่ assign state
 - **ตอบสนอง user action?** ทำงานใน event handler (`onclick`) ไม่ใช่ effect ที่คอยดูตัวแปร
@@ -93,7 +93,7 @@ export const quizEffect = [
     q: 'จะ tear down subscription หรือ interval ที่สร้างใน effect ยังไง?',
     options: [
       'เรียก onDestroy แยก',
-      'return cleanup function จาก effect — มันรันก่อนรอบถัดไปและตอน destroy',
+      'return cleanup function จาก effect — cleanup จะรันก่อนรอบถัดไปและตอน destroy',
       'clean up ไม่ได้',
       'ตั้ง state เป็น null',
     ],

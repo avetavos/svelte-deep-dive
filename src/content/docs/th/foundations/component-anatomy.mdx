@@ -1,6 +1,6 @@
 ---
 title: 'The Component Anatomy'
-description: 'สามส่วนของไฟล์ .svelte — script, markup และ scoped style — พวกมัน compile อย่างไร และทำไม style ถึง scope อยู่ที่ component โดย default'
+description: 'สามส่วนของไฟล์ .svelte — script, markup และ scoped style — ทั้งสามส่วนนี้ compile อย่างไร และทำไม style ถึง scope อยู่ที่ component โดย default'
 sidebar:
   order: 3
 ---
@@ -30,7 +30,7 @@ Svelte component คือไฟล์ `.svelte` ที่มีได้ถึ�
 </style>
 ```
 
-- block **`<script>`** คือ logic ของ component: state (ด้วย runes), component ที่ import เข้ามา และ function มันรันหนึ่งครั้งตอน component ถูกสร้าง
+- block **`<script>`** คือ logic ของ component: state (ด้วย runes), component ที่ import เข้ามา และ function โดย block นี้รันหนึ่งครั้งตอน component ถูกสร้าง
 - **markup** คือ HTML ที่เสริมด้วย template syntax ของ Svelte — `{expressions}`, block อย่าง `{#if}` และ binding นี่คือสิ่งที่ render
 - block **`<style>`** คือ CSS ที่โดย default จะ apply เฉพาะ component นี้
 
@@ -46,7 +46,7 @@ export const anatomyDiagram = `flowchart LR
 
 ## scoped style โดย default
 
-block **`<style>`** ถูก **scope อยู่ที่ component** — Svelte เพิ่ม class เฉพาะให้ element ของ component แล้ว rewrite selector ของคุณให้ match เฉพาะพวกมัน เขียน `h1 { color: … }` แล้วมันจัด style ให้ `h1` ของ component นี้ ไม่ใช่ `h1` ทุกตัวบนหน้า
+block **`<style>`** ถูก **scope อยู่ที่ component** — Svelte เพิ่ม class เฉพาะให้ element ของ component แล้ว rewrite selector ของคุณให้ match เฉพาะ element เหล่านั้น เขียน `h1 { color: … }` แล้ว style นั้นมีผลกับ `h1` ของ component นี้ ไม่ใช่ `h1` ทุกตัวบนหน้า
 
 ```svelte
 <p>This paragraph is styled locally.</p>
@@ -67,7 +67,7 @@ block **`<style>`** ถูก **scope อยู่ที่ component** — Svel
 
 ## TypeScript กับ script
 
-ใส่ `lang="ts"` ที่ script tag เพื่อเขียน TypeScript — compiler จะ type-check และ strip มันออก:
+ใส่ `lang="ts"` ที่ script tag เพื่อเขียน TypeScript — compiler จะ type-check แล้ว strip type ออก:
 
 ```svelte
 <script lang="ts">

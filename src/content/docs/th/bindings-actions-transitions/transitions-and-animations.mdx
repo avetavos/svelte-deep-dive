@@ -54,7 +54,7 @@ export const transDiagram = `flowchart LR
 
 ## animate: สำหรับเรียง list ใหม่
 
-transition จัดการ add/remove แต่ไม่จัดการ **การเคลื่อนที่** เมื่อ item ใน keyed `{#each}` เรียงใหม่ `animate:` directive เลื่อนมันไปตำแหน่งใหม่อย่างลื่น ตัวที่มีมาให้คือ `flip` (First-Last-Invert-Play) จาก `svelte/animate` ทำสิ่งนี้พอดี:
+transition จัดการ add/remove แต่ไม่จัดการ **การเคลื่อนที่** เมื่อ item ใน keyed `{#each}` เรียงใหม่ `animate:` directive เลื่อน item ไปตำแหน่งใหม่อย่างลื่น ตัวที่มีมาให้คือ `flip` (First-Last-Invert-Play) จาก `svelte/animate` ทำสิ่งนี้พอดี:
 
 ```svelte
 <script>
@@ -110,7 +110,7 @@ export const quizTrans = [
   {
     q: 'transition ที่มีมาให้อย่าง `fly` มาจากไหน?',
     options: [
-      'มัน global',
+      'global',
       'import จาก `svelte/transition` (และ `flip` จาก `svelte/animate`)',
       'จาก DOM',
       'จาก store',

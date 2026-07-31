@@ -1,6 +1,6 @@
 ---
 title: 'Svelte Foundations & Mental Model'
-description: 'ไอเดียเดียวที่ Svelte สร้างขึ้นมา — มันคือ compiler ไม่ใช่ runtime — บวกกับ .svelte component, runes reactivity และ template syntax เลนส์สำหรับทุกอย่างที่เหลือ'
+description: 'ไอเดียเดียวที่ Svelte สร้างขึ้นมา — Svelte เป็น compiler ไม่ใช่ runtime — บวกกับ .svelte component, runes reactivity และ template syntax เลนส์สำหรับทุกอย่างที่เหลือ'
 sidebar:
   order: 1
 ---
@@ -12,9 +12,9 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียในประโยคเดียว
 
-**Svelte คือ compiler** มันอ่าน component ของคุณตอน build time แล้ว generate JavaScript เล็ก ๆ แบบ imperative ที่อัปเดต DOM แบบเจาะจง — ไม่มี virtual DOM และไม่มี framework runtime มานั่ง diff UI ทุกครั้งที่มีการเปลี่ยนแปลง "framework" แทบจะหายไปในผลลัพธ์
+**Svelte คือ compiler** ที่อ่าน component ของคุณตอน build time แล้ว generate JavaScript เล็ก ๆ แบบ imperative ที่อัปเดต DOM แบบเจาะจง — ไม่มี virtual DOM และไม่มี framework runtime มานั่ง diff UI ทุกครั้งที่มีการเปลี่ยนแปลง "framework" แทบจะหายไปในผลลัพธ์
 
-ทุกฟีเจอร์ของ Svelte — runes, snippets, scoped styles, transitions — เป็นผลมาจากสิ่งนี้: เพราะ Svelte *compile* code ของคุณ มันเลยเปลี่ยน `count++` ให้กลายเป็นการอัปเดต DOM เท่าที่การเปลี่ยนแปลงนั้นต้องการพอดี และส่งอย่างอื่นไปแทบไม่มีเลย
+ทุกฟีเจอร์ของ Svelte — runes, snippets, scoped styles, transitions — เป็นผลมาจากสิ่งนี้: เพราะ Svelte *compile* code ของคุณ compiler จึงเปลี่ยน `count++` ให้กลายเป็นการอัปเดต DOM เท่าที่การเปลี่ยนแปลงนั้นต้องการพอดี และส่งอย่างอื่นไปแทบไม่มีเลย
 
 ## โมดูลนี้ครอบคลุมอะไรบ้าง
 
@@ -36,8 +36,8 @@ export const lensDiagram = `flowchart TB
   runes["Runes: mark what is reactive\n($state, $derived, $effect)"] --> gen
   gen --> small["Tiny, fast output"]`;
 
-- เพราะ Svelte เป็น **compiler** มันรู้ตั้งแต่ build time ว่าส่วนไหนของ DOM ขึ้นกับ state ตัวไหน — จึงเขียน code อัปเดตที่แม่นยำแทนที่จะส่ง diffing runtime ไป
-- เพราะ reactivity ถูกประกาศด้วย **runes** compiler เลยไล่ dependency graph แบบ static ได้ และอัปเดตเฉพาะสิ่งที่เปลี่ยน ไม่ว่ามันจะอยู่ตรงไหน
+- เพราะ Svelte เป็น **compiler** จึงรู้ตั้งแต่ build time ว่าส่วนไหนของ DOM ขึ้นกับ state ตัวไหน — จึงเขียน code อัปเดตที่แม่นยำแทนที่จะส่ง diffing runtime ไป
+- เพราะ reactivity ถูกประกาศด้วย **runes** compiler เลยไล่ dependency graph แบบ static ได้ และอัปเดตเฉพาะสิ่งที่เปลี่ยน ไม่ว่าจะอยู่ตรงไหน
 
 จับสองอย่างนี้ไว้ แล้ว Svelte จะเลิกดูเหมือนเวทมนตร์ และเริ่มดูเหมือน code generator ที่เก่งมาก
 
@@ -47,7 +47,7 @@ export const lensDiagram = `flowchart TB
 
 export const quizIndex = [
   {
-    q: 'โดยพื้นฐานแล้ว Svelte คืออะไร?',
+    q: 'โดยทั่วไป Svelte คืออะไร?',
     options: [
       'runtime library ที่มี virtual DOM',
       'compiler ที่ generate JavaScript แบบ imperative เล็ก ๆ เพื่ออัปเดต DOM แบบเจาะจง',
@@ -59,10 +59,10 @@ export const quizIndex = [
   {
     q: 'Svelte อัปเดต DOM อย่างไรเมื่อ state เปลี่ยน?',
     options: [
-      'มัน re-render component แล้ว diff virtual DOM',
+      're-render component แล้ว diff virtual DOM',
       'compiler generate code ที่แม่นยำไว้แล้ว ซึ่งอัปเดตเฉพาะ DOM node ที่ขึ้นกับ state นั้น',
-      'มัน reload หน้า',
-      'มัน re-run ทุก component บนหน้า',
+      'reload หน้า',
+      're-run ทุก component บนหน้า',
     ],
     answer: 1,
   },

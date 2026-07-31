@@ -31,7 +31,7 @@ export const count = writable(0);
 <p>{$count}</p>   <!-- $ reads the value and re-renders -->
 ```
 
-ทุกคอมโพเนนต์ที่ import `count` จะ share store ตัวเดียวกัน — เขียนที่จุดหนึ่งก็อัปเดตทุกที่ที่มันถูกอ่าน นั่นคือ shared state ในบรรทัดเดียว
+ทุกคอมโพเนนต์ที่ import `count` จะ share store ตัวเดียวกัน — เขียนที่จุดหนึ่งก็อัปเดตทุกที่ที่ถูกอ่าน นั่นคือ shared state ในบรรทัดเดียว
 
 ## readable — ค่าที่ set จากภายนอกไม่ได้
 
@@ -78,7 +78,7 @@ export const storesDiagram = `flowchart LR
 เมื่อมี runes ให้ใช้แล้ว ให้เลือก stores เมื่อคุณต้องการ **contract** โดยเฉพาะ: การห่อ external push source (`readable` รอบ WebSocket), การ interop กับ observable หรือการทำงานใน code ที่ใช้ store อยู่แล้ว สำหรับ app state ธรรมดาที่ share ข้ามคอมโพเนนต์ runed module (บทถัดไป) มักจะง่ายกว่า
 
 <Callout title="สรุปหนึ่งบรรทัด">
-`svelte/store` ให้ helper สามตัว: **`writable`** (อ่าน + เขียนผ่าน `set`/`update`/`subscribe`), **`readable`** (ค่าถูกควบคุมโดย start/stop function — เหมาะกับการห่อ push source อย่าง timer หรือ socket) และ **`derived`** (คำนวณจาก store หนึ่งตัวหรือมากกว่า คำนวณใหม่เมื่อเปลี่ยน) อ่านตัวไหนก็ได้ในคอมโพเนนต์ด้วย prefix **`$`** พวกมันยังเป็นเครื่องมือที่ถูกเมื่อคุณต้องการ subscribe *contract* หรือ interop สำหรับ shared app state ธรรมดาให้เลือก runes
+`svelte/store` ให้ helper สามตัว: **`writable`** (อ่าน + เขียนผ่าน `set`/`update`/`subscribe`), **`readable`** (ค่าถูกควบคุมโดย start/stop function — เหมาะกับการห่อ push source อย่าง timer หรือ socket) และ **`derived`** (คำนวณจาก store หนึ่งตัวหรือมากกว่า คำนวณใหม่เมื่อเปลี่ยน) อ่านตัวไหนก็ได้ในคอมโพเนนต์ด้วย prefix **`$`** stores ยังเป็นเครื่องมือที่ถูกเมื่อคุณต้องการ subscribe *contract* หรือ interop สำหรับ shared app state ธรรมดาให้เลือก runes
 </Callout>
 
 export const quizBuiltin = [
@@ -95,10 +95,10 @@ export const quizBuiltin = [
   {
     q: 'อะไรพิเศษเกี่ยวกับ start function ของ `readable` store?',
     options: [
-      'มันทำงานทุก render',
-      'มันทำงานเมื่อ subscriber ตัวแรกมาถึง และ return ฟังก์ชัน stop ที่ทำงานเมื่อตัวสุดท้ายจากไป',
-      'มันต้อง return promise',
-      'มัน set ได้แค่ string',
+      'ทำงานทุก render',
+      'ทำงานเมื่อ subscriber ตัวแรกมาถึง และ return ฟังก์ชัน stop ที่ทำงานเมื่อตัวสุดท้ายจากไป',
+      'ต้อง return promise',
+      'set ได้แค่ string',
     ],
     answer: 1,
   },

@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## Svelte สร้าง component; SvelteKit สร้างแอป
 
-Svelte ให้ component กับคุณ ส่วน **SvelteKit** คือ application framework อย่างเป็นทางการที่สร้างต่อยอดขึ้นไป (และอยู่บน Vite) มันเพิ่มทุกอย่างที่แอปจริงต้องใช้ — router, server-side rendering, data loading, form handling, API endpoints และ deployment — คุณจึงไม่ต้องประกอบเองทีละชิ้น
+Svelte ให้ component กับคุณ ส่วน **SvelteKit** คือ application framework อย่างเป็นทางการที่สร้างต่อยอดขึ้นไป (และอยู่บน Vite) SvelteKit เพิ่มทุกอย่างที่แอปจริงต้องใช้ — router, server-side rendering, data loading, form handling, API endpoints และ deployment — คุณจึงไม่ต้องประกอบเองทีละชิ้น
 
 ความสัมพันธ์นี้เหมือน React กับ Next.js หรือ Vue กับ Nuxt: view library ดูแล UI ส่วน meta-framework ดูแลตัวแอป
 
@@ -46,7 +46,7 @@ export const shapeDiagram = `flowchart TB
 โดย default SvelteKit จะ render เพจบน **server** ก่อน (first paint เร็ว, ดีต่อ SEO) แล้วค่อย hydrate บน client เพื่อความ interactive — ได้ข้อดีทั้งสองฝั่ง และปรับได้ราย route
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**SvelteKit** คือ app framework อย่างเป็นทางการบน Svelte + Vite: ให้ file-based **routing** (`src/routes/` พร้อมไฟล์พิเศษอย่าง `+page.svelte`, `+layout.svelte`, `+server.js`), **server-side rendering** โดย default, **data loading** (`load`), **form actions**, **API endpoints** และ deployment **adapters** Svelte สร้าง component; SvelteKit สร้างแอปรอบ ๆ มัน
+**SvelteKit** คือ app framework อย่างเป็นทางการบน Svelte + Vite: ให้ file-based **routing** (`src/routes/` พร้อมไฟล์พิเศษอย่าง `+page.svelte`, `+layout.svelte`, `+server.js`), **server-side rendering** โดย default, **data loading** (`load`), **form actions**, **API endpoints** และ deployment **adapters** Svelte สร้าง component; SvelteKit สร้างแอปรอบ ๆ component เหล่านั้น
 </Callout>
 
 export const quizIndex = [

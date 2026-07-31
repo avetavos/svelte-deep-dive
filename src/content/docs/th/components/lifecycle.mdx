@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## $effect ครอบคลุมงาน lifecycle ส่วนใหญ่
 
-ใน Svelte 4 เราหยิบ lifecycle hook (`onMount`, `beforeUpdate`, `afterUpdate`) มาใช้กับอะไรก็ตามที่เกี่ยวกับ DOM หรือ timing ใน Svelte 5 **`$effect` ครอบคลุมส่วนใหญ่ของสิ่งนั้น**: มัน run หลัง DOM update, run ซ้ำเมื่อ dependency เปลี่ยน และ cleanup function ที่ return จัดการการ teardown
+ใน Svelte 4 เราหยิบ lifecycle hook (`onMount`, `beforeUpdate`, `afterUpdate`) มาใช้กับอะไรก็ตามที่เกี่ยวกับ DOM หรือ timing ใน Svelte 5 **`$effect` ครอบคลุมส่วนใหญ่ของสิ่งนั้น**: `$effect` run หลัง DOM update, run ซ้ำเมื่อ dependency เปลี่ยน และ cleanup function ที่ return จัดการการ teardown
 
 ```svelte
 <script>
@@ -25,13 +25,13 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </script>
 ```
 
-ดังนั้นก่อนหยิบ lifecycle function ให้ถามว่า effect เหมาะไหม บ่อยครั้งมันเหมาะ
+ดังนั้นก่อนหยิบ lifecycle function ให้ถามว่า effect เหมาะไหม บ่อยครั้งก็เหมาะ
 
 ## onMount และ onDestroy
 
 lifecycle function สองตัวยังมีประโยชน์จริง:
 
-- **`onMount(fn)`** run ครั้งเดียวหลัง component render ลง DOM ครั้งแรก **เฉพาะใน browser** (ไม่เคยระหว่าง SSR) เป็นที่ที่เหมาะสำหรับ setup ที่ browser-only: วัด DOM, init canvas หรือ map library, เริ่ม interval ถ้า `fn` return function มันจะถูกเรียกตอน destroy
+- **`onMount(fn)`** run ครั้งเดียวหลัง component render ลง DOM ครั้งแรก **เฉพาะใน browser** (ไม่เคยระหว่าง SSR) เป็นที่ที่เหมาะสำหรับ setup ที่ browser-only: วัด DOM, init canvas หรือ map library, เริ่ม interval ถ้า `fn` return function จะถูกเรียกตอน destroy
 - **`onDestroy(fn)`** run เมื่อ component ถูกลบ — สำหรับ cleanup ที่ไม่ผูกกับ effect ตัวใดตัวหนึ่ง (unsubscribe, clear timer)
 
 ```svelte
@@ -47,7 +47,7 @@ lifecycle function สองตัวยังมีประโยชน์จ�
 </script>
 ```
 
-ความต่างสำคัญจาก `$effect`: `onMount` run **ครั้งเดียวพอดี** และ **เฉพาะใน browser** ซึ่งเป็นสิ่งที่คุณต้องการเป๊ะ ๆ สำหรับ initialization ครั้งเดียวแบบ browser-only effect ที่ไม่อ่าน reactive state ก็ run ครั้งเดียวเหมือนกัน แต่ `onMount` บอก intent ชัดและการันตีว่า run เฉพาะ browser
+ความต่างสำคัญจาก `$effect`: `onMount` run **ครั้งเดียวพอดี** และ **เฉพาะใน browser** นั่นคือสิ่งที่คุณต้องการเป๊ะ ๆ สำหรับ initialization ครั้งเดียวแบบ browser-only effect ที่ไม่อ่าน reactive state ก็ run ครั้งเดียวเหมือนกัน แต่ `onMount` บอก intent ชัดและการันตีว่า run เฉพาะ browser
 
 <Mermaid title="จังหวะ lifecycle ของ component" code={lifeDiagram} />
 
@@ -59,7 +59,7 @@ export const lifeDiagram = `flowchart LR
 
 ## tick: รอให้ DOM update
 
-Svelte batch การ update DOM เมื่อคุณเปลี่ยน state และต้องการให้ DOM สะท้อนมัน *ก่อน* บรรทัดถัดไป run (เพื่อวัด element หรือ focus input ที่เพิ่งแสดง) **`await tick()`** resolve เมื่อ pending changes ถูก apply แล้ว
+Svelte batch การ update DOM เมื่อคุณเปลี่ยน state และต้องการให้ DOM สะท้อนการเปลี่ยนนั้น *ก่อน* บรรทัดถัดไป run (เพื่อวัด element หรือ focus input ที่เพิ่งแสดง) **`await tick()`** resolve เมื่อ pending changes ถูก apply แล้ว
 
 ```svelte
 <script>
@@ -74,7 +74,7 @@ Svelte batch การ update DOM เมื่อคุณเปลี่ยน 
 ```
 
 <Callout title="สรุปหนึ่งบรรทัด">
-ใน Svelte 5 **`$effect`** จัดการงานส่วนใหญ่ที่ lifecycle hook เคยทำ — มัน run หลัง DOM update และ cleanup ตอน destroy lifecycle function สองตัวยังสำคัญ: **`onMount`** (ครั้งเดียว, browser-only — เหมาะกับการวัด DOM และ library ที่ browser-only) และ **`onDestroy`** (teardown ที่ไม่ผูกกับ effect) **`await tick()`** รอให้ batched DOM update ของ Svelte apply ก่อนคุณอ่านหรือทำอะไรกับ DOM
+ใน Svelte 5 **`$effect`** จัดการงานส่วนใหญ่ที่ lifecycle hook เคยทำ — run หลัง DOM update และ cleanup ตอน destroy lifecycle function สองตัวยังสำคัญ: **`onMount`** (ครั้งเดียว, browser-only — เหมาะกับการวัด DOM และ library ที่ browser-only) และ **`onDestroy`** (teardown ที่ไม่ผูกกับ effect) **`await tick()`** รอให้ batched DOM update ของ Svelte apply ก่อนคุณอ่านหรือทำอะไรกับ DOM
 </Callout>
 
 export const quizLifecycle = [
@@ -91,10 +91,10 @@ export const quizLifecycle = [
   {
     q: 'อะไรคือจุดเด่นของ `onMount`?',
     options: [
-      'มัน run ทุก update',
-      'มัน run ครั้งเดียวพอดี เฉพาะใน browser (ไม่เคยระหว่าง SSR) — เหมาะกับ setup ที่ browser-only',
-      'มัน run บน server',
-      'มันแทน $state',
+      'run ทุก update',
+      'run ครั้งเดียวพอดี เฉพาะใน browser (ไม่เคยระหว่าง SSR) — เหมาะกับ setup ที่ browser-only',
+      'run บน server',
+      'แทน $state',
     ],
     answer: 1,
   },

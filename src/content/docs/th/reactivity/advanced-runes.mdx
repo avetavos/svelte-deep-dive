@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## $inspect: debug แบบ reactive
 
-`$inspect` log ค่า reactive และ **log ใหม่ทุกครั้งที่มันเปลี่ยน** — เป็นเครื่องมือ dev-only (กลายเป็น no-op ใน production build) ต่างจาก `console.log` ธรรมดาที่ fire ครั้งเดียว `$inspect` track argument ของมันและรายงานทุก update
+`$inspect` log ค่า reactive และ **log ใหม่ทุกครั้งที่เปลี่ยน** — เป็นเครื่องมือ dev-only (กลายเป็น no-op ใน production build) ต่างจาก `console.log` ธรรมดาที่ fire ครั้งเดียว `$inspect` track argument ของตัวเองและรายงานทุก update
 
 ```svelte
 <script>
@@ -27,7 +27,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## untrack: อ่านโดยไม่ depend
 
-ภายใน `$derived` หรือ `$effect` ทุกค่า reactive ที่คุณอ่านจะกลายเป็น dependency บางครั้งคุณอยากอ่านค่า *โดยไม่* สร้าง dependency นั้น — เพื่อให้ effect ไม่รันซ้ำตอนมันเปลี่ยน **`untrack`** (import จาก `svelte`) ทำแบบนั้น
+ภายใน `$derived` หรือ `$effect` ทุกค่า reactive ที่คุณอ่านจะกลายเป็น dependency บางครั้งคุณอยากอ่านค่า *โดยไม่* สร้าง dependency นั้น — เพื่อให้ effect ไม่รันซ้ำตอนค่านั้นเปลี่ยน **`untrack`** (import จาก `svelte`) ทำแบบนั้น
 
 ```svelte
 <script>
@@ -88,8 +88,8 @@ export const quizAdvanced = [
     options: [
       'ไม่มีอะไรต่าง',
       '`$inspect` log ใหม่ทุกการเปลี่ยนของค่าที่ track และเป็น dev-only (no-op ใน production)',
-      'มัน log ลงไฟล์',
-      'มันหยุดการทำงาน',
+      'log ลงไฟล์',
+      'หยุดการทำงาน',
     ],
     answer: 1,
   },
@@ -97,8 +97,8 @@ export const quizAdvanced = [
     q: '`untrack(() => config.verbose)` ทำอะไรภายใน effect?',
     options: [
       'ลบ config.verbose',
-      'อ่านค่าโดยไม่สร้าง dependency ดังนั้น effect จะไม่รันซ้ำตอนมันเปลี่ยน',
-      'ทำให้มันเป็น reactive',
+      'อ่านค่าโดยไม่สร้าง dependency ดังนั้น effect จะไม่รันซ้ำตอนค่านั้นเปลี่ยน',
+      'ทำให้ค่านั้นเป็น reactive',
       'รันบน server',
     ],
     answer: 1,

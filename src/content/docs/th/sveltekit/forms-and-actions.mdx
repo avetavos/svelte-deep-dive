@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## form POST ไปที่ actions
 
-SvelteKit จัดการการ submit form ด้วย **actions** — server function ใน `+page.server.js` ที่รับข้อมูลที่ส่งมา form HTML ธรรมดา `<form method="POST">` จะ post ไปหามัน ฟีเจอร์นี้จึงทำงานได้ *ก่อน JavaScript จะโหลดด้วยซ้ำ*
+SvelteKit จัดการการ submit form ด้วย **actions** — server function ใน `+page.server.js` ที่รับข้อมูลที่ส่งมา form HTML ธรรมดา `<form method="POST">` จะ post ไปหา action นั้น ฟีเจอร์นี้จึงทำงานได้ *ก่อน JavaScript จะโหลดด้วยซ้ำ*
 
 ```js
 // src/routes/login/+page.server.js
@@ -56,7 +56,7 @@ export const actions = {
 
 ## named actions
 
-หนึ่งเพจมีได้หลาย action — เช่น form login กับ form register ตั้งชื่อให้มัน แล้วเจาะไปที่ตัวใดตัวหนึ่งด้วย `action="?/name"`:
+หนึ่งเพจมีได้หลาย action — เช่น form login กับ form register ตั้งชื่อให้แต่ละ action แล้วเจาะไปที่ตัวใดตัวหนึ่งด้วย `action="?/name"`:
 
 ```js
 export const actions = {
@@ -91,10 +91,10 @@ export const enhanceDiagram = `flowchart TB
   js["มี use:enhance: AJAX submit ไม่ reload"] --> server
   server --> result["สำเร็จ redirect หรือ fail data ไป form prop"]`;
 
-นี่คือลายเซ็นของ SvelteKit: สร้างด้วย form ธรรมดาที่ทำงานได้ทุกที่ แล้วค่อย enhance เพื่อประสบการณ์ที่ดีขึ้น — แทนที่จะเป็น form ที่ใช้ JS อย่างเดียวและพังเมื่อไม่มีมัน
+นี่คือลายเซ็นของ SvelteKit: สร้างด้วย form ธรรมดาที่ทำงานได้ทุกที่ แล้วค่อย enhance เพื่อประสบการณ์ที่ดีขึ้น — แทนที่จะเป็น form ที่ใช้ JS อย่างเดียวและพังเมื่อไม่มี JS
 
 <Callout title="สรุปหนึ่งบรรทัด">
-จัดการการ submit form ด้วย **actions** ใน `+page.server.js` — `<form method="POST">` post ไปหามัน จึงทำงานได้ **โดยไม่มี JavaScript** อ่าน `await request.formData()`, return **`fail(status, data)`** สำหรับ validation error (มาถึงเป็น **`form` prop** พร้อมเก็บ input ไว้) หรือ **`redirect`** เมื่อสำเร็จ; ใช้ `action="?/name"` สำหรับ **named actions** เพิ่ม **`use:enhance`** (จาก `$app/forms`) เพื่อ submit แบบ AJAX ที่ลื่นขณะยังคง fallback แบบไม่มี JS — progressive enhancement
+จัดการการ submit form ด้วย **actions** ใน `+page.server.js` — `<form method="POST">` post ไปหา action นั้น จึงทำงานได้ **โดยไม่มี JavaScript** อ่าน `await request.formData()`, return **`fail(status, data)`** สำหรับ validation error (มาถึงเป็น **`form` prop** พร้อมเก็บ input ไว้) หรือ **`redirect`** เมื่อสำเร็จ; ใช้ `action="?/name"` สำหรับ **named actions** เพิ่ม **`use:enhance`** (จาก `$app/forms`) เพื่อ submit แบบ AJAX ที่ลื่นขณะยังคง fallback แบบไม่มี JS — progressive enhancement
 </Callout>
 
 export const quizForms = [
@@ -121,10 +121,10 @@ export const quizForms = [
   {
     q: 'ทำไม form ของ SvelteKit ทำงานได้โดยไม่มี JavaScript',
     options: [
-      'มันทำไม่ได้ — ต้องมี JS',
+      'ทำไม่ได้ — ต้องมี JS',
       '`<form method="POST">` ธรรมดา post ไปที่ server action; browser จัดการเองแบบ native',
-      'มันใช้ service worker',
-      'มัน pre-render ทุก response',
+      'ใช้ service worker',
+      'pre-render ทุก response',
     ],
     answer: 1,
   },

@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## Runes: reactivity แบบชัดเจน
 
-**rune** คือสัญญาณของ compiler — คำที่ขึ้นต้นด้วย `$` และหน้าตาเหมือน function — ที่บอก Svelte ว่า "ค่านี้เป็น reactive" runes ไม่ได้ถูก import และไม่ได้ถูกเรียกตอน runtime เหมือน function ปกติ compiler จะรู้จักมันและ generate กลไก reactivity ขึ้นมารอบ ๆ
+**rune** คือสัญญาณของ compiler — คำที่ขึ้นต้นด้วย `$` และหน้าตาเหมือน function — ที่บอก Svelte ว่า "ค่านี้เป็น reactive" runes ไม่ได้ถูก import และไม่ได้ถูกเรียกตอน runtime เหมือน function ปกติ compiler จะรู้จัก rune เหล่านี้แล้ว generate กลไก reactivity ขึ้นมารอบ ๆ
 
 ```svelte
 <script>
@@ -26,7 +26,7 @@ model ทั้งหมดคือ: **mark ค่าที่เป็น reac
 
 ## การเปลี่ยนจาก Svelte 4 มา Svelte 5
 
-runes คือการเปลี่ยนแปลงหลักใน Svelte 5 มัน**แทนที่** กลไกของ Svelte 4 สามอย่างด้วยระบบเดียวที่สอดคล้องกัน:
+runes คือการเปลี่ยนแปลงหลักใน Svelte 5 และ**แทนที่** กลไกของ Svelte 4 สามอย่างด้วยระบบเดียวที่สอดคล้องกัน:
 
 | Svelte 4 | Svelte 5 |
 |----------|----------|
@@ -53,7 +53,7 @@ export const runeDiagram = `flowchart LR
 - **Advanced** — `$inspect`, `untrack` และ shared reactive state ใน `.svelte.js` module
 
 <Callout title="สรุปบรรทัดเดียว">
-**runes** คือสัญญาณของ compiler ที่ขึ้นต้นด้วย `$` ทำให้ reactivity **ชัดเจน**: `$state` (reactive state), `$derived` (computed value), `$effect` (side effect) และ `$props` (input) ใน Svelte 5 พวกมัน**แทนที่** reactivity แบบ implicit ของ Svelte 4 (`let`), `$:` statement และ `export let` props — ด้วยระบบเดียวที่ทำงานเหมือนกันทั้งใน component และ `.svelte.js` module คุณ mark ว่าอะไรเป็น reactive แล้ว compiler ต่อ dependency graph ให้
+**runes** คือสัญญาณของ compiler ที่ขึ้นต้นด้วย `$` ทำให้ reactivity **ชัดเจน**: `$state` (reactive state), `$derived` (computed value), `$effect` (side effect) และ `$props` (input) ใน Svelte 5 runes เหล่านี้**แทนที่** reactivity แบบ implicit ของ Svelte 4 (`let`), `$:` statement และ `export let` props — ด้วยระบบเดียวที่ทำงานเหมือนกันทั้งใน component และ `.svelte.js` module คุณ mark ว่าอะไรเป็น reactive แล้ว compiler ต่อ dependency graph ให้
 </Callout>
 
 export const quizIndex = [

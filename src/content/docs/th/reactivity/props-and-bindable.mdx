@@ -48,7 +48,7 @@ component รับ input จาก parent ผ่าน **`$props()`** ซึ่
 
 ## One-way data flow โดย default
 
-props ไหล **ลง**: parent ส่งค่า และ child อ่านมัน child ไม่ควร reassign prop เพื่อ "ส่งข้อมูลกลับ" นั่นทำลาย flow ทิศทางเดียว และ Svelte จะเตือน เมื่อ child ต้องสื่อสารขึ้นไป parent จะส่ง callback prop หรือทั้งคู่ share state ผ่าน binding
+props ไหล **ลง**: parent ส่งค่า ส่วน child อ่านค่าไปใช้ child ไม่ควร reassign prop เพื่อ "ส่งข้อมูลกลับ" นั่นทำลาย flow ทิศทางเดียว และ Svelte จะเตือน เมื่อ child ต้องสื่อสารขึ้นไป parent จะส่ง callback prop หรือทั้งคู่ share state ผ่าน binding
 
 ```svelte
 <script>
@@ -60,7 +60,7 @@ props ไหล **ลง**: parent ส่งค่า และ child อ่า�
 
 ## Two-way binding ด้วย $bindable
 
-บางครั้ง two-way binding เป็น design ที่สะอาดจริง ๆ — custom input component ที่ parent อยาก `bind:` ค่าของมัน ให้ mark prop นั้น **`$bindable()`** แล้ว parent จะ bind ได้
+บางครั้ง two-way binding เป็น design ที่สะอาดจริง ๆ — custom input component ที่ parent อยาก `bind:` ค่าของตัวเอง ให้ mark prop นั้น **`$bindable()`** แล้ว parent จะ bind ได้
 
 ```svelte
 <!-- FancyInput.svelte -->

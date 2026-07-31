@@ -1,6 +1,6 @@
 ---
 title: 'Bindings'
-description: 'two-way binding — bind:value, bind:checked, bind:group, bind:this และ binding กับ component prop — และมันเป็น sugar ของ value บวก event อย่างไร'
+description: 'two-way binding — bind:value, bind:checked, bind:group, bind:this และ binding กับ component prop — และเป็น sugar ของ value บวก event อย่างไร'
 sidebar:
   order: 2
 ---
@@ -26,7 +26,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <input value={name} oninput={(e) => name = e.currentTarget.value} /> -->
 ```
 
-binding sync ทั้งสองอัตโนมัติ มันใช้ได้กับ element ที่เป็น input-like ทุกตัว: `bind:value` สำหรับ text/number/select, `bind:checked` สำหรับ checkbox, `bind:files` สำหรับ file input
+binding sync ทั้งสองอัตโนมัติ และใช้ได้กับ element ที่เป็น input-like ทุกตัว: `bind:value` สำหรับ text/number/select, `bind:checked` สำหรับ checkbox, `bind:files` สำหรับ file input
 
 ## Groups: bind:group
 
@@ -49,7 +49,7 @@ radio button และ checkbox group ที่แชร์ state ก้อน�
 
 ## bind:this สำหรับ reference ของ element และ component
 
-เพื่อได้ reference ของ DOM node จริง (หรือ component instance) ใช้ **`bind:this`** มันถูก set หลัง element mount — อ่านมันใน effect หรือ event handler ไม่ใช่ตอน initial render
+เพื่อได้ reference ของ DOM node จริง (หรือ component instance) ใช้ **`bind:this`** ตัวแปรจะถูก set หลัง element mount — อ่านค่าใน effect หรือ event handler ไม่ใช่ตอน initial render
 
 ```svelte
 <script>
@@ -85,7 +85,7 @@ parent bind กับ prop ของ child component ได้เมื่อ ch
 <Child bind:value={text} />   <!-- text ของ parent และ value ของ child sync กัน -->
 ```
 
-ใช้ component binding อย่างตั้งใจ — มันให้ child mutate state ของ parent ซึ่งทรงพลังแต่ทำให้ data flow ดูคลุมเครือถ้าใช้เยอะเกิน props-down/events-up มักชัดกว่าสำหรับอะไรที่เกินกว่า form control ง่าย ๆ
+ใช้ component binding อย่างตั้งใจ — เพราะเปิดให้ child mutate state ของ parent ซึ่งทรงพลังแต่ทำให้ data flow ดูคลุมเครือถ้าใช้เยอะเกิน props-down/events-up มักชัดกว่าสำหรับอะไรที่เกินกว่า form control ง่าย ๆ
 
 <Callout title="สรุปหนึ่งบรรทัด">
 **`bind:`** directive เพิ่ม data edge ย้อนกลับ (DOM → state) บน flow ปกติ state → DOM — `bind:value` เป็น sugar ของ value บวก `oninput` handler ใช้ **`bind:group`** สำหรับชุด radio/checkbox ที่แชร์ variable เดียว, **`bind:this`** เพื่อ capture DOM node หรือ component instance (มีหลัง mount อ่านใน effect) และ **`bind:`** กับ prop **`$bindable()`** ของ child สำหรับ flow สองทางข้าม component — อย่างประหยัด
@@ -123,7 +123,7 @@ export const quizBindings = [
     answer: 1,
   },
   {
-    q: 'child ต้องประกาศอะไรเพื่อให้ parent `bind:` กับ prop ของมันได้?',
+    q: 'child ต้องประกาศอะไรเพื่อให้ parent `bind:` กับ prop ของตัวเองได้?',
     options: [
       'export let',
       'prop นั้นเป็น `$bindable()` ภายใน `$props()`',

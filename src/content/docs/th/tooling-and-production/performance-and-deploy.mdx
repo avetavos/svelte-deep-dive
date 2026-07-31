@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 เพราะ Svelte เป็น compiler (บทเรียนแรกสุด) performance baseline จึงดีอยู่แล้ว — ไม่มี virtual DOM runtime ให้ ship และ component compile เป็น code update ที่พุ่งตรงจุด คุณเสียเวลาสู้กับ bundle size น้อยกว่าแอปที่ใช้ runtime framework มาก — overhead ของ framework ที่ติดมากับ code คุณมีน้อย
 
-แต่นั่นไม่ได้ทำให้ performance เกิดขึ้นเอง code ของคุณเอง, image, library ภายนอก และการเลือก data-loading ยังสำคัญ แต่จุดเริ่มต้นนั้นเบา และเครื่องมือด้านล่างช่วยให้คุณรักษามันไว้
+แต่นั่นไม่ได้ทำให้ performance เกิดขึ้นเอง code ของคุณเอง, image, library ภายนอก และการเลือก data-loading ยังสำคัญ แต่จุดเริ่มต้นนั้นเบา และเครื่องมือด้านล่างช่วยให้คุณรักษาข้อได้เปรียบนั้นไว้
 
 ## วัดสิ่งที่คุณ ship
 
@@ -47,7 +47,7 @@ export default {
 | `adapter-cloudflare` | Cloudflare Pages / Workers (edge) |
 | `adapter-static` | เว็บ static ล้วน — HTML/CSS/JS บน CDN ใดก็ได้ |
 
-`adapter-auto` คือ default แบบ zero-config คุณเปลี่ยนไปใช้ adapter เฉพาะเมื่อรู้ target ของคุณ (และต้องใช้ option ของมัน)
+`adapter-auto` คือ default แบบ zero-config คุณเปลี่ยนไปใช้ adapter เฉพาะเมื่อรู้ target ของคุณ (และต้องใช้ option ของตัวเอง)
 
 <Mermaid title="build เดียว หลาย deploy target ผ่าน adapter" code={deployDiagram} />
 
@@ -64,7 +64,7 @@ export const deployDiagram = `flowchart LR
 - **static** — ด้วย `adapter-static` (หรือ `export const prerender = true` บน route ที่ prerender ได้) หน้าถูก build เป็น HTML ตอน build time และ serve จาก CDN ใดก็ได้ เหมาะกับ content ที่เหมือนกันสำหรับทุกคน ไม่ต้องมี server
 - **server** — ด้วย runtime adapter (node/cloudflare/…) หน้า render on demand สำหรับ data ตอน request-time (ผู้ใช้ที่ login อยู่, data สด) ผสมได้: prerender หน้า marketing, render dashboard on demand
 
-ตั้ง `export const prerender = true` บน route ที่เป็น static ได้ แล้วปล่อยที่เหลือให้ render on demand — วิธี hybrid เดียวกันที่ทำให้เว็บส่วนใหญ่ cache ได้ ในขณะที่ไม่กี่ route ยังคง dynamic
+ตั้ง `export const prerender = true` บน route ที่เป็น static ได้ แล้วปล่อยที่เหลือให้ render on demand — วิธี hybrid เดียวกันที่ทำให้เว็บส่วนใหญ่ cache ได้ ส่วนอีกไม่กี่ route ยังคง dynamic
 
 <Callout title="The one-line takeaway">
 compiler ของ Svelte ทำให้ output **เล็กและเร็วโดย default** แต่ให้วัดด้วย `vite build` (และ bundle visualizer) — น้ำหนักมักมาจาก dependency ภายนอก ไม่ใช่ Svelte deploy แอป SvelteKit ผ่าน **adapter**: `adapter-auto` (zero-config), `adapter-node`, `adapter-cloudflare` หรือ `adapter-static` เลือก **static** (prerender ไป CDN ไม่ต้องมี server) สำหรับ content ร่วม และ **server** adapter สำหรับ data ตอน request-time — และผสมกันต่อ route ด้วย `export const prerender`
@@ -75,9 +75,9 @@ export const quizDeploy = [
     q: 'ทำไมแอป Svelte เล็กโดย default?',
     options: [
       'Svelte ลบไฟล์ที่ไม่ได้ใช้',
-      'ในฐานะ compiler มันไม่ ship virtual DOM runtime; component compile เป็น code update ที่พุ่งตรงจุด',
-      'มันปฏิเสธ dependency ขนาดใหญ่',
-      'มันบีบอัด HTML',
+      'ในฐานะ compiler ไม่ ship virtual DOM runtime; component compile เป็น code update ที่พุ่งตรงจุด',
+      'ปฏิเสธ dependency ขนาดใหญ่',
+      'บีบอัด HTML',
     ],
     answer: 1,
   },

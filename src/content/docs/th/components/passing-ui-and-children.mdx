@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## children snippet
 
-เมื่อคุณวาง markup ไว้ *ระหว่าง* tag ของ component, Svelte จะส่งมันให้ component เป็น snippet prop ชื่อ **`children`** component render มันด้วย `{@render children()}`
+เมื่อคุณวาง markup ไว้ *ระหว่าง* tag ของ component, Svelte จะส่ง markup นั้นให้ component เป็น snippet prop ชื่อ **`children`** แล้ว component render ด้วย `{@render children()}`
 
 ```svelte
 <!-- Card.svelte -->
@@ -69,7 +69,7 @@ export const childrenDiagram = `flowchart LR
 
 ## ส่งข้อมูลกลับด้วยพารามิเตอร์ของ snippet
 
-เพราะ snippet รับพารามิเตอร์ได้ component จึงส่งข้อมูล *ออก* ไปให้ markup ที่ parent ให้มาได้ — pattern ที่ React เรียกว่า **render props** child เรียก snippet พร้อมค่า และ snippet ของ parent รับมันไป:
+เพราะ snippet รับพารามิเตอร์ได้ component จึงส่งข้อมูล *ออก* ไปให้ markup ที่ parent ให้มาได้ — pattern ที่ React เรียกว่า **render props** child เรียก snippet พร้อมค่า และ snippet ของ parent รับค่านั้นไปใช้:
 
 ```svelte
 <!-- List.svelte -->
@@ -97,7 +97,7 @@ markup ที่ nested ระหว่าง tag ของ component มาถ�
 
 export const quizChildren = [
   {
-    q: 'component รับ markup ที่ nested ระหว่าง tag ของมันยังไง?',
+    q: 'component รับ markup ที่ nested ระหว่าง tag ของตัวเองยังไง?',
     options: [
       'เป็น string prop',
       'เป็น snippet prop ชื่อ `children`, render ด้วย `{@render children()}`',

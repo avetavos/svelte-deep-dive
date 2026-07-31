@@ -14,7 +14,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 `$state` แบบ local ในคอมโพเนนต์ก็พอแล้ว จนกว่าจะมีสองคอมโพเนนต์ที่ไม่ได้เป็น parent กับ child ต้องใช้ข้อมูลชุดเดียวกัน ตอนนั้นคุณต้องการ *shared* state และ Svelte มีให้สองคำตอบ:
 
-- **runes ใน module** เอา `$state` ไปไว้ในไฟล์ `.svelte.js` / `.svelte.ts` แล้ว export ออกมา ทุกคอมโพเนนต์ที่ import มันจะอ่านและเขียนค่า reactive ตัวเดียวกัน นี่คือ default สมัยใหม่ใน Svelte 5
+- **runes ใน module** เอา `$state` ไปไว้ในไฟล์ `.svelte.js` / `.svelte.ts` แล้ว export ออกมา ทุกคอมโพเนนต์ที่ import จะอ่านและเขียนค่า reactive ตัวเดียวกัน นี่คือ default สมัยใหม่ใน Svelte 5
 - **stores** primitive แบบดั้งเดิมของ Svelte: object ที่มี method `subscribe` โดยมี `writable`, `readable` และ `derived` จาก `svelte/store` ครอบคลุมงานส่วนใหญ่ และ syntax `$store` จะ auto-subscribe ให้ในคอมโพเนนต์ ยังรองรับเต็มที่ — และ *contract* ที่อยู่เบื้องหลังคือสิ่งที่ทำให้ Svelte ทำงานร่วมกับอะไรอย่าง RxJS ได้
 
 ## โมดูลนี้ครอบคลุมอะไรบ้าง
@@ -39,7 +39,7 @@ export const lensDiagram = `flowchart TB
 Svelte 5 ไม่ได้เอา stores ออก — แต่เพิ่มตัวเลือกที่ง่ายกว่าสำหรับเคสส่วนใหญ่ คุณจะได้เรียนทั้งสองอย่าง และที่สำคัญกว่าคือ *เมื่อไร* ที่แต่ละอย่างเป็นตัวเลือกที่ถูก
 
 <Callout title="การเปลี่ยนมุมมอง">
-ก่อน Svelte 5 shared reactive state แทบจะ *หมายถึง* stores เลย ตอนนี้การ export `$state` จาก `.svelte.js` module มักจะง่ายกว่า — ไม่ต้อง `subscribe` ไม่ต้อง prefix `$` แค่ค่า reactive ที่ import มา stores ยังเป็นเครื่องมือที่ถูกสำหรับ subscribe *contract* (interop กับ observable, custom async source) และสำหรับ code ที่ใช้มันอยู่แล้ว
+ก่อน Svelte 5 shared reactive state แทบจะ *หมายถึง* stores เลย ตอนนี้การ export `$state` จาก `.svelte.js` module มักจะง่ายกว่า — ไม่ต้อง `subscribe` ไม่ต้อง prefix `$` แค่ค่า reactive ที่ import มา stores ยังเป็นเครื่องมือที่ถูกสำหรับ subscribe *contract* (interop กับ observable, custom async source) และสำหรับ code ที่ใช้ store อยู่แล้ว
 </Callout>
 
 export const quizIndex = [

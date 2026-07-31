@@ -77,10 +77,10 @@ action เด่นมากสำหรับ behavior DOM ที่ cross-cutt
 
 ## ทำไม action แทน effect
 
-คุณ *อาจ* ทำบางส่วนนี้ด้วย `bind:this` บวก `$effect` action ดีกว่าเมื่อ behavior นั้น **reuse ได้ข้าม element** และ **self-contained** (setup + teardown ในที่เดียว): method `destroy` การันตี cleanup และการส่งพารามิเตอร์ด้วย `use:action={params}` ทำให้มัน declarative ที่จุดเรียก หยิบ action มาใช้เมื่อคุณอยากบอกว่า "element นี้ behave เหมือน *X*" และ reuse *X* ได้ทุกที่
+คุณ *อาจ* ทำบางส่วนนี้ด้วย `bind:this` บวก `$effect` action ดีกว่าเมื่อ behavior นั้น **reuse ได้ข้าม element** และ **self-contained** (setup + teardown ในที่เดียว): method `destroy` การันตี cleanup และการส่งพารามิเตอร์ด้วย `use:action={params}` ทำให้ declarative ที่จุดเรียก หยิบ action มาใช้เมื่อคุณอยากบอกว่า "element นี้ behave เหมือน *X*" และ reuse *X* ได้ทุกที่
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**action** คือฟังก์ชันที่ reuse ได้ ผูกด้วย **`use:action`** ซึ่งรับ DOM `node` (บวกพารามิเตอร์ optional) ตอน element mount และ return method **`update`** (params เปลี่ยน) กับ **`destroy`** (element unmount) แบบ optional มันคือ escape hatch ที่สะอาดสำหรับ behavior DOM แบบ imperative ที่ self-contained — library ภายนอก, focus management, click-outside — พร้อม teardown ที่การันตี reuse ได้ดีกว่าคู่ `bind:this` + `$effect`
+**action** คือฟังก์ชันที่ reuse ได้ ผูกด้วย **`use:action`** ซึ่งรับ DOM `node` (บวกพารามิเตอร์ optional) ตอน element mount และ return method **`update`** (params เปลี่ยน) กับ **`destroy`** (element unmount) แบบ optional action คือ escape hatch ที่สะอาดสำหรับ behavior DOM แบบ imperative ที่ self-contained — library ภายนอก, focus management, click-outside — พร้อม teardown ที่การันตี reuse ได้ดีกว่าคู่ `bind:this` + `$effect`
 </Callout>
 
 export const quizActions = [

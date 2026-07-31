@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## store คือแค่ contract
 
-Svelte store ไม่มีอะไร magic เลย **store คือ object ใด ๆ ที่มี method `subscribe`** ที่รับ callback และเรียกมันด้วยค่าปัจจุบัน ทั้งทันทีและทุกครั้งที่ค่าเปลี่ยน — โดย return ฟังก์ชัน *unsubscribe* กลับมา นั่นคือ contract ทั้งหมด:
+Svelte store ไม่มีอะไร magic เลย **store คือ object ใด ๆ ที่มี method `subscribe`** ที่รับ callback แล้วเรียก callback นั้นด้วยค่าปัจจุบัน ทั้งทันทีและทุกครั้งที่ค่าเปลี่ยน — โดย return ฟังก์ชัน *unsubscribe* กลับมา นั่นคือ contract ทั้งหมด:
 
 ```js
 // The minimal store contract, written by hand.
@@ -34,7 +34,7 @@ function createCounter() {
 }
 ```
 
-เพราะ contract เล็กขนาดนี้ *อะไรก็ตาม* ที่ทำตามมันได้ก็เป็น store — รวมถึง RxJS observable (ที่ก็มี `subscribe` ที่เข้ากันได้) ความ interoperable นี้คือเหตุผลที่ Svelte นิยาม contract ไว้แทนที่จะเป็น class ตายตัว
+เพราะ contract เล็กขนาดนี้ *อะไรก็ตาม* ที่ทำตาม contract นี้ได้ก็เป็น store — รวมถึง RxJS observable (ที่ก็มี `subscribe` ที่เข้ากันได้) ความ interoperable นี้คือเหตุผลที่ Svelte นิยาม contract ไว้แทนที่จะเป็น class ตายตัว
 
 ## prefix `$` ทำ auto-subscribe ให้
 
@@ -57,7 +57,7 @@ export const dollarDiagram = `flowchart LR
   val --> rerender["re-render เมื่อค่าเปลี่ยน"]
   rerender --> unsub["auto-unsubscribe ตอน destroy"]`;
 
-คุณยัง assign ให้ `$store` ได้ด้วย (`$counter = 5`) ถ้า store เป็น writable — Svelte จะ compile มันเป็นการเรียก `set` ของ store prefix `$` ใช้ได้เฉพาะในไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เพราะมันคือ compiler magic ไม่ใช่ฟังก์ชัน runtime
+คุณยัง assign ให้ `$store` ได้ด้วย (`$counter = 5`) ถ้า store เป็น writable — Svelte จะ compile เป็นการเรียก `set` ของ store prefix `$` ใช้ได้เฉพาะในไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เพราะเป็น compiler magic ไม่ใช่ฟังก์ชัน runtime
 
 ## ทำไม contract ยังสำคัญใน Svelte 5
 
@@ -65,7 +65,7 @@ export const dollarDiagram = `flowchart LR
 
 - **interop** source ใด ๆ ที่คล้าย observable และมี `subscribe` ที่เข้ากันได้ก็ใช้กับ `$` ได้ — RxJS, custom event stream, third-party library
 - **async source** `readable` (บทถัดไป) ห่อ source แบบ push (WebSocket, geolocation watcher) ไว้หลัง contract ง่าย ๆ อันเดียวกัน
-- **code เดิม** Svelte หลายล้านบรรทัดใช้ stores การเข้าใจ contract ช่วยให้อ่านและดูแลมันได้
+- **code เดิม** Svelte หลายล้านบรรทัดใช้ stores การเข้าใจ contract ช่วยให้คุณอ่านและดูแล code เหล่านั้นได้
 
 <Callout title="สรุปหนึ่งบรรทัด">
 Svelte **store** คือ object ใด ๆ ที่มี method **`subscribe(fn)`** ที่เรียก `fn` ด้วยค่าปัจจุบันทันทีและทุกครั้งที่เปลี่ยน โดย return ฟังก์ชัน **unsubscribe** — contract เล็ก ๆ นี้คือเหตุผลที่ observable อย่าง RxJS ทำงานร่วมกันได้ ในคอมโพเนนต์ prefix **`$store`** ทำ auto-subscribe, อ่านค่าปัจจุบัน, re-render เมื่อเปลี่ยน และ **auto-unsubscribe ตอน destroy** (และ `$store = x` จะเรียก `set` ของ store)
@@ -88,7 +88,7 @@ export const quizContract = [
       'ไม่ทำอะไร — เป็นแค่การตกแต่ง',
       'auto-subscribe, ให้ค่าปัจจุบัน, re-render เมื่อเปลี่ยน และ auto-unsubscribe ตอน destroy',
       'ทำให้ store เป็น global',
-      'แปลงมันเป็น rune',
+      'แปลงเป็น rune',
     ],
     answer: 1,
   },
