@@ -45,9 +45,11 @@ export function toggle() {
   // created fresh per instance / per request — not a module singleton
   const cart = $state({ items: [] });
   setContext('cart', cart);
+
+  let { children } = $props();
 </script>
 
-<slot />
+{@render children()}
 ```
 
 ```svelte

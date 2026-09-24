@@ -22,7 +22,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <input bind:value={name} />
 <p>Hello {name}</p>
 
-<!-- เทียบเท่า เขียนเอง:
+<!-- Equivalent, written by hand:
 <input value={name} oninput={(e) => name = e.currentTarget.value} /> -->
 ```
 
@@ -34,8 +34,8 @@ radio button และ checkbox group ที่แชร์ state ก้อน�
 
 ```svelte
 <script>
-  let flavor = $state('vanilla');       // radios: ค่าเดียว
-  let toppings = $state([]);            // checkboxes: array
+  let flavor = $state('vanilla');       // radios: a single value
+  let toppings = $state([]);            // checkboxes: an array
 </script>
 
 <label><input type="radio" bind:group={flavor} value="vanilla" /> Vanilla</label>
@@ -53,10 +53,10 @@ radio button และ checkbox group ที่แชร์ state ก้อน�
 
 ```svelte
 <script>
-  let canvas = $state();      // จะเก็บ DOM node
+  let canvas = $state();      // will hold the DOM node
 
   $effect(() => {
-    const ctx = canvas.getContext('2d');   // ปลอดภัย: run หลัง mount
+    const ctx = canvas.getContext('2d');   // safe: runs after mount
     ctx.fillRect(0, 0, 50, 50);
   });
 </script>
@@ -82,7 +82,7 @@ parent bind กับ prop ของ child component ได้เมื่อ ch
   import Child from './Child.svelte';
   let text = $state('hi');
 </script>
-<Child bind:value={text} />   <!-- text ของ parent และ value ของ child sync กัน -->
+<Child bind:value={text} />   <!-- parent's text and child's value stay in sync -->
 ```
 
 ใช้ component binding อย่างตั้งใจ — เพราะเปิดให้ child mutate state ของ parent ซึ่งทรงพลังแต่ทำให้ data flow ดูคลุมเครือถ้าใช้เยอะเกิน props-down/events-up มักชัดกว่าสำหรับอะไรที่เกินกว่า form control ง่าย ๆ

@@ -23,7 +23,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <button onclick={() => (visible = !visible)}>toggle</button>
 
 {#if visible}
-  <p transition:fade>fade in ตอนเพิ่ม, fade out ตอนลบ</p>
+  <p transition:fade>Fades in when added, fades out when removed</p>
 {/if}
 ```
 
@@ -35,7 +35,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </script>
 
 {#if visible}
-  <div in:fly={{ y: 20 }} out:fade>fly in, fade out</div>
+  <div in:fly={{ y: 20 }} out:fade>Flies in, fades out</div>
 {/if}
 ```
 

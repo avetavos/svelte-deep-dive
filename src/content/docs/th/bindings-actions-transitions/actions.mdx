@@ -18,7 +18,7 @@ action คือฟังก์ชันที่รับ DOM `node` (และ
 
 ```svelte
 <script>
-  // action: (node, params?) => { update?, destroy? }
+  // An action: (node, params?) => { update?, destroy? }
   function tooltip(node, text) {
     const el = document.createElement('div');
     el.className = 'tooltip';
@@ -30,8 +30,8 @@ action คือฟังก์ชันที่รับ DOM `node` (และ
     node.addEventListener('mouseleave', hide);
 
     return {
-      update(newText) { el.textContent = newText; },   // params เปลี่ยน
-      destroy() {                                       // element กำลัง unmount
+      update(newText) { el.textContent = newText; },   // params changed
+      destroy() {                                       // element unmounting
         node.removeEventListener('mouseenter', show);
         node.removeEventListener('mouseleave', hide);
         el.remove();

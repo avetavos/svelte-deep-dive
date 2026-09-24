@@ -22,15 +22,16 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <script>
   import { setContext } from 'svelte';
   setContext('theme', 'dark');
+  let { children } = $props();
 </script>
-<slot-like-children />
+{@render children()}
 ```
 
 ```svelte
-<!-- DeepChild.svelte (ลึกแค่ไหนก็ได้) -->
+<!-- DeepChild.svelte (any depth below) -->
 <script>
   import { getContext } from 'svelte';
-  const theme = getContext('theme');   // 'dark' — ไม่ต้อง thread props ผ่านมา
+  const theme = getContext('theme');   // 'dark' — no props threaded through
 </script>
 <div class={theme}>…</div>
 ```
@@ -46,11 +47,11 @@ export const ctxDiagram = `flowchart TB
 `setContext` run ครั้งเดียวตอน init — *ค่า* ที่เก็บไม่ reactive ในตัวเอง ถ้าจะแชร์ข้อมูลที่ **reactive** ให้ใส่ runed object เข้า context แล้วอ่าน property ของตัวเองใน descendant; เพราะ `$state` object เป็น deeply reactive การเปลี่ยนแปลงจึงกระจายไป
 
 ```svelte
-<!-- เก็บ runed object ไม่ใช่ plain snapshot -->
+<!-- Store a runed object, not a plain snapshot -->
 <script>
   import { setContext } from 'svelte';
   let cart = $state({ items: [] });
-  setContext('cart', cart);          // descendant เห็น update ของ cart.items แบบ live
+  setContext('cart', cart);          // descendants see live updates to cart.items
 </script>
 ```
 

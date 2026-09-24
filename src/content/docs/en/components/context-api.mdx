@@ -22,8 +22,9 @@ When many nested components need the same data — a theme, the current user, a 
 <script>
   import { setContext } from 'svelte';
   setContext('theme', 'dark');
+  let { children } = $props();
 </script>
-<slot-like-children />
+{@render children()}
 ```
 
 ```svelte

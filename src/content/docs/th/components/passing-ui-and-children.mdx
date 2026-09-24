@@ -21,7 +21,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </script>
 
 <div class="card">
-  {@render children()}     <!-- อะไรก็ตามที่ parent ใส่ nested เข้ามาอยู่ตรงนี้ -->
+  {@render children()}     <!-- whatever the parent nested goes here -->
 </div>
 ```
 
@@ -29,7 +29,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <!-- Parent -->
 <Card>
   <h2>Title</h2>
-  <p>markup ตรงนี้กลายเป็น children ของ card</p>
+  <p>Any markup here becomes the card's children.</p>
 </Card>
 ```
 
@@ -77,14 +77,14 @@ export const childrenDiagram = `flowchart LR
   let { items, row } = $props();
 </script>
 {#each items as item (item.id)}
-  {@render row(item)}       <!-- ส่ง item แต่ละตัวกลับไปให้ snippet ของ parent -->
+  {@render row(item)}       <!-- pass each item back to the parent's snippet -->
 {/each}
 ```
 
 ```svelte
 <List items={products}>
   {#snippet row(product)}
-    <li>{product.name} — ${product.price}</li>   <!-- parent ตัดสินใจ markup -->
+    <li>{product.name} — ${product.price}</li>   <!-- parent decides the markup -->
   {/snippet}
 </List>
 ```

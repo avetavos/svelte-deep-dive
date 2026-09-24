@@ -45,9 +45,11 @@ When you need state that is shared *within a subtree* but **isolated per instanc
   // created fresh per instance / per request — not a module singleton
   const cart = $state({ items: [] });
   setContext('cart', cart);
+
+  let { children } = $props();
 </script>
 
-<slot />
+{@render children()}
 ```
 
 ```svelte

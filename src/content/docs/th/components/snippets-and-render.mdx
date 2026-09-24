@@ -48,8 +48,8 @@ export const snippetDiagram = `flowchart LR
 ใน **Svelte 4** เราส่ง markup เข้า component ด้วย `<slot>` (และ named slot ผ่าน `<slot name="x">`) **Svelte 5 แทนที่สิ่งนั้นทั้งหมดด้วย snippets** — ซึ่งทรงพลังกว่าเพราะรับพารามิเตอร์ได้และเป็นแค่ค่าที่ส่งไปมาได้
 
 ```svelte
-<!-- Svelte 4 (เดิม):  component นิยาม <slot /> และ <slot name="header" /> -->
-<!-- Svelte 5 (ใหม่):  component render {@render children()} และ {@render header()} -->
+<!-- Svelte 4 (old):  a component defined <slot /> and <slot name="header" /> -->
+<!-- Svelte 5 (new):  a component renders {@render children()} and {@render header()} -->
 ```
 
 ถ้าคุณอ่าน tutorial เก่าที่ใช้ `<slot>` ตัวเทียบเท่าสมัยใหม่คือ snippet ที่ render ด้วย `{@render}` บทถัดไปจะอธิบายว่า parent ส่ง snippet (รวมถึง `children` snippet พิเศษ) เข้า child อย่างไร

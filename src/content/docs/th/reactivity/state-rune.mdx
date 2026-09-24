@@ -57,8 +57,10 @@ export const stateDiagram = `flowchart LR
 <script>
   let settings = $state.raw({ theme: 'dark', density: 'cozy' });
 
-  // ✅ Reassigning a whole new object IS reactive:
-  settings = { ...settings, theme: 'light' };
+  function setLightTheme() {
+    // ✅ Reassigning a whole new object IS reactive:
+    settings = { ...settings, theme: 'light' };
+  }
 
   // ❌ Mutating is NOT tracked with raw state:
   // settings.theme = 'light';  // no update

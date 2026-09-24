@@ -19,8 +19,8 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
   let count = $state(0);
 
   $effect(() => {
-    document.title = `Count: ${count}`;   // run หลัง mount และทุกครั้งที่เปลี่ยน
-    return () => { document.title = 'App'; };  // cleanup ตอน destroy / ก่อน run ซ้ำ
+    document.title = `Count: ${count}`;   // runs after mount and on every change
+    return () => { document.title = 'App'; };  // cleanup on destroy / before re-run
   });
 </script>
 ```
@@ -39,8 +39,8 @@ lifecycle function สองตัวยังมีประโยชน์จ�
   import { onMount, onDestroy } from 'svelte';
 
   onMount(() => {
-    const chart = new Chart(canvasEl);   // library ที่ browser-only
-    return () => chart.destroy();         // cleanup ตอน unmount
+    const chart = new Chart(canvasEl);   // browser-only library
+    return () => chart.destroy();         // cleanup on unmount
   });
 
   onDestroy(() => console.log('gone'));
@@ -67,7 +67,7 @@ Svelte batch การ update DOM เมื่อคุณเปลี่ยน 
 
   async function addAndScroll() {
     items.push(newItem);
-    await tick();                 // รอให้ row ใหม่อยู่ใน DOM
+    await tick();                 // wait for the new row to be in the DOM
     list.scrollTop = list.scrollHeight;
   }
 </script>

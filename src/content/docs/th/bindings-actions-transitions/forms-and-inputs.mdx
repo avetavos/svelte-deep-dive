@@ -19,17 +19,17 @@ form รวม binding, runes และ event เข้าด้วยกัน 
   let email = $state('');
   let password = $state('');
 
-  // validation DERIVE จาก field — ไม่เก็บแยกต่างหาก
+  // Validation is DERIVED from the fields — never stored separately.
   let emailValid = $derived(/^[^@]+@[^@]+\.[^@]+$/.test(email));
   let passwordValid = $derived(password.length >= 8);
   let formValid = $derived(emailValid && passwordValid);
 </script>
 
 <input type="email" bind:value={email} placeholder="Email" />
-{#if email && !emailValid}<small>ใส่ email ที่ถูกต้อง</small>{/if}
+{#if email && !emailValid}<small>Enter a valid email</small>{/if}
 
 <input type="password" bind:value={password} placeholder="Password" />
-{#if password && !passwordValid}<small>อย่างน้อย 8 ตัวอักษร</small>{/if}
+{#if password && !passwordValid}<small>At least 8 characters</small>{/if}
 ```
 
 ไอเดียสำคัญ: **validation ถูก derive ไม่ใช่เก็บ** `emailValid` คำนวณใหม่อัตโนมัติทุกครั้งที่ `email` เปลี่ยน — ไม่มีขั้นตอน "revalidate" ให้ลืม นี่คือหลัก "derive อย่า sync" จากบท effect มาใช้กับ form
@@ -43,7 +43,7 @@ form รวม binding, runes และ event เข้าด้วยกัน 
   let submitting = $state(false);
 
   async function handleSubmit(e) {
-    e.preventDefault();          // Svelte 5 ไม่มี on:submit|preventDefault modifier
+    e.preventDefault();          // Svelte 5 has no on:submit|preventDefault modifier
     if (!formValid) return;
     submitting = true;
     await createAccount({ email, password });
