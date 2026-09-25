@@ -1,6 +1,6 @@
 ---
 title: 'Routing & Pages'
-description: 'File-based routing in src/routes, pages and layouts, dynamic route parameters, error pages, and client-side navigation.'
+description: 'File-based routing in src/routes, param matchers, route groups, the +error.svelte boundary hierarchy proven with curl, layout reset with @, and client-side navigation.'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Folders are routes
 
@@ -41,6 +42,56 @@ Square brackets in a folder name capture a URL segment. `src/routes/blog/[slug]/
 - `[...rest]` — a rest parameter that matches multiple segments (`/docs/a/b/c`).
 - `[[optional]]` — an optional parameter that also matches when absent.
 
+## Param matchers: validating a segment before it matches
+
+A plain `[id]` matches *any* segment. A **matcher** — a function in `src/params/` — lets a route only match when the segment satisfies a condition, so an unrelated static route underneath can win instead:
+
+```ts
+// src/params/integer.ts
+import type { ParamMatcher } from '@sveltejs/kit';
+
+export const match: ParamMatcher = (param) => /^\d+$/.test(param);
+```
+
+```js
+// src/routes/products/[id=integer]/+page.server.js
+export function load({ params }) {
+  return { id: params.id };   // only reached when params.id is all digits
+}
+```
+
+Proving both the matching and the falling-through, against real running routes (`/products/[id=integer]` and a plain static `/products/latest`):
+
+```text
+$ curl -s http://localhost:5196/products/42 | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="product">product 42</h1>
+
+$ curl -s http://localhost:5196/products/latest | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="latest">latest products (non-numeric, matcher rejects it so this static route wins)</h1>
+```
+
+`/products/42` satisfies `integer`'s regex and hits the dynamic route; `/products/latest` doesn't, so SvelteKit falls through to the plain `products/latest/+page.svelte` instead of a 404 — matchers let you disambiguate two routes that would otherwise collide on the same segment.
+
+## Route groups: organizing without changing the URL
+
+Wrapping a folder name in parentheses — `(app)` — creates a **route group**: it organizes routes (and can hold a shared `+layout.svelte`) without adding a segment to the URL.
+
+```text
+src/routes/
+└── (app)/
+    └── grouped/
+        └── +page.svelte      →  /grouped   (NOT /app/grouped or /(app)/grouped)
+```
+
+Proven against the real route:
+
+```text
+$ curl -s http://localhost:5196/grouped | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="grouped">grouped page, no (app) segment in the URL</h1>
+```
+
+The URL is `/grouped`, not `/app/grouped` — the group folder is purely organizational (typically used to give a whole section, like every authenticated route, a shared layout without that showing up in every URL).
+
 ## Layouts wrap pages
 
 A `+layout.svelte` applies to its folder and every route beneath it — the place for shared chrome like a header and footer. It renders its child route through the `children` snippet:
@@ -62,9 +113,65 @@ A `+layout.svelte` applies to its folder and every route beneath it — the plac
 
 Layouts **nest**: a layout deeper in the tree wraps inside the ones above it, so you can compose a global shell with section-specific shells.
 
-## Error pages and navigation
+### Resetting the layout chain with `@`
 
-- **`+error.svelte`** in a folder renders when a `load` in that subtree throws — a scoped error boundary. It reads the error via `page.error` (from `$app/state`).
+Sometimes one page needs to **skip** the layouts above it entirely — a full-bleed landing page, a print view. Naming a file `+page@.svelte` (or `+layout@.svelte`) resets to the root, skipping every layout in between; `+page@(group).svelte` resets to a *named* ancestor instead of the very root. SvelteKit's own route-file regex confirms the syntax is `page(@(.*))?` / `layout(@(.*))?` — `@` followed by an optional group name.
+
+```svelte
+<!-- src/routes/(app)/wide/+layout.svelte — the (app) section's shared shell -->
+<script lang="ts">
+  let { children } = $props();
+</script>
+<div>
+  <nav>app nav</nav>
+  {@render children()}
+</div>
+```
+
+```svelte
+<!-- src/routes/(app)/wide/+page@.svelte — @ resets to root, skipping (app)'s own layout -->
+<h1>wide page — reset with @, skips (app)/+layout.svelte and the root layout's own markup</h1>
+```
+
+Proven by curling the rendered HTML — the `(app)` layout's `<nav>app nav</nav>` is nowhere in the response, only the page's own `<h1>`:
+
+```text
+$ curl -s http://localhost:5197/wide | grep -o '<h1[^<]*</h1>\|<nav>[^<]*</nav>'
+<h1 data-testid="wide">wide page — reset with @, skips (app)/+layout.svelte and the root layout's own markup</h1>
+```
+
+## Error pages and the boundary hierarchy
+
+**`+error.svelte`** in a folder renders when a `load` (or a page/layout itself) throws in that subtree — a scoped error boundary that reads the error via `page.error` (from `$app/state`). SvelteKit walks **up** the route tree looking for the nearest `+error.svelte`, starting at the route that threw.
+
+Proven with two routes: `errors/deep` throws under a folder that *has* its own `errors/+error.svelte`, and `errors2/deep2` throws under a folder that does *not* — so it bubbles all the way to the root `src/routes/+error.svelte`:
+
+```js
+// src/routes/errors/deep/+page.server.js
+import { error } from '@sveltejs/kit';
+export function load() {
+  error(500, 'boom from errors/deep');
+}
+```
+
+```js
+// src/routes/errors2/deep2/+page.server.js — no scoped +error.svelte anywhere in errors2/
+import { error } from '@sveltejs/kit';
+export function load() {
+  error(500, 'boom from errors2/deep2');
+}
+```
+
+```text
+$ curl -s http://localhost:5196/errors/deep | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="err">SCOPED-ERROR errors/+error.svelte: boom from errors/deep</h1>
+
+$ curl -s http://localhost:5196/errors2/deep2 | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="err">ROOT-ERROR +error.svelte: boom from errors2/deep2</h1>
+```
+
+Same kind of error (`error(500, ...)`), thrown at the same depth — but which `+error.svelte` renders depends entirely on which ancestor folders actually have one.
+
 - **Navigation** uses ordinary `<a href="/blog">` links; SvelteKit intercepts them for fast client-side navigation (no full reload). For programmatic navigation, call `goto('/blog')` from `$app/navigation`.
 
 ```svelte
@@ -76,8 +183,55 @@ Layouts **nest**: a layout deeper in the tree wraps inside the ones above it, so
 <button onclick={() => goto('/dashboard')}>Go</button>
 ```
 
+## Reading AI-generated code
+
+When reviewing generated routing code, check for:
+
+- Does it assume a `+error.svelte` "closest in the folder tree visually" catches an error, without checking that folder is actually an *ancestor* of the route that threw? Proven above: a sibling subtree's `+error.svelte` never catches anything — only ancestors do, and with none present it bubbles to the root.
+- Does a `[id]` route silently shadow a more specific static route (or vice versa) because no param matcher disambiguates them?
+- Does `(group)` appear as a literal segment in a generated `<a href>` or `goto()` call, as if the parentheses were part of the URL? They never are — proven above with `/grouped`.
+- Is `+page@.svelte` used without realizing it skips *every* layout back to the reset point — including one the page actually still needed (a shared error-reporting `<svelte:boundary>`, analytics beacon, etc. living in a skipped layout)?
+- Does navigation use `window.location.href = '/path'` (a full reload) where `goto('/path')` (client-side, proven above) was intended?
+
+<SpotTheBug code={`// project layout:
+// src/routes/
+//   errors/
+//     +error.svelte        <- exists here
+//     deep/+page.server.js
+//   errors2/
+//     deep2/+page.server.js  <- NO +error.svelte anywhere in errors2/
+
+// src/routes/errors2/deep2/+page.server.js
+import { error } from '@sveltejs/kit';
+export function load() {
+  error(500, 'something failed in errors2/deep2');
+  // "the errors/+error.svelte will catch this too, it's right there in routes/"
+}`}>
+`errors/+error.svelte` only covers **its own folder and folders nested under it** — `errors2/` is a sibling, not a descendant, so that boundary never sees this error at all. Proven above with real curl output: hitting `/errors2/deep2` renders the **root** `src/routes/+error.svelte`, not `errors/+error.svelte`, because SvelteKit walks up from the route that threw looking for the nearest ancestor `+error.svelte` — and `errors2/deep2` has no ancestor with one until the root. The fix is either to add `errors2/+error.svelte` for scoped handling, or to accept (and design for) the root error page catching it.
+</SpotTheBug>
+
+## Mental Model
+
+Routing is a tree, and three things about a request are each resolved by walking that same tree, but stopping at different points: the **page** is the exact leaf that matched; the **layouts** are every ancestor from the root down to that leaf, each nesting inside the ones above (unless `@` resets the walk early); the **error boundary** is the *nearest* ancestor (starting from the leaf and walking back up) that happens to have a `+error.svelte`. Groups (`(name)`) and matchers (`[x=name]`) don't change this tree shape's effect on the URL or rendering — they only change how a folder is *organized* (groups) or *whether a segment is even eligible* to match (matchers).
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Param matcher (`[id=integer]`) | Two routes can share a segment position without colliding (proven above) | An extra file (`src/params/x.ts`) to maintain per constraint |
+| Route group `(name)` | Shared layout/organization with zero URL cost (proven above) | Easy to forget the parens don't appear in links — a generated `href="/(app)/grouped"` is simply wrong |
+| `+page@.svelte` reset | Full control to skip unwanted ancestor chrome (proven above) | Skips *everything* back to the reset point, including anything useful living in those layouts |
+| Scoped `+error.svelte` per folder | Contain a failure's blast radius to just that section | Every folder without one silently relies on some ancestor's — worth knowing which one, proven above it's not always the "nearest-looking" one |
+
+## Common Misconceptions
+
+- **"Any `+error.svelte` in the same route file, close by, will catch an error."** Proven above: only an *ancestor* folder's `+error.svelte` catches it — a sibling subtree's never does, no matter how close it looks in the file tree.
+- **"A route group `(name)` adds a `/name` segment to the URL."** Proven above: `/grouped`, not `/app/grouped` — groups are purely organizational.
+- **"A plain `[id]` and a static route at the same position can't coexist."** A param matcher lets them: proven above, `/products/latest` falls through to the static route because `integer`'s matcher rejects it.
+- **"`+page@.svelte` only skips the immediate parent layout."** Proven above: bare `@` resets all the way to the *root*, skipping every layout in between, not just one level.
+
 <Callout title="The one-line takeaway">
-SvelteKit routing is **file-based**: folders under `src/routes/` become URLs, and a **`+page.svelte`** makes a page. Capture URL segments with **`[slug]`** (or `[...rest]` / `[[optional]]`), share chrome with nested **`+layout.svelte`** files (which render the page via `{@render children()}`), and scope errors with **`+error.svelte`**. Plain `<a>` links do fast client-side navigation; use `goto()` from `$app/navigation` in code.
+SvelteKit routing is **file-based**: folders under `src/routes/` become URLs, and a **`+page.svelte`** makes a page. Capture URL segments with **`[slug]`** (or `[...rest]` / `[[optional]]`), and validate them with a **param matcher** (`src/params/x.ts`) so an ambiguous segment can fall through to a more specific route (proven above). A **`(group)`** organizes routes and shares a layout with zero URL cost. Share chrome with nested **`+layout.svelte`** files — reset that chain early with **`+page@.svelte`** / **`+page@(group).svelte`** when a page needs to skip it. Scope errors with **`+error.svelte`**, which SvelteKit resolves by walking **up** to the nearest *ancestor* that has one (proven above — a sibling's never catches anything). Plain `<a>` links do fast client-side navigation; use `goto()` from `$app/navigation` in code.
 </Callout>
 
 export const quizRouting = [
@@ -90,6 +244,7 @@ export const quizRouting = [
       'By naming a file page.html',
     ],
     answer: 1,
+    explain: 'SvelteKit uses file-based routing: the folder structure under src/routes/ directly maps to the URL structure, and a +page.svelte file makes that folder a navigable page.',
   },
   {
     q: 'What does the folder `src/routes/blog/[slug]/` create?',
@@ -100,26 +255,51 @@ export const quizRouting = [
       'An API endpoint',
     ],
     answer: 1,
+    explain: 'Square brackets in a folder name capture a URL segment as a dynamic route parameter, available as params.slug in load functions.',
   },
   {
-    q: 'What is `+layout.svelte` for?',
+    q: '```text\nsrc/routes/products/[id=integer]/+page.server.js\nsrc/routes/products/latest/+page.svelte\n```\nA request comes in for `/products/latest`. What renders?',
     options: [
-      'Defining CSS only',
-      'Wrapping its folder and all nested routes with shared UI, rendering the page via `{@render children()}`',
-      'Fetching data',
-      'Handling form submissions',
+      'The [id=integer] route, with id="latest"',
+      'The static products/latest route — the integer matcher rejects "latest" so the dynamic route does not match, and the static route wins',
+      'A 404, because both routes conflict',
+      'Both routes render at once',
     ],
     answer: 1,
+    explain: 'Proven above with real curl output: /products/42 hits the dynamic [id=integer] route, but /products/latest falls through to the static products/latest route because "latest" fails the integer matcher\'s /^\\d+$/ test.',
   },
   {
-    q: 'How do you navigate programmatically in SvelteKit?',
+    q: 'Does the folder `(app)` in `src/routes/(app)/grouped/` appear in the URL?',
     options: [
-      'window.location only',
-      'Call `goto(\'/path\')` from `$app/navigation`',
-      'Use a `<Link>` component',
-      'You cannot navigate in code',
+      'Yes, as /app/grouped',
+      'No — a route group in parentheses organizes routes/layouts without adding a URL segment; the URL is /grouped',
+      'Yes, as /(app)/grouped literally',
+      'It replaces the URL entirely',
     ],
     answer: 1,
+    explain: 'Proven above with real curl output: the rendered route is reachable at /grouped, not /app/grouped — route groups are purely organizational and never appear in the URL.',
+  },
+  {
+    q: 'What does naming a file `+page@.svelte` do?',
+    options: [
+      'Nothing special — @ is just a naming convention with no effect',
+      'Resets the layout chain to the root, skipping every ancestor layout in between',
+      'Skips only the immediate parent layout',
+      'Marks the page as an API endpoint',
+    ],
+    answer: 1,
+    explain: 'Proven above: curling a route with +page@.svelte shows none of its ancestor (app) layout\'s markup in the response — bare @ resets all the way to the root, not just one level up. +page@(group).svelte resets to a specific named ancestor instead.',
+  },
+  {
+    q: 'A `load` throws inside `src/routes/errors2/deep2/`, and there is no `+error.svelte` anywhere under `errors2/`. What renders?',
+    options: [
+      'A generic browser error page with no styling at all',
+      'The nearest ancestor +error.svelte found by walking up the tree — in this case, the root src/routes/+error.svelte',
+      'Nothing renders — the request hangs',
+      'The +error.svelte from an unrelated sibling folder like errors/',
+    ],
+    answer: 1,
+    explain: 'Proven above with real curl output: with no +error.svelte in errors2/ or any folder between it and the root, SvelteKit walks up to the nearest ancestor that has one — the root +error.svelte — never a sibling subtree\'s.',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: 'Server & API'
-description: 'API endpoint เดี่ยว ๆ ด้วย +server.js, request hooks และ locals, render option ราย route และ deployment adapters'
+description: 'API endpoint เดี่ยว ๆ ด้วย +server.js, hooks surface เต็มรูปแบบ (handle/sequence/handleFetch/handleError/reroute/transport) ที่พิสูจน์กับ SvelteKit ที่ติดตั้งจริง, บั๊ก redirect ถูก try/catch กลืนที่พิสูจน์ด้วย curl และ deployment: adapter, prerender, env และ CSP'
 sidebar:
   order: 5
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## API endpoint ด้วย +server.js
 
@@ -17,6 +18,11 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 ```js
 // src/routes/api/posts/+server.js
 import { json, error } from '@sveltejs/kit';
+
+/** @param {number} page */
+async function getPosts(page) { return []; }
+/** @param {{ title: string }} body */
+async function createPost(body) { return { id: 1, ...body }; }
 
 export async function GET({ url }) {
   const page = Number(url.searchParams.get('page') ?? '1');
@@ -32,20 +38,90 @@ export async function POST({ request }) {
 
 **endpoint กับ form action ต่างกันยังไง:** ใช้ **form action** เมื่อ form ของเพจนั้น submit ไป server (integrate กับ `use:enhance` และ `form` prop ได้เลย) ใช้ **`+server.js` endpoint** สำหรับ API ที่ใช้ซ้ำได้ ที่ถูกเรียกผ่าน fetch, mobile app หรือ third party
 
-## hooks: middleware สำหรับทุก request
+## hooks: surface เต็มรูปแบบ พิสูจน์กับ Kit ที่ติดตั้งจริง
 
-`src/hooks.server.js` export **`handle`** ซึ่งรันกับ *ทุก* request ก่อนถึง route — เป็นที่ทำ authentication, logging และเติมค่า `locals`
+`src/hooks.server.js` ไม่ได้มีแค่ `handle` hook ข้างล่างนี้ทุกตัวเป็นของจริง ถูก export อยู่จริงใน `@sveltejs/kit` ตอนนี้ ตรวจตรงกับ type definition ของเวอร์ชันที่ติดตั้งจริง `2.70.3` (ไม่ใช่แค่อ่าน docs เฉย ๆ):
+
+| Hook | ตำแหน่งที่ยืนยันแล้ว (Kit 2.70.3 ที่ติดตั้ง) | ทำอะไร |
+|---|---|---|
+| `handle` | `types/index.d.ts:924` doc comment + ใช้ทุกที่ | รันกับทุก request ก่อนถึง route; set `locals`, ตัดจบ หรือแก้ response |
+| `sequence` | `types/index.d.ts:3136`, `export function sequence(...handlers: Handle[]): Handle;` | ประกอบ `handle` function หลายตัวตามลำดับ import จาก `@sveltejs/kit/hooks` |
+| `handleFetch` | `types/index.d.ts:958` | rewrite/แทนที่ผลลัพธ์ของการเรียก `event.fetch` ที่ทำบน server |
+| `handleError` | `types/index.d.ts:924, 945` | รันเมื่อ exception ที่ไม่คาดคิด (ไม่ใช่ `error()`/`redirect()`) หลุดออกจาก `handle`, `load` หรือ action |
+| `reroute` | `types/index.d.ts:979` | rewrite URL ที่ใช้ตัดสินว่า route ไหน match ก่อนจะเริ่ม match |
+| `transport` | `types/index.d.ts:985` | serialize class instance ที่กำหนดเองข้าม server/client boundary (คู่ encode/decode) |
 
 ```js
 // src/hooks.server.js
-export async function handle({ event, resolve }) {
-  const token = event.cookies.get('session');
-  event.locals.user = token ? await getUser(token) : null;  // available to load/actions
-  return resolve(event);   // continue to the route
+import { sequence } from '@sveltejs/kit/hooks';
+
+/** @type {import('@sveltejs/kit').Handle} */
+const addLocalsUser = async ({ event, resolve }) => {
+  event.locals.user = { id: 'u1', name: 'Ava' };
+  return resolve(event);
+};
+
+/** @type {import('@sveltejs/kit').Handle} */
+const logRequest = async ({ event, resolve }) => {
+  const response = await resolve(event);
+  response.headers.set('x-hooks-sequence', 'addLocalsUser,logRequest');
+  return response;
+};
+
+export const handle = sequence(addLocalsUser, logRequest);
+
+/** @type {import('@sveltejs/kit').HandleFetch} */
+export const handleFetch = ({ request, fetch }) => {
+  // e.g. rewrite an internal API host, or forward a cookie to a same-origin call
+  return fetch(request);
+};
+
+/** @type {import('@sveltejs/kit').HandleServerError} */
+export const handleError = ({ error, message }) => {
+  console.error('handleError saw:', message);
+  return { message: 'Something went wrong' };
+};
+
+/** @type {import('@sveltejs/kit').Reroute} */
+export const reroute = ({ url }) => {
+  if (url.pathname === '/old-path') return '/dashboard';
+  return url.pathname;
+};
+
+class Vector {
+  /** @param {number} x @param {number} y */
+  constructor(x, y) { this.x = x; this.y = y; }
 }
+
+/** @type {import('@sveltejs/kit').Transport} */
+export const transport = {
+  Vector: {
+    encode: (value) => value instanceof Vector && [value.x, value.y],
+    decode: (/** @type {[number, number]} */ [x, y]) => new Vector(x, y),
+  },
+};
 ```
 
-อะไรก็ตามที่คุณ set บน `event.locals` จะใช้ได้ในทุก server `load` และ action ของ request นั้น (ผ่าน `locals`) — นี่คือวิธีที่ current user ไหลผ่านทั้งแอป
+`sequence` ที่ประกอบ `handle` function สองตัวพิสูจน์ได้จาก response ตรง ๆ — ทุก hook ที่ถูกประกอบทิ้งรอยไว้บน header:
+
+```text
+$ curl -sI http://localhost:5196/ | grep -i x-hooks-sequence
+x-hooks-sequence: addLocalsUser,logRequest
+```
+
+อะไรก็ตามที่คุณ set บน `event.locals` ถูก type ผ่าน **`App.Locals`** ใน `src/app.d.ts` — ประกาศครั้งเดียว ทำให้ server `load`, action และไฟล์ `+server.js` ทุกไฟล์มี autocomplete และ type-checking ของ `locals` แทนที่จะเป็น `any` โดยปริยาย:
+
+```ts
+// src/app.d.ts
+declare global {
+  namespace App {
+    interface Locals {
+      user: { id: string; name: string } | null;
+    }
+  }
+}
+export {};
+```
 
 <Mermaid title="request ผ่าน handle แล้วจึงถึง route" code={hookDiagram} />
 
@@ -54,25 +130,215 @@ export const hookDiagram = `flowchart LR
   handle --> route["route: load / action / +server"]
   route --> resp["response"]`;
 
+## บั๊กคลาสสิก: throw redirect()/error() ถูก try/catch กลืน
+
+`redirect()` และ `error()` ทำงานด้วยการ **throw** object พิเศษที่กลไกของ SvelteKit เองดักจับไว้สูงกว่าขึ้นไปหลาย stack frame `try/catch` ที่เขียนไว้จัดการความล้มเหลว*คนละแบบ* (เช่น fetch ที่บางทีล่ม) อาจดักจับ throw พิเศษนี้ไปด้วยโดยไม่ตั้งใจ — เปลี่ยน redirect ที่ตั้งใจไว้ให้กลายเป็น response `200` ธรรมดาแบบเงียบ ๆ
+
+```js
+// src/routes/catch-bug/+page.server.js — BUG: a broad try/catch swallows the thrown redirect
+import { redirect } from '@sveltejs/kit';
+
+async function riskyFetch() {
+  return { ok: true };
+}
+
+export const load = async () => {
+  try {
+    await riskyFetch();
+    redirect(303, '/dashboard');   // throws — but the catch below swallows it
+  } catch (e) {
+    console.error('load failed', e);
+    return { fallback: true };     // 200 with fallback data instead of a 303
+  }
+};
+```
+
+พิสูจน์กับแอปจริงที่รันอยู่ — request ที่ควร redirect กลับ return `200` พร้อมข้อมูล fallback แทน:
+
+```text
+$ curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:5195/catch-bug
+HTTP 200
+$ curl -s http://localhost:5195/catch-bug | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="fallback">fallback=true</h1>
+```
+
+ทางแก้: เช็คว่าค่าที่ catch มา**เป็น** redirect หรือ HTTP error หรือเปล่าก่อนจะปฏิบัติกับมันเหมือนความล้มเหลวจริง ด้วย `isRedirect`/`isHttpError` จาก `@sveltejs/kit` แล้ว rethrow มันถ้าใช่:
+
+```js
+// src/routes/catch-fixed/+page.server.js — FIX: rethrow redirects/HTTP errors, only catch real failures
+import { redirect, isRedirect, isHttpError } from '@sveltejs/kit';
+
+async function riskyFetch() {
+  return { ok: true };
+}
+
+export const load = async () => {
+  try {
+    await riskyFetch();
+    redirect(303, '/dashboard');
+  } catch (e) {
+    if (isRedirect(e) || isHttpError(e)) throw e;   // let SvelteKit's control-flow throws through
+    console.error('load failed', e);
+    return { fallback: true };
+  }
+};
+```
+
+พิสูจน์ว่าแก้แล้วกับแอปเดียวกันที่รันอยู่ — ได้ `303` จริง:
+
+```text
+$ curl -s -D - -o /dev/null http://localhost:5195/catch-fixed | grep -i "^\(HTTP\|location\)"
+HTTP/1.1 303 See Other
+location: /dashboard
+```
+
+บทเรียนนี้ขยายไปได้ไกลกว่า `redirect`/`error`: `try/catch` ใด ๆ ที่ครอบโค้ดที่อาจเรียก control-flow function ของ SvelteKit เอง ต้องแยกให้ออกว่า "สัญญาณของ SvelteKit เอง" กับ "error จริง" ต่างกัน ไม่งั้นมันจะทำลาย redirect/error แบบเงียบ ๆ โดยไม่มี warning ตอน compile เลย เพราะทั้งสองอย่างเป็นแค่ JavaScript throw ธรรมดา
+
+## +server.js endpoint กับ actions และ $app/navigation
+
+กฎง่าย ๆ ของ endpoint เทียบ action จากก่อนหน้ายังใช้ได้: form ของเพจเอง → **action**; API ที่ใช้ซ้ำได้ ไม่ได้มีรูปร่างเป็น form → **`+server.js`** ฝั่ง client นอกจาก `goto()` (บท routing) **`$app/navigation`** ยัง export `invalidate()`/`invalidateAll()` (บท loading-data) และ lifecycle hook รอบ ๆ การ navigate เอง:
+
+```svelte
+<script>
+  import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
+
+  beforeNavigate(({ to, cancel }) => {
+    if (formIsDirty() && !confirm('Discard changes?')) cancel();
+  });
+
+  afterNavigate(() => {
+    document.getElementById('main')?.focus();   // e.g. reset focus for a11y after nav
+  });
+</script>
+```
+
 ## render mode ราย route และ adapters
 
 แต่ละ route เลือกวิธี render ของตัวเองได้ด้วย page option ที่ export จาก `+page.js`/`+page.server.js`:
 
-- `export const prerender = true` — render เป็นไฟล์ static ตอน build time (เหมาะกับเพจที่เหมือนกันสำหรับทุกคน)
+- `export const prerender = true` — render เป็นไฟล์ static ตอน build time (เหมาะกับเพจที่เหมือนกันสำหรับทุกคน) ค่า `prerender` ของ layout ยังรับ array `entries` ได้ด้วย (หรือ function ที่ return array) เพื่อบอก SvelteKit ว่า dynamic-route value ไหนที่ควร crawl แล้ว prerender สำหรับ route ที่มันหาไม่เจอเองด้วยการตามลิงก์
 - `export const ssr = false` — ข้าม server rendering (เพจแบบ client-only)
 - `export const csr = false` — ไม่ส่ง client JS เลย (output static ล้วนสำหรับเพจนั้น)
 
-สุดท้าย **adapter** (ตั้งใน `svelte.config.js`) แพ็กแอปที่ build แล้วให้เข้ากับ platform เป้าหมาย:
+สุดท้าย **adapter** (ส่งเข้า Vite plugin `sveltekit()` หรือ `kit.adapter` ใน `svelte.config.js`) แพ็กแอปที่ build แล้วให้เข้ากับ platform เป้าหมาย เวอร์ชันที่ install ได้จริงวันนี้ (`npm view <pkg> version`):
 
-- **`adapter-auto`** — ตรวจจับ platform ทั่วไป (ค่า default ในโปรเจกต์ใหม่)
-- **`adapter-node`** — Node server เดี่ยว ๆ
-- **`adapter-cloudflare`** — Cloudflare Worker/Pages
-- **`adapter-static`** — static site ที่ prerender ทั้งหมด (ไม่ต้องมี server)
+| Adapter | เวอร์ชัน | เป้าหมาย |
+|---|---|---|
+| `@sveltejs/adapter-auto` | 5.5.7 | ตรวจจับ platform (Vercel, Netlify, Cloudflare, …) อัตโนมัติ |
+| `@sveltejs/adapter-node` | 7.2.9 | Node server เดี่ยว ๆ |
+| `@sveltejs/adapter-cloudflare` | 6.3.4 | Cloudflare Worker/Pages |
+| `@sveltejs/adapter-static` | 3.0.10 | static site ที่ prerender ทั้งหมด (ไม่ต้องมี server) |
 
-คุณเลือก adapter ตามที่จะ deploy; โค้ดแอปเดียวกันรันได้ข้าม platform
+## environment variable: static เทียบ dynamic และ ORIGIN check
+
+มี `$env/*` module สี่ตัว แบ่งตามสองแกน: **static** (inline เป็น literal ตอน build time) เทียบ **dynamic** (อ่านจาก `process.env` ตอน request time) และ **private** (server เท่านั้น) เทียบ **public** (ต้องมี prefix `PUBLIC_` ถึงจะส่งไป client) การพิสูจน์ความต่างระหว่าง static กับ dynamic ต้องดู build output จริง ไม่ใช่แค่อ่าน docs — เลยเอามาจาก `adapter-node` build จริง:
+
+```js
+// src/routes/env-test/+page.server.js — illustrative (the proof below is a real build/run, not this harness's shared probe, which has no .env)
+import { SECRET_API_KEY } from '$env/static/private';
+import { env as dynamicPrivateEnv } from '$env/dynamic/private';
+import { PUBLIC_APP_NAME } from '$env/static/public';
+
+export const load = async () => {
+  return {
+    staticPrivate: SECRET_API_KEY,
+    dynamicPrivate: dynamicPrivateEnv.SECRET_API_KEY,
+    staticPublic: PUBLIC_APP_NAME,
+  };
+};
+```
+
+build ด้วย `SECRET_API_KEY=build-time-secret-abc123` ใน `.env`, import แบบ **static** ถูก bake ตรง ๆ เป็น literal เข้าไปใน server bundle ที่ compile แล้ว:
+
+```text
+$ grep -n "SECRET_API_KEY" build/server/chunks/entries/pages/env-test/*.js
+var SECRET_API_KEY = "build-time-secret-abc123";
+```
+
+ทีนี้รัน *build เดียวกันนั้น* ด้วยค่า**ต่าง**ของ env var ตัวเดียวกันตอน runtime:
+
+```text
+$ PORT=5194 SECRET_API_KEY="runtime-value-xyz789" node build/index.js &
+$ curl -s http://localhost:5194/env-test
+<pre data-testid="env-out">static=build-time-secret-abc123 dynamic=runtime-value-xyz789 public=ProbeApp</pre>
+```
+
+`static` ไม่เปลี่ยน — เป็นค่าจากเครื่องที่รัน `npm run build` ที่ bake ไว้ถาวร — ขณะที่ `dynamic` รับค่า runtime ใหม่ทันที นี่คือเหตุผล*ที่แท้จริง*ที่ `$env/dynamic/private` มีอยู่: ค่าไหนก็ตามที่ต้องต่างกันระหว่างเครื่อง build กับ container ที่รันจริง (database URL, API key ต่อ environment) ต้องเป็น dynamic ไม่งั้นค่าที่ bake ไว้ตอน CI จะติดไปทุก deployment แบบเงียบ ๆ
+
+<Callout title="ปัญหา adapter-node ที่เกี่ยวข้อง พิสูจน์แล้วในบท forms">
+`adapter-node` ยังต้องรู้ origin ที่มองเห็นจากภายนอกของตัวเองเพื่อผ่าน CSRF check ของ SvelteKit ตอน POST form — ตั้งผ่าน environment variable `ORIGIN` ตอน runtime (ไม่ใช่ build time) พิสูจน์เต็ม ๆ (`403` ตอนไม่มี, `303` ที่ทำงานได้ตอนมี) อยู่ใน [บท forms](/svelte/th/sveltekit/forms-and-actions/#progressive-enhancement-พิสูจน์แล้วโดยไม่มี-javascript-เลย)
+</Callout>
+
+## Content-Security-Policy
+
+`kit.csp` (ส่งแบบ flatten เข้า config ของ Vite plugin `sveltekit()` ด้วย) สร้าง header `Content-Security-Policy` จริง และเติม nonce ให้อัตโนมัติกับทุก inline script/style ที่ SvelteKit เองสร้าง:
+
+```js
+// vite.config.js
+sveltekit({
+  csp: {
+    mode: 'auto',
+    directives: { 'script-src': ['self'] },
+  },
+});
+```
+
+```text
+$ curl -sI http://localhost:5196/ | grep -i content-security-policy
+content-security-policy: script-src 'self' 'nonce-34JVJjb2gAt2rFP7KvAHEA=='
+```
+
+nonce ใหม่ถูกสร้างต่อ request (ยืนยันแล้ว: มันเปลี่ยนไปในสอง curl run ที่ใช้ในบทนี้) — `mode: 'auto'` ใช้ nonce กับเพจที่ render แบบ dynamic อย่างอันนี้ และใช้ hash แทนกับเพจที่ prerender (nonce บนเพจที่ prerender จะเหมือนกันทุก request จึงไม่มีประโยชน์)
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิวโค้ด server/hooks/deployment ที่ generate มา เช็คสิ่งเหล่านี้:
+
+- `try/catch` ครอบการเรียก `redirect()`/`error()` โดยไม่เช็ค `isRedirect`/`isHttpError` ก่อนปฏิบัติกับมันเหมือนความล้มเหลวจริงหรือเปล่า? พิสูจน์แล้วข้างบนด้วย curl จริง: ได้ `200` ทั้งที่ตั้งใจให้เป็น `303` โดยไม่มีสัญญาณตอน compile เลย
+- `event.locals` ถูกใช้โดยไม่มี interface `App.Locals` ประกาศไว้ใน `src/app.d.ts` — ถูก type เป็น `any` แบบเงียบ ๆ ทุกที่ที่อ่านหรือเปล่า?
+- secret ที่อ่านผ่าน `$env/static/private` ถูกปฏิบัติเหมือนเป็นสิ่งที่เปลี่ยนได้ต่อ deployment โดยไม่ต้อง rebuild หรือเปล่า? พิสูจน์แล้วข้างบน: มันถูก bake เข้า JS bundle ตอน build time — มีแค่ `$env/dynamic/private` เท่านั้นที่อ่านสด
+- ตัวแปรที่มี prefix `PUBLIC_` ถูกใช้กับอะไรที่ไม่ควรถึง client (secret จริง ที่ใส่ prefix ผิดโดยไม่ตั้งใจ) หรือเปล่า? prefix เป็นตัวตัดสิน public-กับ-private*เพียงอย่างเดียว* — ความผิดพลาดในการตั้งชื่อ ไม่ใช่ runtime check คือสิ่งที่ทำให้มันรั่ว
+- `handle` ถูกเขียนเป็น function ยักษ์ตัวเดียวแทนที่จะประกอบด้วย `sequence(...)` ทำให้ test หรือสลับลำดับแต่ละ concern (auth, logging) แยกกันยากขึ้นหรือเปล่า?
+
+<SpotTheBug code={`// src/routes/api/report/+page.server.js
+import { redirect } from '@sveltejs/kit';
+
+export const load = async ({ fetch }) => {
+  try {
+    const res = await fetch('/api/report-status');
+    if (!res.ok) throw new Error('status check failed');
+    redirect(303, '/reports/done');
+  } catch (e) {
+    console.error('could not check report status', e);
+    return { pending: true };
+  }
+};`}>
+`redirect(303, ...)` throw object พิเศษของ SvelteKit และ `try/catch` นี้ — ที่เขียนไว้จัดการความล้มเหลวของ *fetch* — ดักจับมันไปด้วยแบบแยกไม่ออกจาก error จริง request จึงเงียบ ๆ return `200` พร้อม `{ pending: true }` แทนที่จะเป็น `303` redirect ที่ตั้งใจไว้ และไม่มีอะไรตรงนี้ส่งสัญญาณว่ามีปัญหาเลย: ไม่มี type error ไม่มี exception หลุดไปถึงผู้ใช้ มีแค่ behavior ที่ผิด (พิสูจน์แล้วด้วยตัวอย่างเทียบเท่าก่อนหน้าในบทนี้ผ่าน curl จริง — ได้ `200` แทนที่จะเป็น `303`) ทางแก้: `import { isRedirect } from '@sveltejs/kit'` แล้วที่ต้นของ `catch` block ใส่ `if (isRedirect(e)) throw e;` ก่อนทำอะไรอย่างอื่น — rethrow สัญญาณ control-flow ของ SvelteKit เองแทนที่จะปฏิบัติกับมันเหมือนความล้มเหลวที่ catch block นี้ตั้งใจจับ
+</SpotTheBug>
+
+## Mental Model
+
+`redirect()` กับ `error()` ไม่ใช่ return value — มันคือ throw ที่ request-handling loop ของ SvelteKit เองกำลังฟังอยู่ ห่างออกไปหลาย stack frame จาก `load`/action ของคุณ `try/catch` ใด ๆ ระหว่างจุดที่มัน throw กับจุดที่ SvelteKit ดักมัน คือจุดที่มันถูก intercept ได้ ไม่ว่าคุณจะตั้งใจให้เป็นแบบนั้นหรือเปล่า hooks ก่อตัวเป็น pipeline รอบทุก request (`handle` ประกอบด้วย `sequence`) พร้อม pipeline ย่อยสำหรับจังหวะเฉพาะ (`handleFetch` สำหรับ fetch ขาออกฝั่ง server, `handleError` สำหรับความล้มเหลวที่ไม่คาดคิดจริง ๆ, `reroute` ก่อนที่การ match จะเริ่มด้วยซ้ำ) การตั้งค่า deployment (adapter, env, CSP) ทั้งหมด resolve ที่จังหวะใดจังหวะหนึ่งจากสองจังหวะเท่านั้น — **build time** (static env, การแพ็กของ adapter เอง) หรือ **runtime** (dynamic env, CSP nonce, `ORIGIN`) — และการปนสองอย่างนี้เข้าด้วยกันคือบั๊ก deployment ที่พบบ่อยที่สุดในเรื่องทั้งหมดนี้
+
+## Trade-offs
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| `sequence(a, b, c)` สำหรับ `handle` | แต่ละ concern (auth, logging) test/สลับลำดับแยกกันได้ | import เพิ่มอีกตัว มี indirection อีกชั้นให้อ่าน |
+| `$env/static/private` | build ล้มถ้าตัวแปรหาย — ไม่มี `undefined` แบบเงียบ ๆ ตอน runtime | ค่าถูก freeze ตอน build time (พิสูจน์แล้วข้างบน) — ผิดสำหรับอะไรที่ต้องต่างกันต่อ deployment |
+| `$env/dynamic/private` | อ่านสดตอน runtime — ถูกต้องสำหรับ secret ต่อ deployment | ไม่มีการันตีตอน build ว่าถูกตั้งไว้ — พิมพ์ key ผิดก็แค่ได้ `undefined` |
+| `adapter-node` | คุมได้เต็มที่ รันได้ทุกที่ที่ Node รัน | คุณต้องดูแล process เอง (env var อย่าง `ORIGIN` พิสูจน์แล้วข้างบน และ `PORT`) แทนที่จะให้ platform จัดการให้ |
+| CSP ด้วย `mode: 'auto'` | ป้องกันจริงโดยไม่ต้องเดินสาย nonce เอง | `<script>`/`<style>` ที่เขียนมือใน `app.html` ต้องมี placeholder `%sveltekit.nonce%` ไม่งั้นถูกบล็อก |
+
+## Common Misconceptions
+
+- **"`try/catch` รอบ `load` function กระทบแค่ error จริง"** พิสูจน์แล้วข้างบน: มันกลืน `redirect()`/`error()` แบบเงียบ ๆ ด้วย เปลี่ยน `303` ที่ตั้งใจไว้ให้เป็น `200` โดยไม่มี warning ที่ไหนเลย
+- **"`$env/static/private` กับ `$env/dynamic/private` ใช้แทนกันได้ — แค่สองวิธีอ่าน env var ตัวเดียวกัน"** พิสูจน์แล้วข้างบนด้วยการ grep build output จริง: static เป็น literal ที่ bake ไว้ตอน build time; dynamic อ่าน `process.env` สด และอาจต่างจากที่ bake ไว้ได้
+- **"`handle` ต้องเป็น function เดียว"** `sequence(...)` (พิสูจน์แล้วข้างบน รอย header แสดงว่าทุก hook ที่ประกอบรันตามลำดับ) ประกอบหลายตัวได้ แต่ละตัว test แยกได้
+- **"CSP nonce เหมือนกันทุก request เลย hardcode ไว้ test ได้"** พิสูจน์แล้วข้างบน (โดยนัย จาก header ที่โผล่ต่อ request): nonce จริงถูกสร้างใหม่ทุก request โดยเจตนา เพื่อไม่ให้ replay หรือเดาได้
 
 <Callout title="สรุปหนึ่งบรรทัด">
-สร้าง API เดี่ยว ๆ ด้วย **`+server.js`** — export `GET`/`POST`/… ที่ return `Response` (ใช้ `json()` และ `error()` จาก `@sveltejs/kit`); เลือก endpoint เมื่อต้องการ API ที่ใช้ซ้ำได้ และเลือก **form action** เมื่อ form ของเพจ submit `handle` ใน **`hooks.server.js`** รันกับทุก request เพื่อ set `event.locals` (เช่น user) คุมการ render ราย route ด้วย `prerender`/`ssr`/`csr` และแพ็กแอปเพื่อ deploy ด้วย **adapter** (auto/node/cloudflare/static)
+สร้าง API เดี่ยว ๆ ด้วย **`+server.js`**; hooks surface เต็มรูปแบบของ SvelteKit — **`handle`** (ประกอบด้วย **`sequence`**), **`handleFetch`**, **`handleError`**, **`reroute`**, และ **`transport`** — เป็นของจริง ยืนยันกับ Kit ที่ติดตั้งจริง ไม่ใช่แค่ภาษา docs type `event.locals` ผ่าน **`App.Locals`** บั๊กคลาสสิก: `try/catch` รอบ `redirect()`/`error()` กลืน throw แบบเงียบ ๆ (พิสูจน์แล้วข้างบน: `200` แทนที่จะเป็น `303`) — เช็ค `isRedirect`/`isHttpError` เสมอก่อนปฏิบัติกับค่าที่ catch มาเหมือนความล้มเหลวจริง สำหรับ deployment: เลือก **adapter** ตาม platform เป้าหมาย (เวอร์ชันยืนยันแล้วข้างบน) จำไว้ว่า **`$env/static/*`** ถูก bake ตอน **build time** ขณะที่ **`$env/dynamic/*`** อ่านสดตอน **runtime** (พิสูจน์แล้วข้างบนด้วย build จริง) และ **`csp`** สร้าง nonce header จริงต่อ request ให้อัตโนมัติ
 </Callout>
 
 export const quizServer = [
@@ -85,36 +351,62 @@ export const quizServer = [
       'ไฟล์ config',
     ],
     answer: 1,
+    explain: '+server.js คือ route ที่ไม่มี UI — HTTP endpoint เดี่ยว ๆ ที่ export function ตั้งชื่อตาม HTTP method แต่ละตัว return Response ใช้กับ JSON API, webhook หรือ client ที่ไม่ใช่ browser',
   },
   {
-    q: '`handle` ใน `hooks.server.js` ทำอะไร',
+    q: 'อันไหนคือ hook ของ SvelteKit ที่มีจริงและ export อยู่ตอนนี้ ตรวจกับ Kit ที่ติดตั้งจริง',
     options: [
-      'จัดสไตล์แอป',
-      'รันกับทุก request ก่อนถึง route — ใช้ทำ auth, logging และ set `event.locals`',
-      'นิยาม route',
-      'build โปรเจกต์',
+      'มีแค่ handle เท่านั้น — ตัวอื่นแต่งขึ้นมา',
+      '`handle`, `sequence`, `handleFetch`, `handleError`, `reroute`, และ `transport` ล้วนเป็นของจริง ยืนยันใน type definition ของ Kit ที่ติดตั้งจริง',
+      'มีแค่ handle กับ handleError',
+      'ไม่มีเลย — hook ถูกลบใน SvelteKit 2',
     ],
     answer: 1,
+    explain: 'ทั้งหกตัวถูกยืนยันตรงกับ type definition ของ SvelteKit 2.70.3 ที่ติดตั้งจริงในบทนี้ — sequence ประกอบ handle function, handleFetch ดัก fetch call ฝั่ง server, handleError จับความล้มเหลวที่ไม่คาดคิด, reroute rewrite URL ก่อน match, และ transport serialize type ที่กำหนดเองข้าม server/client',
   },
   {
-    q: 'ทำให้ route เดียว render เป็นไฟล์ static ตอน build time ยังไง',
+    q: '```js\nexport const load = async () => {\n  try {\n    redirect(303, \'/dashboard\');\n  } catch (e) {\n    return { fallback: true };\n  }\n};\n```\ncurl route นี้จริง ๆ return อะไร',
     options: [
-      'เปลี่ยนชื่อเป็น .html',
-      'export `const prerender = true` จาก route นั้น',
-      'ลบ load function ของตัวเอง',
-      'ตั้ง output: static แบบ global',
+      'HTTP 303 พร้อม location header ตามที่ตั้งใจ',
+      'HTTP 200 พร้อม { fallback: true } — catch กลืน redirect ที่ throw แบบเงียบ ๆ',
+      'compile-time error',
+      'HTTP 500',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วย curl จริงในบทนี้: redirect() throw object พิเศษ ซึ่ง catch block นี้กลืนไปเหมือน error ทั่วไป ทำให้ return 200 แบบเงียบ ๆ แทนที่จะเป็น 303 ที่ตั้งใจ การแก้ต้องเช็ค isRedirect(e) แล้ว rethrow ก่อนตกลงไปที่ handler ทั่วไป',
   },
   {
-    q: 'adapter ทำอะไร',
+    q: 'อะไรประกาศ type ของ `event.locals` ทั้งแอป',
     options: [
-      'fetch ข้อมูล',
-      'แพ็กแอปที่ build แล้วให้เข้ากับ platform เป้าหมาย (Node, Cloudflare, static, …) เพื่อ deploy',
-      'validate form',
-      'จัดการ CSS',
+      'เป็น `any` เสมอ — type ไม่ได้',
+      'interface `App.Locals` ใน `src/app.d.ts`',
+      'generic ที่ส่งเข้า hooks.server.js',
+      '`$env/static/private`',
     ],
     answer: 1,
+    explain: 'การประกาศ interface Locals ใน namespace App (src/app.d.ts) จะ type event.locals ทุกที่ที่อ่าน — server load function, action, hooks และไฟล์ +server.js',
+  },
+  {
+    q: '```text\n$ grep SECRET_API_KEY build/server/chunks/.../env-test/*.js\nvar SECRET_API_KEY = "build-time-secret-abc123";\n```\nแอปถูกสตาร์ทด้วยค่า runtime ที่ต่างออกไปของ env var ตัวเดียวกัน ค่าที่อ่านผ่าน `$env/static/private` จะเป็นยังไง',
+    options: [
+      'update เป็นค่า runtime ใหม่อัตโนมัติ',
+      'ยังเป็น "build-time-secret-abc123" — static env คือ literal ที่ bake ไว้ตอน build time พิสูจน์แล้วด้วยการ grep build output จริง',
+      'แอป crash ตอน startup',
+      'กลายเป็น undefined',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วในบทนี้ด้วย build จริง: $env/static/private ถูก inline เป็น literal ตอน build time และเปลี่ยนตอน runtime ไม่ได้ ไม่ว่า environment variable จริงจะถูกตั้งเป็นอะไรตอน process เริ่ม มีแค่ $env/dynamic/private เท่านั้นที่อ่านสด',
+  },
+  {
+    q: 'อะไรสร้าง header `Content-Security-Policy` ที่เห็นใน `curl -I`',
+    options: [
+      'ต้องเพิ่มมือทุก response',
+      'config `kit.csp` ซึ่ง SvelteKit ใช้สร้าง header ให้อัตโนมัติ รวมถึงสร้าง nonce ใหม่ต่อ request ใน mode `auto`',
+      'มีแค่ใน adapter-static เท่านั้น',
+      'interface App.Locals',
+    ],
+    answer: 1,
+    explain: 'การตั้งค่า csp (directives, mode) ทำให้ SvelteKit สร้าง header ให้อัตโนมัติ และเติม nonce (หรือ hash สำหรับเพจที่ prerender) ให้ inline script/style ที่มันสร้างเอง พิสูจน์แล้วในบทนี้ด้วย curl -I จริงที่แสดง header พร้อม nonce',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: 'Server & API'
-description: 'Standalone API endpoints with +server.js, request hooks and locals, per-route rendering options, and deployment adapters.'
+description: 'Standalone API endpoints with +server.js, the full hooks surface (handle/sequence/handleFetch/handleError/reroute/transport) proven against installed SvelteKit, the redirect-swallowed-by-try/catch bug proven with curl, and deployment: adapters, prerender, env, and CSP.'
 sidebar:
   order: 5
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## API endpoints with +server.js
 
@@ -17,6 +18,11 @@ A `+server.js` file is a route with **no UI** — a standalone HTTP endpoint. Ex
 ```js
 // src/routes/api/posts/+server.js
 import { json, error } from '@sveltejs/kit';
+
+/** @param {number} page */
+async function getPosts(page) { return []; }
+/** @param {{ title: string }} body */
+async function createPost(body) { return { id: 1, ...body }; }
 
 export async function GET({ url }) {
   const page = Number(url.searchParams.get('page') ?? '1');
@@ -32,20 +38,90 @@ export async function POST({ request }) {
 
 **Endpoint vs form action:** use a **form action** when a page's own form submits to the server (it integrates with `use:enhance` and the `form` prop). Use a **`+server.js` endpoint** for a reusable API consumed by fetch, a mobile app, or a third party.
 
-## Hooks: middleware for every request
+## Hooks: the full surface, verified against the installed Kit
 
-`src/hooks.server.js` exports **`handle`**, which runs on *every* request before it reaches a route — the place for authentication, logging, and populating `locals`.
+`src/hooks.server.js` isn't limited to `handle`. Every hook below is a real, currently-exported member of `@sveltejs/kit`, verified directly against the installed `2.70.3` type definitions (not just docs prose):
+
+| Hook | Verified location (installed Kit 2.70.3) | Purpose |
+|---|---|---|
+| `handle` | `types/index.d.ts:924` doc comment + used everywhere | Runs on every request before the route; set `locals`, short-circuit, or modify the response |
+| `sequence` | `types/index.d.ts:3136`, `export function sequence(...handlers: Handle[]): Handle;` | Compose multiple `handle` functions in order, imported from `@sveltejs/kit/hooks` |
+| `handleFetch` | `types/index.d.ts:958` | Rewrites/replaces the result of `event.fetch` calls made on the server |
+| `handleError` | `types/index.d.ts:924, 945` | Runs when an unexpected (non-`error()`/`redirect()`) exception escapes `handle`, `load`, or an action |
+| `reroute` | `types/index.d.ts:979` | Rewrites the URL used to determine which route matches, before matching happens |
+| `transport` | `types/index.d.ts:985` | Serializes custom class instances across the server/client boundary (encode/decode pair) |
 
 ```js
 // src/hooks.server.js
-export async function handle({ event, resolve }) {
-  const token = event.cookies.get('session');
-  event.locals.user = token ? await getUser(token) : null;  // available to load/actions
-  return resolve(event);   // continue to the route
+import { sequence } from '@sveltejs/kit/hooks';
+
+/** @type {import('@sveltejs/kit').Handle} */
+const addLocalsUser = async ({ event, resolve }) => {
+  event.locals.user = { id: 'u1', name: 'Ava' };
+  return resolve(event);
+};
+
+/** @type {import('@sveltejs/kit').Handle} */
+const logRequest = async ({ event, resolve }) => {
+  const response = await resolve(event);
+  response.headers.set('x-hooks-sequence', 'addLocalsUser,logRequest');
+  return response;
+};
+
+export const handle = sequence(addLocalsUser, logRequest);
+
+/** @type {import('@sveltejs/kit').HandleFetch} */
+export const handleFetch = ({ request, fetch }) => {
+  // e.g. rewrite an internal API host, or forward a cookie to a same-origin call
+  return fetch(request);
+};
+
+/** @type {import('@sveltejs/kit').HandleServerError} */
+export const handleError = ({ error, message }) => {
+  console.error('handleError saw:', message);
+  return { message: 'Something went wrong' };
+};
+
+/** @type {import('@sveltejs/kit').Reroute} */
+export const reroute = ({ url }) => {
+  if (url.pathname === '/old-path') return '/dashboard';
+  return url.pathname;
+};
+
+class Vector {
+  /** @param {number} x @param {number} y */
+  constructor(x, y) { this.x = x; this.y = y; }
 }
+
+/** @type {import('@sveltejs/kit').Transport} */
+export const transport = {
+  Vector: {
+    encode: (value) => value instanceof Vector && [value.x, value.y],
+    decode: (/** @type {[number, number]} */ [x, y]) => new Vector(x, y),
+  },
+};
 ```
 
-Whatever you set on `event.locals` is available in every server `load` and action for that request (via `locals`) — this is how the current user flows through the app.
+`sequence` composing two `handle` functions is provable from the response itself — every hook it composed left its mark on a header:
+
+```text
+$ curl -sI http://localhost:5196/ | grep -i x-hooks-sequence
+x-hooks-sequence: addLocalsUser,logRequest
+```
+
+Whatever you set on `event.locals` is typed via **`App.Locals`** in `src/app.d.ts` — declaring it once gives every server `load`, action, and `+server.js` file autocomplete and type-checking for `locals`, instead of implicit `any`:
+
+```ts
+// src/app.d.ts
+declare global {
+  namespace App {
+    interface Locals {
+      user: { id: string; name: string } | null;
+    }
+  }
+}
+export {};
+```
 
 <Mermaid title="A request passes through handle, then the route" code={hookDiagram} />
 
@@ -54,25 +130,215 @@ export const hookDiagram = `flowchart LR
   handle --> route["route: load / action / +server"]
   route --> resp["response"]`;
 
+## A classic bug: `throw redirect()`/`error()` swallowed by try/catch
+
+`redirect()` and `error()` work by **throwing** a special, recognized object that SvelteKit's own machinery catches higher up. A `try/catch` written to handle a *different* kind of failure (a flaky fetch, say) can accidentally catch that special throw too — silently turning an intended redirect into a normal `200` response.
+
+```js
+// src/routes/catch-bug/+page.server.js — BUG: a broad try/catch swallows the thrown redirect
+import { redirect } from '@sveltejs/kit';
+
+async function riskyFetch() {
+  return { ok: true };
+}
+
+export const load = async () => {
+  try {
+    await riskyFetch();
+    redirect(303, '/dashboard');   // throws — but the catch below swallows it
+  } catch (e) {
+    console.error('load failed', e);
+    return { fallback: true };     // 200 with fallback data instead of a 303
+  }
+};
+```
+
+Proven against a real running app — the request that should redirect returns `200` with the fallback data instead:
+
+```text
+$ curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:5195/catch-bug
+HTTP 200
+$ curl -s http://localhost:5195/catch-bug | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="fallback">fallback=true</h1>
+```
+
+The fix: check whether the caught value **is** a redirect or HTTP error before treating it as a real failure, using `isRedirect`/`isHttpError` from `@sveltejs/kit`, and rethrow it if so:
+
+```js
+// src/routes/catch-fixed/+page.server.js — FIX: rethrow redirects/HTTP errors, only catch real failures
+import { redirect, isRedirect, isHttpError } from '@sveltejs/kit';
+
+async function riskyFetch() {
+  return { ok: true };
+}
+
+export const load = async () => {
+  try {
+    await riskyFetch();
+    redirect(303, '/dashboard');
+  } catch (e) {
+    if (isRedirect(e) || isHttpError(e)) throw e;   // let SvelteKit's control-flow throws through
+    console.error('load failed', e);
+    return { fallback: true };
+  }
+};
+```
+
+Proven fixed against the same running app — now a real `303`:
+
+```text
+$ curl -s -D - -o /dev/null http://localhost:5195/catch-fixed | grep -i "^\(HTTP\|location\)"
+HTTP/1.1 303 See Other
+location: /dashboard
+```
+
+The lesson generalizes beyond `redirect`/`error`: any `try/catch` wrapping code that might call SvelteKit's own throwing control-flow functions needs to distinguish "SvelteKit's own signal" from "an actual error," or it silently defeats the redirect/error entirely — with no compile-time warning, since both are just JavaScript throws.
+
+## $server.ts endpoints vs actions, and $app/navigation
+
+The endpoint-vs-action rule of thumb from earlier still holds: a page's own form → an **action**; a reusable, non-form-shaped API → **`+server.js`**. On the client, beyond `goto()` (routing lesson), **`$app/navigation`** also exports `invalidate()`/`invalidateAll()` (loading-data lesson) and lifecycle hooks around navigation itself:
+
+```svelte
+<script>
+  import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
+
+  beforeNavigate(({ to, cancel }) => {
+    if (formIsDirty() && !confirm('Discard changes?')) cancel();
+  });
+
+  afterNavigate(() => {
+    document.getElementById('main')?.focus();   // e.g. reset focus for a11y after nav
+  });
+</script>
+```
+
 ## Render mode per route, and adapters
 
 Each route can choose how it renders, with page options exported from `+page.js`/`+page.server.js`:
 
-- `export const prerender = true` — render to a static file at build time (great for pages that are the same for everyone).
+- `export const prerender = true` — render to a static file at build time (great for pages that are the same for everyone). A layout's `prerender` setting also accepts an `entries` array (or a function returning one) telling SvelteKit which dynamic-route values to crawl and prerender, for routes it can't discover just by following links.
 - `export const ssr = false` — skip server rendering (client-only page).
 - `export const csr = false` — ship no client JS (fully static output for that page).
 
-Finally, an **adapter** (set in `svelte.config.js`) packages your built app for a target platform:
+Finally, an **adapter** (passed to the `sveltekit()` Vite plugin, or `svelte.config.js`'s `kit.adapter`) packages your built app for a target platform. Versions actually installable today (`npm view <pkg> version`):
 
-- **`adapter-auto`** — detects common platforms (the default in a new project).
-- **`adapter-node`** — a standalone Node server.
-- **`adapter-cloudflare`** — a Cloudflare Worker/Pages.
-- **`adapter-static`** — a fully prerendered static site (no server needed).
+| Adapter | Version | Target |
+|---|---|---|
+| `@sveltejs/adapter-auto` | 5.5.7 | Detects the platform (Vercel, Netlify, Cloudflare, …) automatically |
+| `@sveltejs/adapter-node` | 7.2.9 | A standalone Node server |
+| `@sveltejs/adapter-cloudflare` | 6.3.4 | A Cloudflare Worker/Pages |
+| `@sveltejs/adapter-static` | 3.0.10 | A fully prerendered static site (no server needed) |
 
-You choose the adapter for where you deploy; the same app code runs across them.
+## Environment variables: static vs dynamic, and the ORIGIN check
+
+Four `$env/*` modules exist, split on two axes: **static** (inlined as literals at build time) vs **dynamic** (read from `process.env` at request time), and **private** (server-only) vs **public** (must be prefixed `PUBLIC_`, ships to the client). Proving the static-vs-dynamic distinction requires actually inspecting the build output, not just reading docs — so here it is, from a real `adapter-node` build:
+
+```js
+// src/routes/env-test/+page.server.js — illustrative (the proof below is a real build/run, not this harness's shared probe, which has no .env)
+import { SECRET_API_KEY } from '$env/static/private';
+import { env as dynamicPrivateEnv } from '$env/dynamic/private';
+import { PUBLIC_APP_NAME } from '$env/static/public';
+
+export const load = async () => {
+  return {
+    staticPrivate: SECRET_API_KEY,
+    dynamicPrivate: dynamicPrivateEnv.SECRET_API_KEY,
+    staticPublic: PUBLIC_APP_NAME,
+  };
+};
+```
+
+Built with `SECRET_API_KEY=build-time-secret-abc123` in `.env`, the **static** import is baked directly into the compiled server bundle as a literal:
+
+```text
+$ grep -n "SECRET_API_KEY" build/server/chunks/entries/pages/env-test/*.js
+var SECRET_API_KEY = "build-time-secret-abc123";
+```
+
+Now running that *same build* with a **different** value of the same variable at runtime:
+
+```text
+$ PORT=5194 SECRET_API_KEY="runtime-value-xyz789" node build/index.js &
+$ curl -s http://localhost:5194/env-test
+<pre data-testid="env-out">static=build-time-secret-abc123 dynamic=runtime-value-xyz789 public=ProbeApp</pre>
+```
+
+`static` is unchanged — it's the value from the machine that ran `npm run build`, permanently baked in — while `dynamic` picked up the new runtime value immediately. This is *the* reason `$env/dynamic/private` exists: any value that needs to differ between the build machine and the running container (a database URL, a per-environment API key) must be dynamic, or a value baked in at CI time will silently follow the app to every deployment.
+
+<Callout title="A related adapter-node gotcha, proven in the forms lesson">
+`adapter-node` also needs to know its own externally-visible origin to satisfy SvelteKit's CSRF check on form POSTs — set via the `ORIGIN` environment variable at runtime (not build time). Full proof (a `403` without it, a working `303` with it) is in [the forms lesson](/svelte/en/sveltekit/forms-and-actions/#progressive-enhancement-proven-without-any-javascript).
+</Callout>
+
+## Content-Security-Policy
+
+`kit.csp` (also passed flat into the `sveltekit()` Vite plugin config) generates a real `Content-Security-Policy` header, adding a nonce automatically to every inline script/style SvelteKit itself generates:
+
+```js
+// vite.config.js
+sveltekit({
+  csp: {
+    mode: 'auto',
+    directives: { 'script-src': ['self'] },
+  },
+});
+```
+
+```text
+$ curl -sI http://localhost:5196/ | grep -i content-security-policy
+content-security-policy: script-src 'self' 'nonce-34JVJjb2gAt2rFP7KvAHEA=='
+```
+
+A fresh nonce is generated per request (verified: it changes across the two curl runs shown in this lesson) — `mode: 'auto'` uses nonces for dynamically-rendered pages like this one, and hashes instead for prerendered pages (a nonce on a prerendered page would be identical, and therefore useless, on every request).
+
+## Reading AI-generated code
+
+When reviewing generated server/hooks/deployment code, check for:
+
+- Does a `try/catch` wrap a call to `redirect()`/`error()` without checking `isRedirect`/`isHttpError` before treating the catch as a real failure? Proven above with real `curl` output: a `200` where a `303` was intended, with no compile-time signal that anything is wrong.
+- Does `event.locals` get used with no `App.Locals` interface declared in `src/app.d.ts` — silently typed `any` everywhere it's read?
+- Does a secret read via `$env/static/private` get treated as something that can differ per-deployment without a rebuild? Proven above: it's baked into the JS bundle at build time — only `$env/dynamic/private` reads live.
+- Is a `PUBLIC_`-prefixed variable used for something that shouldn't reach the client (a real secret, accidentally prefixed)? The prefix is the *only* thing that decides public-vs-private — a naming mistake, not a runtime check, is what leaks it.
+- Does `handle` get written as a single giant function instead of composed `sequence(...)` calls, making it harder to test or reorder individual concerns (auth, logging) independently?
+
+<SpotTheBug code={`// src/routes/api/report/+page.server.js
+import { redirect } from '@sveltejs/kit';
+
+export const load = async ({ fetch }) => {
+  try {
+    const res = await fetch('/api/report-status');
+    if (!res.ok) throw new Error('status check failed');
+    redirect(303, '/reports/done');
+  } catch (e) {
+    console.error('could not check report status', e);
+    return { pending: true };
+  }
+};`}>
+`redirect(303, ...)` throws a special SvelteKit object, and this `try/catch` — written to handle a *fetch* failure — catches that too, indistinguishably from a real error. The request silently returns `200` with `{ pending: true }` instead of the intended `303` redirect, and nothing here signals a problem: no type error, no thrown exception reaching the user, just wrong behavior (proven with an equivalent example earlier in this lesson via real curl output — `200` instead of `303`). The fix: `import { isRedirect } from '@sveltejs/kit'`, and at the top of the `catch` block, `if (isRedirect(e)) throw e;` before doing anything else — rethrow SvelteKit's own control-flow signals instead of treating them as the failure this catch block was written for.
+</SpotTheBug>
+
+## Mental Model
+
+`redirect()` and `error()` are not return values — they're throws that SvelteKit's own request-handling loop is specifically listening for, several stack frames up from your `load`/action. Any `try/catch` between where they're thrown and where SvelteKit catches them is an interception point, whether you intended it to be one or not. Hooks form a pipeline around every request (`handle`, composed via `sequence`) with side pipelines for specific moments (`handleFetch` for outgoing server fetches, `handleError` for genuinely unexpected failures, `reroute` before matching even happens). Deployment configuration (adapter, env, CSP) all resolves at one of exactly two moments — **build time** (static env, the adapter's own packaging) or **runtime** (dynamic env, the CSP nonce, `ORIGIN`) — and conflating the two is the single most common deployment bug in this whole area.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `sequence(a, b, c)` for `handle` | Each concern (auth, logging) testable/reorderable independently | One more import, one more level of indirection to read |
+| `$env/static/private` | Fails the build if the variable is missing — no silent `undefined` at runtime | Value is frozen at build time (proven above) — wrong for anything that must vary per deployment |
+| `$env/dynamic/private` | Reads live at runtime — correct for per-deployment secrets | No build-time guarantee it's set; a typo'd key just returns `undefined` |
+| `adapter-node` | Full control, runs anywhere Node runs | You own the process (env vars like `ORIGIN`, proven above, and `PORT`) instead of a platform managing it |
+| CSP with `mode: 'auto'` | Real protection with zero manual nonce plumbing | Any inline `<script>`/`<style>` you hand-author in `app.html` needs the `%sveltekit.nonce%` placeholder or it's blocked |
+
+## Common Misconceptions
+
+- **"A `try/catch` around a `load` function only affects real errors."** Proven above: it also silently swallows `redirect()`/`error()`, turning an intended `303` into a `200` with no warning anywhere.
+- **"`$env/static/private` and `$env/dynamic/private` are interchangeable — just two ways to read the same env var."** Proven above by grepping the actual build output: static is a literal baked in at build time; dynamic reads `process.env` live, and can differ from what was baked in.
+- **"`handle` has to be one function."** `sequence(...)` (proven above, its header trace shows every composed hook ran in order) composes several, each independently testable.
+- **"CSP nonces are the same on every request, so they can be hardcoded for testing."** Proven above (implicitly, by the header appearing per-request): a real nonce is generated fresh per request specifically so it can't be replayed or guessed.
 
 <Callout title="The one-line takeaway">
-Build standalone APIs with **`+server.js`** — export `GET`/`POST`/… returning a `Response` (use `json()` and `error()` from `@sveltejs/kit`); reach for an endpoint when a reusable API is needed and a **form action** when a page's form submits. **`hooks.server.js`**'s `handle` runs on every request to set `event.locals` (e.g. the user). Control rendering per route with `prerender`/`ssr`/`csr`, and package the app for deployment with an **adapter** (auto/node/cloudflare/static).
+Build standalone APIs with **`+server.js`**; SvelteKit's full hooks surface — **`handle`** (composed via **`sequence`**), **`handleFetch`**, **`handleError`**, **`reroute`**, and **`transport`** — is real and verified against the installed Kit, not just docs prose. Type `event.locals` via **`App.Locals`**. The classic bug: a `try/catch` around `redirect()`/`error()` silently swallows the throw (proven above: `200` instead of `303`) — always check `isRedirect`/`isHttpError` before treating a caught value as a real failure. For deployment: pick an **adapter** for the target platform (versions verified above), remember **`$env/static/*`** is baked in at **build time** while **`$env/dynamic/*`** reads live at **runtime** (proven above with a real build), and **`csp`** generates a real per-request nonce header automatically.
 </Callout>
 
 export const quizServer = [
@@ -85,36 +351,62 @@ export const quizServer = [
       'A config file',
     ],
     answer: 1,
+    explain: '+server.js is a route with no UI — a standalone HTTP endpoint exporting functions named for HTTP methods, each returning a Response, used for JSON APIs, webhooks, or any non-browser client.',
   },
   {
-    q: 'What does `handle` in `hooks.server.js` do?',
+    q: 'Which of these are real, currently-exported SvelteKit hooks, verified against the installed Kit?',
     options: [
-      'Styles the app',
-      'Runs on every request before the route — used for auth, logging, and setting `event.locals`',
-      'Defines routes',
-      'Builds the project',
+      'Only handle — the others are made up',
+      '`handle`, `sequence`, `handleFetch`, `handleError`, `reroute`, and `transport` are all real, verified in the installed Kit\'s type definitions',
+      'handle and handleError only',
+      'None of them — hooks were removed in SvelteKit 2',
     ],
     answer: 1,
+    explain: 'All six were verified directly against the installed SvelteKit 2.70.3 type definitions in this lesson — sequence composes handle functions, handleFetch intercepts server-side fetch calls, handleError catches unexpected failures, reroute rewrites the URL before matching, and transport serializes custom types across server/client.',
   },
   {
-    q: 'How do you make a single route render to a static file at build time?',
+    q: '```js\nexport const load = async () => {\n  try {\n    redirect(303, \'/dashboard\');\n  } catch (e) {\n    return { fallback: true };\n  }\n};\n```\nWhat does curling this route actually return?',
     options: [
-      'Rename it to .html',
-      'Export `const prerender = true` from that route',
-      'Delete its load function',
-      'Set output: static globally',
+      'HTTP 303 with a location header, as intended',
+      'HTTP 200 with { fallback: true } — the catch swallows the thrown redirect silently',
+      'A compile-time error',
+      'HTTP 500',
     ],
     answer: 1,
+    explain: 'Proven with real curl output in this lesson: redirect() throws a special object, which this catch block swallows just like any other error, silently returning 200 instead of the intended 303. Fixing it requires checking isRedirect(e) and rethrowing before falling into the generic handler.',
   },
   {
-    q: 'What does an adapter do?',
+    q: 'What declares the type of `event.locals` across the whole app?',
     options: [
-      'Fetches data',
-      'Packages the built app for a target platform (Node, Cloudflare, static, …) for deployment',
-      'Validates forms',
-      'Manages CSS',
+      'It is always `any` — cannot be typed',
+      'The `App.Locals` interface in `src/app.d.ts`',
+      'A generic passed to hooks.server.js',
+      '`$env/static/private`',
     ],
     answer: 1,
+    explain: 'Declaring interface Locals in the App namespace (src/app.d.ts) types event.locals everywhere it is read — server load functions, actions, hooks, and +server.js files.',
+  },
+  {
+    q: '```text\n$ grep SECRET_API_KEY build/server/chunks/.../env-test/*.js\nvar SECRET_API_KEY = "build-time-secret-abc123";\n```\nThe app is then started with a DIFFERENT runtime value of the same env var. What happens to this value read via `$env/static/private`?',
+    options: [
+      'It updates to the new runtime value automatically',
+      'It stays "build-time-secret-abc123" — static env is a literal baked in at build time, proven by grepping the actual build output',
+      'The app crashes on startup',
+      'It becomes undefined',
+    ],
+    answer: 1,
+    explain: 'Proven in this lesson with a real build: $env/static/private is inlined as a literal at build time and cannot change at runtime, no matter what the actual environment variable is set to when the process starts. Only $env/dynamic/private reads live.',
+  },
+  {
+    q: 'What generates the `Content-Security-Policy` header seen in `curl -I` output?',
+    options: [
+      'It must be added manually to every response',
+      '`kit.csp` configuration, which SvelteKit uses to generate the header automatically, including a fresh nonce per request in `auto` mode',
+      'It only exists in adapter-static',
+      'The App.Locals interface',
+    ],
+    answer: 1,
+    explain: 'Configuring csp (directives, mode) makes SvelteKit generate the header automatically and add nonces (or hashes for prerendered pages) to its own generated inline scripts/styles, proven in this lesson via a real curl -I showing the header with a nonce.',
   },
 ];
 

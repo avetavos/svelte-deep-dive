@@ -1,6 +1,6 @@
 ---
 title: 'Routing & Pages'
-description: 'file-based routing ใน src/routes, page และ layout, dynamic route parameter, error page และ client-side navigation'
+description: 'file-based routing ใน src/routes, param matcher, route group, ลำดับชั้น boundary ของ +error.svelte ที่พิสูจน์ด้วย curl, layout reset ด้วย @ และ client-side navigation'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## folder คือ route
 
@@ -41,6 +42,56 @@ export const routeDiagram = `flowchart LR
 - `[...rest]` — rest parameter ที่ match ได้หลาย segment (`/docs/a/b/c`)
 - `[[optional]]` — optional parameter ที่ match ได้แม้ไม่มีค่า
 
+## param matcher: validate segment ก่อน match
+
+`[id]` ธรรมดา match segment *อะไรก็ได้* **matcher** — function ใน `src/params/` — ทำให้ route match เฉพาะเมื่อ segment ผ่านเงื่อนไข ทำให้ static route ที่ไม่เกี่ยวข้องข้างล่างชนะแทนได้:
+
+```ts
+// src/params/integer.ts
+import type { ParamMatcher } from '@sveltejs/kit';
+
+export const match: ParamMatcher = (param) => /^\d+$/.test(param);
+```
+
+```js
+// src/routes/products/[id=integer]/+page.server.js
+export function load({ params }) {
+  return { id: params.id };   // only reached when params.id is all digits
+}
+```
+
+พิสูจน์ทั้งการ match และการ fallthrough กับ route จริงที่รันอยู่ (`/products/[id=integer]` กับ static `/products/latest` ธรรมดา):
+
+```text
+$ curl -s http://localhost:5196/products/42 | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="product">product 42</h1>
+
+$ curl -s http://localhost:5196/products/latest | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="latest">latest products (non-numeric, matcher rejects it so this static route wins)</h1>
+```
+
+`/products/42` ผ่าน regex ของ `integer` เลยไปโดน dynamic route; `/products/latest` ไม่ผ่าน SvelteKit จึง fallthrough ไปที่ `products/latest/+page.svelte` ธรรมดาแทนที่จะเป็น 404 — matcher ช่วยแยกความกำกวมของสอง route ที่ปกติจะชนกันที่ segment เดียวกันได้
+
+## route group: จัดระเบียบโดยไม่กระทบ URL
+
+การครอบชื่อ folder ด้วยวงเล็บ — `(app)` — สร้าง **route group**: จัดระเบียบ route (และมี `+layout.svelte` ร่วมได้) โดยไม่เพิ่ม segment ให้ URL
+
+```text
+src/routes/
+└── (app)/
+    └── grouped/
+        └── +page.svelte      →  /grouped   (NOT /app/grouped or /(app)/grouped)
+```
+
+พิสูจน์กับ route จริง:
+
+```text
+$ curl -s http://localhost:5196/grouped | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="grouped">grouped page, no (app) segment in the URL</h1>
+```
+
+URL คือ `/grouped` ไม่ใช่ `/app/grouped` — group folder เป็นแค่การจัดระเบียบล้วน ๆ (มักใช้ให้ทั้งเซกชัน เช่นทุก route ที่ต้อง login มี layout ร่วมกันโดยไม่โผล่ใน URL เลย)
+
 ## layout ครอบ page
 
 `+layout.svelte` มีผลกับ folder ของตัวเองและทุก route ที่อยู่ข้างใต้ — เป็นที่วางองค์ประกอบที่ใช้ร่วมกันอย่าง header และ footer โดย layout render child route ผ่าน `children` snippet:
@@ -62,9 +113,65 @@ export const routeDiagram = `flowchart LR
 
 layout **ซ้อนกันได้** (nest): layout ที่อยู่ลึกกว่าในต้นไม้จะถูกครอบด้วยตัวที่อยู่เหนือขึ้นไป คุณจึงประกอบ global shell กับ shell เฉพาะแต่ละส่วนได้
 
-## error page และ navigation
+### reset ลำดับ layout ด้วย `@`
 
-- **`+error.svelte`** ใน folder หนึ่งจะ render เมื่อ `load` ใน subtree นั้น throw — เป็น error boundary แบบ scoped ที่อ่าน error ผ่าน `page.error` (จาก `$app/state`)
+บางครั้งเพจเดียวต้องการ **ข้าม** layout ทั้งหมดข้างบนไปเลย — เพจ landing แบบเต็มจอ, print view ตั้งชื่อไฟล์ `+page@.svelte` (หรือ `+layout@.svelte`) จะ reset กลับไปที่ root ข้ามทุก layout ระหว่างทาง; `+page@(group).svelte` จะ reset ไปที่ ancestor ที่*ตั้งชื่อไว้*แทนที่จะเป็น root ตรง ๆ regex ของไฟล์ route ใน SvelteKit เองยืนยัน syntax นี้ว่าเป็น `page(@(.*))?` / `layout(@(.*))?` — `@` ตามด้วยชื่อ group ที่จะใส่หรือไม่ก็ได้
+
+```svelte
+<!-- src/routes/(app)/wide/+layout.svelte — the (app) section's shared shell -->
+<script lang="ts">
+  let { children } = $props();
+</script>
+<div>
+  <nav>app nav</nav>
+  {@render children()}
+</div>
+```
+
+```svelte
+<!-- src/routes/(app)/wide/+page@.svelte — @ resets to root, skipping (app)'s own layout -->
+<h1>wide page — reset with @, skips (app)/+layout.svelte and the root layout's own markup</h1>
+```
+
+พิสูจน์ด้วยการ curl HTML ที่ render จริง — `<nav>app nav</nav>` ของ layout `(app)` ไม่มีอยู่ใน response เลย มีแค่ `<h1>` ของเพจเอง:
+
+```text
+$ curl -s http://localhost:5197/wide | grep -o '<h1[^<]*</h1>\|<nav>[^<]*</nav>'
+<h1 data-testid="wide">wide page — reset with @, skips (app)/+layout.svelte and the root layout's own markup</h1>
+```
+
+## error page และลำดับชั้น boundary
+
+**`+error.svelte`** ใน folder หนึ่งจะ render เมื่อ `load` (หรือตัวเพจ/layout เอง) throw ใน subtree นั้น — เป็น error boundary แบบ scoped ที่อ่าน error ผ่าน `page.error` (จาก `$app/state`) SvelteKit เดิน**ขึ้น**บนต้นไม้ route หา `+error.svelte` ที่ใกล้ที่สุด เริ่มจาก route ที่ throw
+
+พิสูจน์ด้วยสอง route: `errors/deep` throw ใต้ folder ที่*มี* `errors/+error.svelte` ของตัวเอง และ `errors2/deep2` throw ใต้ folder ที่*ไม่มี* — มันเลยเด้งขึ้นไปถึง root `src/routes/+error.svelte`:
+
+```js
+// src/routes/errors/deep/+page.server.js
+import { error } from '@sveltejs/kit';
+export function load() {
+  error(500, 'boom from errors/deep');
+}
+```
+
+```js
+// src/routes/errors2/deep2/+page.server.js — no scoped +error.svelte anywhere in errors2/
+import { error } from '@sveltejs/kit';
+export function load() {
+  error(500, 'boom from errors2/deep2');
+}
+```
+
+```text
+$ curl -s http://localhost:5196/errors/deep | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="err">SCOPED-ERROR errors/+error.svelte: boom from errors/deep</h1>
+
+$ curl -s http://localhost:5196/errors2/deep2 | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="err">ROOT-ERROR +error.svelte: boom from errors2/deep2</h1>
+```
+
+error แบบเดียวกัน (`error(500, ...)`) throw ที่ความลึกเท่ากัน — แต่ `+error.svelte` ตัวไหน render ขึ้นกับว่า folder ancestor มี `+error.svelte` จริง ๆ หรือเปล่าเท่านั้น
+
 - **navigation** ใช้ลิงก์ `<a href="/blog">` ปกติ SvelteKit จะ intercept ไว้เพื่อทำ client-side navigation ที่เร็ว (ไม่ reload ทั้งหน้า) ส่วนการ navigate แบบ programmatic ให้เรียก `goto('/blog')` จาก `$app/navigation`
 
 ```svelte
@@ -76,8 +183,55 @@ layout **ซ้อนกันได้** (nest): layout ที่อยู่�
 <button onclick={() => goto('/dashboard')}>Go</button>
 ```
 
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิวโค้ด routing ที่ generate มา เช็คสิ่งเหล่านี้:
+
+- สมมติว่า `+error.svelte` ที่ "อยู่ใกล้ ๆ กันในโครงสร้าง folder" จะจับ error ได้ โดยไม่เช็คว่า folder นั้นเป็น *ancestor* จริงของ route ที่ throw หรือเปล่า? พิสูจน์แล้วข้างบน: `+error.svelte` ของ sibling subtree ไม่เคยจับอะไรได้เลย — มีแค่ ancestor เท่านั้น ถ้าไม่มีเลยมันจะเด้งไปที่ root
+- `[id]` route บัง static route ที่เจาะจงกว่าแบบเงียบ ๆ (หรือกลับกัน) เพราะไม่มี param matcher มาแยกความกำกวมหรือเปล่า?
+- `(group)` โผล่เป็น segment จริงใน `<a href>` หรือ `goto()` ที่ generate มา เหมือนวงเล็บเป็นส่วนหนึ่งของ URL หรือเปล่า? มันไม่เคยเป็นแบบนั้น — พิสูจน์แล้วข้างบนด้วย `/grouped`
+- ใช้ `+page@.svelte` โดยไม่รู้ว่ามันข้าม layout *ทั้งหมด* กลับไปถึงจุด reset — รวมถึงอันที่เพจยังต้องการอยู่ (เช่น `<svelte:boundary>` รายงาน error ร่วม, analytics beacon ที่อยู่ใน layout ที่ถูกข้ามไป) หรือเปล่า?
+- navigation ใช้ `window.location.href = '/path'` (reload เต็มหน้า) ทั้งที่ตั้งใจจะใช้ `goto('/path')` (client-side พิสูจน์แล้วข้างบน) หรือเปล่า?
+
+<SpotTheBug code={`// project layout:
+// src/routes/
+//   errors/
+//     +error.svelte        <- exists here
+//     deep/+page.server.js
+//   errors2/
+//     deep2/+page.server.js  <- NO +error.svelte anywhere in errors2/
+
+// src/routes/errors2/deep2/+page.server.js
+import { error } from '@sveltejs/kit';
+export function load() {
+  error(500, 'something failed in errors2/deep2');
+  // "the errors/+error.svelte will catch this too, it's right there in routes/"
+}`}>
+`errors/+error.svelte` ครอบคลุม**เฉพาะ folder ของตัวเองกับ folder ที่ซ้อนอยู่ข้างใต้เท่านั้น** — `errors2/` เป็น sibling ไม่ใช่ descendant boundary นั้นจึงไม่เห็น error นี้เลย พิสูจน์แล้วข้างบนด้วย curl จริง: การยิงไปที่ `/errors2/deep2` render **root** `src/routes/+error.svelte` ไม่ใช่ `errors/+error.svelte` เพราะ SvelteKit เดินขึ้นจาก route ที่ throw หา `+error.svelte` ที่เป็น ancestor ที่ใกล้ที่สุด — และ `errors2/deep2` ไม่มี ancestor ที่มี `+error.svelte` เลยจนถึง root ทางแก้คือเพิ่ม `errors2/+error.svelte` เพื่อจัดการแบบ scoped หรือยอมรับ (และออกแบบให้รองรับ) ว่า root error page จะจับมันแทน
+</SpotTheBug>
+
+## Mental Model
+
+routing คือต้นไม้ และมีสามสิ่งเกี่ยวกับ request ที่แต่ละอันถูก resolve ด้วยการเดินต้นไม้เดียวกันนี้ แต่หยุดคนละจุด: **page** คือ leaf ที่ match พอดี; **layout** คือทุก ancestor จาก root ลงมาถึง leaf นั้น แต่ละอันซ้อนอยู่ข้างในตัวที่อยู่เหนือขึ้นไป (เว้นแต่ `@` จะ reset การเดินก่อนถึงจุดนั้น); **error boundary** คือ ancestor ที่*ใกล้ที่สุด* (เดินจาก leaf ย้อนขึ้นไป) ที่บังเอิญมี `+error.svelte` group (`(name)`) กับ matcher (`[x=name]`) ไม่เปลี่ยนรูปร่างต้นไม้นี้ต่อ URL หรือการ render — มันแค่เปลี่ยนวิธี*จัดระเบียบ* folder (group) หรือ*ว่า segment นั้นมีสิทธิ์ match หรือเปล่า* (matcher)
+
+## Trade-offs
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| param matcher (`[id=integer]`) | สอง route แชร์ตำแหน่ง segment เดียวกันได้โดยไม่ชนกัน (พิสูจน์แล้วข้างบน) | ต้องดูแลไฟล์เพิ่ม (`src/params/x.ts`) ต่อเงื่อนไขหนึ่งอัน |
+| route group `(name)` | แชร์ layout/จัดระเบียบโดยไม่เสีย URL เลย (พิสูจน์แล้วข้างบน) | ลืมง่ายว่าวงเล็บไม่โผล่ใน link — `href="/(app)/grouped"` ที่ generate มาผิดตรง ๆ |
+| reset ด้วย `+page@.svelte` | คุมได้เต็มที่ว่าจะข้าม chrome ของ ancestor ที่ไม่ต้องการ (พิสูจน์แล้วข้างบน) | ข้าม*ทุกอย่าง*กลับไปถึงจุด reset รวมถึงของมีประโยชน์ที่อยู่ใน layout เหล่านั้นด้วย |
+| `+error.svelte` แบบ scoped ต่อ folder | จำกัดวงระเบิดของความล้มเหลวให้อยู่แค่เซกชันนั้น | ทุก folder ที่ไม่มีจะพึ่ง ancestor บางตัวแบบเงียบ ๆ — ควรรู้ว่าตัวไหน พิสูจน์แล้วข้างบนว่าไม่ใช่เสมอตัวที่ "ดูใกล้ที่สุด" |
+
+## Common Misconceptions
+
+- **"`+error.svelte` ตัวไหนก็ตามในไฟล์ route เดียวกันที่อยู่ใกล้ ๆ จะจับ error ได้"** พิสูจน์แล้วข้างบน: มีแค่ `+error.svelte` ของ folder ที่เป็น *ancestor* เท่านั้นที่จับได้ — ของ sibling subtree ไม่เคยจับได้เลย ไม่ว่าจะดูใกล้แค่ไหนใน file tree
+- **"route group `(name)` เพิ่ม segment `/name` ให้ URL"** พิสูจน์แล้วข้างบน: ได้ `/grouped` ไม่ใช่ `/app/grouped` — group เป็นแค่การจัดระเบียบล้วน ๆ
+- **"`[id]` ธรรมดากับ static route ที่ตำแหน่งเดียวกันอยู่ด้วยกันไม่ได้"** param matcher ทำให้อยู่ด้วยกันได้: พิสูจน์แล้วข้างบน `/products/latest` fallthrough ไปที่ static route เพราะ matcher ของ `integer` ปฏิเสธมัน
+- **"`+page@.svelte` ข้ามแค่ parent layout ที่ใกล้ที่สุด"** พิสูจน์แล้วข้างบน: `@` เปล่า ๆ reset กลับไปถึง *root* เลย ข้ามทุก layout ระหว่างทาง ไม่ใช่แค่ระดับเดียว
+
 <Callout title="สรุปหนึ่งบรรทัด">
-routing ของ SvelteKit เป็น **file-based**: folder ใต้ `src/routes/` กลายเป็น URL และ **`+page.svelte`** ทำให้เกิดเพจ จับ segment ของ URL ด้วย **`[slug]`** (หรือ `[...rest]` / `[[optional]]`), แชร์องค์ประกอบร่วมด้วย **`+layout.svelte`** ที่ซ้อนกันได้ (ซึ่ง render เพจผ่าน `{@render children()}`) และ scope error ด้วย **`+error.svelte`** ลิงก์ `<a>` ธรรมดาทำ client-side navigation ที่เร็ว ส่วนในโค้ดใช้ `goto()` จาก `$app/navigation`
+routing ของ SvelteKit เป็น **file-based**: folder ใต้ `src/routes/` กลายเป็น URL และ **`+page.svelte`** ทำให้เกิดเพจ จับ segment ของ URL ด้วย **`[slug]`** (หรือ `[...rest]` / `[[optional]]`) แล้ว validate ด้วย **param matcher** (`src/params/x.ts`) เพื่อให้ segment ที่กำกวม fallthrough ไป route ที่เจาะจงกว่าได้ (พิสูจน์แล้วข้างบน) **`(group)`** จัดระเบียบ route และแชร์ layout โดยไม่เสีย URL เลย แชร์ chrome ด้วย **`+layout.svelte`** ที่ซ้อนกันได้ — reset สายนั้นก่อนได้ด้วย **`+page@.svelte`** / **`+page@(group).svelte`** เมื่อเพจต้องข้ามมัน scope error ด้วย **`+error.svelte`** ซึ่ง SvelteKit resolve ด้วยการเดินขึ้นหา *ancestor* ที่ใกล้ที่สุดที่มีมัน (พิสูจน์แล้วข้างบน — ของ sibling ไม่เคยจับได้) ลิงก์ `<a>` ธรรมดาทำ client-side navigation ที่เร็ว ส่วนในโค้ดใช้ `goto()` จาก `$app/navigation`
 </Callout>
 
 export const quizRouting = [
@@ -90,6 +244,7 @@ export const quizRouting = [
       'ตั้งชื่อไฟล์เป็น page.html',
     ],
     answer: 1,
+    explain: 'SvelteKit ใช้ file-based routing: โครงสร้าง folder ใต้ src/routes/ แมปตรงเป็นโครงสร้าง URL และไฟล์ +page.svelte ทำให้ folder นั้นกลายเป็นเพจที่เข้าถึงได้',
   },
   {
     q: 'folder `src/routes/blog/[slug]/` สร้างอะไร',
@@ -100,26 +255,51 @@ export const quizRouting = [
       'API endpoint',
     ],
     answer: 1,
+    explain: 'วงเล็บเหลี่ยมในชื่อ folder จับ segment ของ URL เป็น dynamic route parameter ซึ่งอยู่ที่ params.slug ใน load function',
   },
   {
-    q: '`+layout.svelte` มีไว้ทำอะไร',
+    q: '```text\nsrc/routes/products/[id=integer]/+page.server.js\nsrc/routes/products/latest/+page.svelte\n```\nrequest มาที่ `/products/latest` จะ render อะไร',
     options: [
-      'นิยาม CSS เท่านั้น',
-      'ครอบ folder และทุก route ที่ซ้อนอยู่ด้วย UI ร่วม โดย render เพจผ่าน `{@render children()}`',
-      'fetch ข้อมูล',
-      'จัดการการ submit form',
+      'route [id=integer] โดย id="latest"',
+      'route static products/latest — matcher integer ปฏิเสธ "latest" route dynamic เลยไม่ match แล้ว static route ชนะ',
+      '404 เพราะสอง route ชนกัน',
+      'render ทั้งสอง route พร้อมกัน',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วข้างบนด้วย curl จริง: /products/42 โดน dynamic route [id=integer] แต่ /products/latest fallthrough ไปที่ static route products/latest เพราะ "latest" ไม่ผ่าน test /^\\d+$/ ของ matcher integer',
   },
   {
-    q: 'navigate แบบ programmatic ใน SvelteKit ทำยังไง',
+    q: 'folder `(app)` ใน `src/routes/(app)/grouped/` โผล่ใน URL ไหม',
     options: [
-      'ใช้ window.location เท่านั้น',
-      'เรียก `goto(\'/path\')` จาก `$app/navigation`',
-      'ใช้ component `<Link>`',
-      'navigate ในโค้ดไม่ได้',
+      'โผล่ เป็น /app/grouped',
+      'ไม่โผล่ — route group ในวงเล็บจัดระเบียบ route/layout โดยไม่เพิ่ม segment ให้ URL; URL คือ /grouped',
+      'โผล่ เป็น /(app)/grouped ตรง ๆ',
+      'แทนที่ URL ไปเลย',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วข้างบนด้วย curl จริง: route ที่ render เข้าถึงได้ที่ /grouped ไม่ใช่ /app/grouped — route group เป็นแค่การจัดระเบียบล้วน ๆ ไม่เคยโผล่ใน URL',
+  },
+  {
+    q: 'ตั้งชื่อไฟล์ `+page@.svelte` ทำอะไร',
+    options: [
+      'ไม่มีอะไรพิเศษ — @ เป็นแค่ naming convention ไม่มีผล',
+      'reset สาย layout กลับไปที่ root ข้ามทุก ancestor layout ระหว่างทาง',
+      'ข้ามแค่ parent layout ที่ใกล้ที่สุดเท่านั้น',
+      'มาร์คเพจให้เป็น API endpoint',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วข้างบน: curl route ที่ใช้ +page@.svelte แล้วไม่มี markup ของ layout (app) ที่เป็น ancestor เลยใน response — @ เปล่า ๆ reset กลับไปถึง root ไม่ใช่แค่ระดับเดียว +page@(group).svelte reset ไปที่ ancestor ที่ตั้งชื่อไว้แทน',
+  },
+  {
+    q: '`load` throw ข้างใน `src/routes/errors2/deep2/` และไม่มี `+error.svelte` เลยใต้ `errors2/` จะ render อะไร',
+    options: [
+      'หน้า error ของ browser ทั่วไปที่ไม่มีสไตล์เลย',
+      'ancestor `+error.svelte` ที่ใกล้ที่สุดที่เจอตอนเดินขึ้น — ในกรณีนี้คือ root src/routes/+error.svelte',
+      'ไม่ render อะไรเลย — request ค้าง',
+      '+error.svelte ของ sibling folder ที่ไม่เกี่ยวข้องอย่าง errors/',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วข้างบนด้วย curl จริง: เมื่อไม่มี +error.svelte ใน errors2/ หรือ folder ใด ๆ ระหว่างมันกับ root SvelteKit จะเดินขึ้นหา ancestor ที่ใกล้ที่สุดที่มีมัน — root +error.svelte — ไม่เคยเป็นของ sibling subtree',
   },
 ];
 

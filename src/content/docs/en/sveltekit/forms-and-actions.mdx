@@ -1,6 +1,6 @@
 ---
 title: 'Forms & Actions'
-description: 'Form actions in +page.server.js, reading form data, returning validation errors with fail, and progressive enhancement with use:enhance.'
+description: 'Form actions in +page.server.js, fail() and the form prop, use:enhance with a custom submit callback, progressive enhancement proven with curl, and the experimental remote functions API.'
 sidebar:
   order: 4
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Forms POST to actions
 
@@ -17,6 +18,11 @@ SvelteKit handles form submissions with **actions** — server functions in `+pa
 ```js
 // src/routes/login/+page.server.js
 import { fail, redirect } from '@sveltejs/kit';
+
+/** @param {FormDataEntryValue} email @param {FormDataEntryValue} password @returns {Promise<{ token: string } | null>} */
+async function authenticate(email, password) {
+  return null;   // stand-in for a real lookup against your user store
+}
 
 export const actions = {
   default: async ({ request, cookies }) => {
@@ -70,19 +76,66 @@ export const actions = {
 <form method="POST" action="?/register">…</form>
 ```
 
-## Progressive enhancement with use:enhance
+## Progressive enhancement, proven without any JavaScript
 
-The form above already works with **no JavaScript** — the browser posts, the server responds, the page reloads. Add **`use:enhance`** from `$app/forms` and SvelteKit upgrades it to a smooth AJAX submission (no full reload), automatically updating the `form` prop and invalidating `load` data — while keeping the no-JS fallback.
+The form above already works with **no JavaScript at all** — the browser posts, the server responds, the browser follows the redirect. Proving it with `curl` (no browser, no JS, an `Accept` header shaped like a real browser navigation's) against a real built app:
+
+```text
+$ curl -s -D - -o /dev/null -X POST http://localhost:5196/login \
+  -H "Origin: http://localhost:5196" \
+  -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+  -d "email=a@b.com"
+HTTP/1.1 303 See Other
+location: /dashboard
+```
+
+```text
+$ curl -s -D - -o /dev/null -X POST http://localhost:5196/login \
+  -H "Origin: http://localhost:5196" \
+  -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+  -d "email="
+HTTP/1.1 400 Bad Request
+content-type: text/html
+```
+
+No JavaScript executed anywhere in that request — a real `303` redirect on success, and a real `400` with a full re-rendered HTML page (carrying the `fail()` data as the `form` prop) on failure. This is the whole point of building on top of `<form method="POST">`: the mechanism is standard HTTP, not a client-side framework feature.
+
+<Callout title="Deployment gotcha proven along the way">
+That same `curl` request returned `403 Forbidden` ("Cross-site POST form submissions are forbidden") the first time, with an identical `Origin` header, because the production build of `adapter-node` didn't know its own externally-visible origin. SvelteKit's CSRF check compares the `Origin` header against `url.origin` computed from the incoming request — and without an `ORIGIN` environment variable, adapter-node can't reconstruct that correctly behind a proxy or a nonstandard port. Setting `ORIGIN=http://localhost:5196` (matching how the app is actually reached) fixed it. This is a real, easy-to-hit production gotcha, not a code bug — see [the deployment lesson](/svelte/en/sveltekit/server-and-api/#environment-variables-static-vs-dynamic-and-the-origin-check) for the full adapter-node environment picture.
+</Callout>
+
+## use:enhance with a custom submit callback
+
+Plain **`use:enhance`** (no arguments) upgrades the form to a smooth AJAX submission with sensible defaults. Passing it a function lets you customize what happens around the submit — the function runs *before* the request, and can return a callback that runs *after* the response, receiving `result` and an `update()` you control:
 
 ```svelte
-<script>
-  import { enhance } from '$app/forms';
+<!-- src/routes/login/+page.svelte -->
+<script lang="ts">
+  import { enhance, applyAction } from '$app/forms';
+  let { form } = $props();
+  let submitting = $state(false);
+
+  function customEnhance() {
+    submitting = true;
+    return async ({ result, update }: { result: any; update: () => Promise<void> }) => {
+      submitting = false;
+      if (result.type === 'redirect') {
+        await applyAction(result);   // apply the redirect ourselves
+      } else {
+        await update();              // default behavior: update form prop, re-run load
+      }
+    };
+  }
 </script>
 
-<form method="POST" use:enhance>   <!-- works without JS, better with it -->
-  …
+<form method="POST" use:enhance={customEnhance}>
+  <input name="email" value={form?.email ?? ''} />
+  <button>Log in</button>
 </form>
+{#if submitting}<p>submitting…</p>{/if}
 ```
+
+`update()` is the same thing plain `use:enhance` does automatically: it updates the `form` prop and re-runs `load` (equivalent to `invalidateAll()`). `applyAction(result)` applies a returned redirect/error/success result the same way SvelteKit's default handler would — useful when you've branched on `result.type` yourself for some cases and want the default behavior for others. `svelte-check` confirms this compiles cleanly against the installed SvelteKit types (verified against 2.70.3).
 
 <Mermaid title="Progressive enhancement: works without JS, better with it" code={enhanceDiagram} />
 
@@ -93,8 +146,88 @@ export const enhanceDiagram = `flowchart TB
 
 This is SvelteKit's signature move: build with plain forms that work everywhere, then enhance for a better experience — instead of a JS-only form that breaks without it.
 
+## Remote functions (experimental): a different way to talk to the server
+
+SvelteKit is developing an alternative to `load`/actions/`+server.js` for server communication: **remote functions**, imported from `$app/server` inside a file named `*.remote.ts` (or `.js`). Four kinds exist: `query` (read), `form` (a form-backed mutation), `command` (an imperative mutation), and `prerender` (a query resolved at build time).
+
+<Callout title="Experimental — verify before relying on it">
+Remote functions are gated behind `kit.experimental.remoteFunctions`, which the installed SvelteKit's own types describe as: "Whether to enable the experimental remote functions feature. **This feature is not yet stable and may be changed or removed at any time.**" (`node_modules/@sveltejs/kit/types/index.d.ts`, verified against the installed 2.70.3). Enable it explicitly and treat the API as subject to change.
+</Callout>
+
+```js
+// vite.config.js — enabling the flag (flattened kit options passed to the plugin)
+import { sveltekit } from '@sveltejs/kit/vite';
+export default {
+  plugins: [sveltekit({ experimental: { remoteFunctions: true } })],
+};
+```
+
+```js
+// src/lib/posts.remote.js — experimental: requires kit.experimental.remoteFunctions
+import { query, command } from '$app/server';
+
+let posts = ['first post', 'second post'];
+
+export const getPosts = query(() => posts);
+
+export const addPost = command('unchecked', (title) => {
+  posts = [...posts, title];
+  return { ok: true };
+});
+```
+
+Called from a component, `getPosts()` behaves like a reactive query (it re-fetches when invalidated) and `addPost(title)` behaves like a callable mutation — no route file, no `fetch`, no manually wiring a `+server.js` endpoint. This compiled and type-checked cleanly (`svelte-check`, 0 errors) against Kit 2.70.3 with the flag enabled — but given the explicit "not yet stable" language above, treat it as a preview of where data fetching is heading, not something to build production code on today.
+
+## Reading AI-generated code
+
+When reviewing generated form/action code, check for:
+
+- Does an action return a **plain object** on validation failure (`return { error: 'bad' }`) instead of `fail(status, data)`? A plain object looks like it works (the shape lands in the `form` prop either way) but the response status stays `200`, which breaks anything that branches on HTTP status — and skips SvelteKit's own `ActionFailure` typing.
+- Does it throw `redirect()`/`error()` inside a `try/catch` meant for something else, silently swallowing the control-flow throw? (Full proof of this exact bug, with a `curl`-verified fix, is in [the hooks lesson](/svelte/en/sveltekit/server-and-api/#a-classic-bug-throw-redirect-swallowed-by-trycatch).)
+- Does a `use:enhance` callback forget to call `update()` or `applyAction()` in every branch, leaving the `form` prop stale after some responses?
+- Does it treat remote functions as a stable, always-available API without checking `kit.experimental.remoteFunctions` is even enabled, or without flagging the code as experimental to the reader?
+- Is there a `matcher`-free assumption that a form submits with JavaScript always on — no plain-`<form>` fallback at all?
+
+<SpotTheBug code={`// src/routes/settings/+page.server.js
+import { redirect } from '@sveltejs/kit';
+
+export const actions = {
+  default: async ({ request }) => {
+    const data = await request.formData();
+    const name = data.get('name');
+
+    if (!name) {
+      return { error: 'name is required' };   // looks like a validation error...
+    }
+
+    redirect(303, '/settings');
+  },
+};`}>
+This returns a **plain object** (`{ error: '...' }`) on failure instead of `fail(400, { error: '...' })`. It still lands in the `form` prop — `{#if form?.error}` in the page would render fine — so this bug is easy to miss in a quick read. But the HTTP response status stays `200 OK` instead of the `400` a validation failure should carry, which breaks any code that branches on status (analytics, a retry policy, `use:enhance`'s own `result.type` checks, which expect `"failure"` only from an actual `fail()` call). The fix is `return fail(400, { error: 'name is required' })` — same shape in the `form` prop, correct HTTP semantics underneath.
+</SpotTheBug>
+
+## Mental Model
+
+An action is a plain HTTP form handler first, and a JavaScript-enhanced one second. Every decision in this lesson follows from that ordering: `fail()` returns *data* the page re-renders with (not a thrown error, which would show the framework's error page instead of the form); `redirect()` is a real HTTP redirect the browser can follow with zero JavaScript; `use:enhance` is strictly an *upgrade* layered on top of behavior that already works. Remote functions are a different mental model entirely — closer to calling a function than submitting a form — and being explicitly experimental, they're worth knowing about but not worth building on without checking their status again first.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Plain `<form method="POST">`, no `use:enhance` | Works with zero JavaScript, proven above with real `curl` | Full page reload on every submit |
+| `use:enhance` (no args) | AJAX submit, `form`/`load` updated automatically | Less control over exactly what happens around the request |
+| `use:enhance={fn}` (custom callback) | Full control (`update()`, `applyAction()`, custom branching) | More code, more ways to forget a branch (proven in SpotTheBug above) |
+| Remote functions | No route boilerplate for simple reads/writes | Experimental — "may be changed or removed at any time," per Kit's own types |
+
+## Common Misconceptions
+
+- **"Returning `{ error: '...' }` from an action is the same as `fail(400, { error: '...' })`."** Proven above: both land in the `form` prop, but only `fail()` sets the correct non-200 HTTP status.
+- **"`use:enhance` is required for the form to work."** Proven above with real `curl`: a plain `<form method="POST">` gets a real `303`/`400` with zero JavaScript. `use:enhance` only improves the experience.
+- **"Remote functions are a stable, ready-to-use replacement for `load`/actions."** Kit's own types call them explicitly experimental and subject to change — worth knowing, not worth depending on yet.
+- **"A `403 Forbidden` on a form POST means the code is wrong."** It can just as easily mean the deployed origin isn't configured correctly for `adapter-node` (proven above) — a deployment issue, not a code bug.
+
 <Callout title="The one-line takeaway">
-Handle form submissions with **actions** in `+page.server.js` — a `<form method="POST">` posts to them, so they work with **no JavaScript**. Read `await request.formData()`, return **`fail(status, data)`** for validation errors (arriving as the **`form` prop`**, preserving input) or **`redirect`** on success; use `action="?/name"` for **named actions**. Add **`use:enhance`** (from `$app/forms`) for smooth AJAX submission while keeping the no-JS fallback — progressive enhancement.
+Handle form submissions with **actions** in `+page.server.js` — a `<form method="POST">` posts to them and works with **no JavaScript at all** (proven above with real `curl`: a `303` redirect on success, a `400` HTML re-render on `fail()`). Return **`fail(status, data)`** for validation errors — not a plain object, which keeps the wrong HTTP status (proven in SpotTheBug) — and it arrives as the **`form` prop**; use `action="?/name"` for **named actions**. Plain **`use:enhance`** upgrades to AJAX submission automatically; **`use:enhance={fn}`** gives full control via `update()`/`applyAction()`. **Remote functions** (`query`/`form`/`command`/`prerender` from `$app/server`) are an experimental alternative — verified against the installed Kit as genuinely not-yet-stable, not just cautious docs language.
 </Callout>
 
 export const quizForms = [
@@ -107,6 +240,18 @@ export const quizForms = [
       'In `+server.js` only',
     ],
     answer: 1,
+    explain: 'Form actions are exported as an actions object from +page.server.js. A plain <form method="POST"> submits directly to them.',
+  },
+  {
+    q: '```js\nexport const actions = {\n  default: async ({ request }) => {\n    const name = (await request.formData()).get(\'name\');\n    if (!name) return { error: \'required\' };   // ?\n    redirect(303, \'/ok\');\n  },\n};\n```\nWhat is wrong with returning `{ error: \'required\' }` here?',
+    options: [
+      'Nothing — it is equivalent to fail()',
+      'It lands in the form prop like fail() data would, but the HTTP response status stays 200 instead of a real failure status',
+      'It causes a compile error',
+      'It silently redirects instead',
+    ],
+    answer: 1,
+    explain: 'Proven in this lesson\'s SpotTheBug: a plain object returned from an action reaches the form prop the same way fail() data would, so it looks correct in the UI, but the response status is 200 — use fail(status, data) to get both the right data shape and the right HTTP status.',
   },
   {
     q: 'How does an action report a validation error while keeping the user\'s input?',
@@ -117,26 +262,40 @@ export const quizForms = [
       'console.log the error',
     ],
     answer: 1,
+    explain: 'fail(status, data) returns both a non-200 HTTP status and the data (arriving as the form prop), so the page re-renders with the error and the user\'s previously-entered values.',
   },
   {
-    q: 'Why do SvelteKit forms work without JavaScript?',
+    q: '```text\n$ curl -s -D - -o /dev/null -X POST http://localhost:5196/login \\\n  -H "Accept: text/html,..." -d "email=a@b.com"\nHTTP/1.1 303 See Other\nlocation: /dashboard\n```\nThis curl command never runs any JavaScript. What does the real 303 response prove?',
     options: [
-      'They do not — JS is required',
-      'A plain `<form method="POST">` posts to the server action; the browser handles it natively',
-      'They use a service worker',
-      'They pre-render every response',
+      'That curl secretly runs JavaScript',
+      'That the form action works as a plain HTTP handler — the redirect on success works with zero client-side JS',
+      'That use:enhance is required for redirects to work',
+      'That this only works in a browser, not curl',
     ],
     answer: 1,
+    explain: 'Proven in this lesson: a real curl POST with no JavaScript involved at all gets a genuine 303 redirect on success and a 400 HTML re-render on failure — progressive enhancement means the form works as plain HTTP first, and use:enhance only improves on that.',
   },
   {
-    q: 'What does `use:enhance` (from `$app/forms`) add?',
+    q: 'What does `use:enhance={customFn}` let you do that plain `use:enhance` does not?',
     options: [
-      'It disables the form',
-      'It upgrades the plain form to a smooth AJAX submission (no full reload) while keeping the no-JS fallback',
-      'It validates on the client only',
-      'It styles the form',
+      'Nothing — they are identical',
+      'Run custom logic before the submit and control the response handling yourself via update()/applyAction(), instead of the automatic default',
+      'Disable progressive enhancement',
+      'Skip fail() entirely',
     ],
     answer: 1,
+    explain: 'A custom use:enhance callback function runs before the request and can return an after-response handler that receives result and update() — letting you call applyAction() for some cases and update() for others, instead of accepting the automatic default behavior.',
+  },
+  {
+    q: 'What is true about SvelteKit\'s remote functions (`query`/`form`/`command`/`prerender` from `$app/server`)?',
+    options: [
+      'They are a stable, recommended replacement for load and actions',
+      'They are gated behind `kit.experimental.remoteFunctions`, and Kit\'s own types describe them as not yet stable and subject to change',
+      'They only work with TypeScript',
+      'They replace hooks.server.js',
+    ],
+    answer: 1,
+    explain: 'Verified directly against the installed SvelteKit\'s type definitions: the experimental.remoteFunctions option is documented as "not yet stable and may be changed or removed at any time" — worth knowing about, not yet something to depend on.',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: 'Loading Data'
-description: 'load function, universal (+page.js) vs server-only (+page.server.js) loading, การรับ data ผ่าน data prop และ shared layout data'
+description: 'load function, universal (+page.js) vs server-only (+page.server.js) loading, streaming ด้วย promise ที่ไม่ await, depends/invalidate, parent() และ $app/state เทียบกับ $app/stores ที่เลิกใช้แล้ว'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## data มาจาก load function
 
@@ -56,16 +57,233 @@ export async function load({ locals }) {
 }
 ```
 
-กฎง่าย ๆ: **ถ้าแตะ database, secret หรือ private env ให้ไว้ใน `+page.server.js`** นอกนั้น `+page.js` ก็พอ และยังให้ client navigation refetch ได้โดยไม่ต้องวิ่งไป server
+กฎง่าย ๆ: **ถ้าแตะ database, secret หรือ private env ให้ไว้ใน `+page.server.js`** นอกนั้น `+page.js` ก็พอ และยังให้ client navigation refetch ได้โดยไม่ต้องวิ่งไป server เทียบกันเต็ม ๆ:
 
-## load event และ layout data
+| | `+page.js` (universal) | `+page.server.js` (server-only) |
+|---|---|---|
+| รันที่ไหน | server (render แรก) แล้ว browser (client nav) | server เสมอ — ไม่เคยส่งไป browser |
+| แตะ database / secret / private env ได้ไหม | ไม่ได้ — โค้ดนั้นจะถูกส่งไป browser | ได้ |
+| `fetch` | fetch พิเศษของ SvelteKit (จัดการ relative URL, forward cookie ตอน SSR) | fetch พิเศษตัวเดียวกัน บวกเรียก server ตรง ๆ ได้ |
+| `cookies`, `locals` | ไม่มี | มี |
+| ค่าที่ return | ต้อง serializable หรือใช้ตรง ๆ ใน component tree ได้เลย | ต้อง serializable (เข้ารหัสด้วย devalue ไปที่ client) |
+| ใช้กับ `+layout` ด้วย | `+layout.js` | `+layout.server.js` |
 
-`load` function รับ event object ที่มี field ที่มีประโยชน์: `params` (route params), `fetch` (fetch พิเศษที่จัดการ relative URL และ forward cookie ตอน SSR), `url` (URL ที่ร้องขอ), `setHeaders`, `cookies` (server load เท่านั้น), `locals` (server load เท่านั้น) และ `parent` (เพื่อ await ข้อมูลจาก parent layout)
+## load event, depends() และ invalidation
 
-`load` ใน **`+layout.js` / `+layout.server.js`** ให้ข้อมูลกับ layout *และ* ทุก child page — เหมาะกับสิ่งที่ทุกเพจต้องใช้ (current user, site settings) child page จะ merge ข้อมูลจาก layout กับของตัวเอง
+`load` function รับ event object ที่มี field ที่มีประโยชน์: `params` (route params), `fetch`, `url` (URL ที่ร้องขอ), `setHeaders`, `cookies` (server load เท่านั้น), `locals` (server load เท่านั้น), `parent` (เพื่อ await ข้อมูลจาก parent layout) และ **`depends`** (เพื่อลงทะเบียน invalidation key ของตัวเอง)
+
+เรียก `depends('app:posts')` ใน `load` จะผูกการรันซ้ำของ load นั้นกับ key นั้น ทีหลังเรียก **`invalidate('app:posts')`** (จาก `$app/navigation`) จะรัน `load` ทุกตัวที่เรียก `depends` ด้วย key นั้นซ้ำ — โดยไม่ reload ทั้งหน้า **`invalidateAll()`** จะรัน `load` function *ทุกตัว* ของเพจปัจจุบัน ไม่สนใจ key เลย
+
+`load` ใน **`+layout.js` / `+layout.server.js`** ให้ข้อมูลกับ layout *และ* ทุก child page — เหมาะกับสิ่งที่ทุกเพจต้องใช้ (current user, site settings) `load` ของ child page อ่านข้อมูลนั้นได้ผ่าน **`parent()`** แล้วค่าที่ child return จะถูก merge ทับข้างบนสำหรับ `data` prop
+
+```js
+// src/routes/settings/+layout.server.js
+export function load({ depends }) {
+  depends('app:site');            // this layout's data can be re-run on demand
+  return { site: { name: 'Acme' } };
+}
+```
+
+```js
+// src/routes/settings/+page.server.js
+export async function load({ parent, depends }) {
+  depends('app:settings');
+  const { site } = await parent();      // merge in the parent layout's data
+  return { site, theme: 'dark' };       // data prop = { site, theme }
+}
+```
+
+พิสูจน์ `depends` และ `parent()` โดยเรียก `load` ทั้งสองตัวตรง ๆ ด้วย fake event แบบเดียวกับที่ unit-test มัน (ไม่ต้องใช้ browser):
+
+```ts
+// src/routes/settings/load.test.ts
+import { test, expect } from 'vitest';
+import { load as layoutLoad } from './+layout.server.js';
+import { load as pageLoad } from './+page.server.js';
+
+test('+layout.server.js registers a depends key and returns site data', () => {
+  const deps: string[] = [];
+  const data = layoutLoad({ depends: (k: string) => deps.push(k) } as any);
+  expect(deps).toEqual(['app:site']);
+  expect(data).toEqual({ site: { name: 'Acme' } });
+});
+
+test('+page.server.js merges the parent layout data via parent()', async () => {
+  const deps: string[] = [];
+  const data = await pageLoad({
+    depends: (k: string) => deps.push(k),
+    parent: async () => ({ site: { name: 'Acme' } }),
+  } as any);
+  expect(deps).toEqual(['app:settings']);
+  expect(data).toEqual({ site: { name: 'Acme' }, theme: 'dark' });
+});
+```
+
+```text
+✓ +layout.server.js registers a depends key and returns site data
+✓ +page.server.js merges the parent layout data via parent()
+```
+
+จาก component คุณจะเรียก `invalidate('app:settings')` หลัง action บางอย่างเพื่อให้ `load` ตัวนั้นตัวเดียวรันซ้ำ หรือ `invalidateAll()` เพื่อ refresh ข้อมูลทั้งเพจ:
+
+```svelte
+<script>
+  import { invalidate, invalidateAll } from '$app/navigation';
+</script>
+
+<button onclick={() => invalidate('app:settings')}>Refresh settings only</button>
+<button onclick={() => invalidateAll()}>Refresh everything</button>
+```
+
+## Streaming: return promise ที่ไม่ await
+
+ตัวอย่างข้างบนทุกอันจะ `await` ข้อมูลก่อน return เสมอ — ทั้งเพจจึงรอส่วนที่ช้าที่สุด SvelteKit ทำ **streaming** แทนได้: return promise โดย *ไม่* await แล้วใช้ **`{#await}`** ใน template เพื่อรับมัน HTML แรกจะถูกส่งทันทีที่ส่วนที่ await แล้วพร้อม ส่วนที่ stream จะเติมเข้ามาทีหลังเมื่อ promise ของมัน resolve — time-to-first-byte ต่ำลงสำหรับส่วนที่สำคัญ โดยไม่ต้องรอส่วนที่ไม่สำคัญ
+
+```js
+// src/routes/blog/[slug]/+page.server.js
+/** @param {string} slug */
+function loadComment(slug) {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(`a slow comment on ${slug}, arrived late`), 2000);
+  });
+}
+
+export function load({ params }) {
+  return {
+    comment: loadComment(params.slug),   // NOT awaited — a streamed promise
+  };
+}
+```
+
+<Callout title="ปัญหา merge: universal load ต้อง forward ข้อมูลจาก server ต่อ">
+เมื่อทั้ง `+page.js` และ `+page.server.js` มีอยู่กับ route เดียวกัน load แบบ **universal** จะรับค่าที่ server load return เป็น `data` parameter ของตัวเอง — แต่สิ่งที่ universal load เอง *return* ต่างหากที่ไปถึงเพจจริง ๆ ถ้ามันไม่ forward `data` field จาก server load จะหายไปจาก `data` prop แบบเงียบ ๆ `svelte-check` จับสิ่งนี้ได้ตรง ๆ: การเพิ่ม `comment` ใน `+page.server.js` ข้างบนโดยไม่อัปเดต `+page.js` ให้ forward มันด้วย จะเกิด error จริง `Property 'comment' does not exist on type '{ post: any }'` เทียบกับ type `PageData` ที่ generate มา — พิสูจน์ว่านี่ไม่ใช่แค่เรื่อง cosmetic แต่คือสิ่งที่ไปถึงเพจจริงตอน runtime
+</Callout>
+
+```js
+// src/routes/blog/[slug]/+page.js
+export async function load({ params, fetch, data }) {
+  const res = await fetch(`/api/posts/${params.slug}`);
+  return {
+    post: await res.json(),
+    comment: data.comment,   // forward the server load's streamed promise unchanged
+  };
+}
+```
+
+```svelte
+<!-- src/routes/blog/[slug]/+page.svelte -->
+<script>
+  let { data } = $props();     // data.post and data.comment, merged from both load files
+</script>
+
+<h1>{data.post.title}</h1>
+
+{#await data.comment}
+  <p>Loading comment…</p>
+{:then comment}
+  <p>{comment}</p>
+{/await}
+```
+
+พิสูจน์: สคริปต์ Node อ่าน response เป็น stream แล้วจับเวลาแต่ละ chunk เทียบกับ `setTimeout` 2 วินาทีใน `loadComment`
+
+```text
+$ node stream-timing.mjs
+t=36ms  first bytes arrived
+t=36ms  saw "loading comment…" in the stream (pending state)
+t=2034ms  saw resolved comment text in the stream
+t=2035ms  stream ended
+```
+
+แบบเดียวกันด้วย `curl --no-buffer` ธรรมดา เช็คว่ามี byte มาถึงกี่ byte แล้วหลังจากผ่านไปแค่ 300ms:
+
+```text
+$ ( time curl --no-buffer -s http://localhost:5196/blog/hello-world -o /tmp/out.html ) &
+$ sleep 0.3 && wc -c /tmp/out.html && grep -o "loading comment" /tmp/out.html
+    3825 /tmp/out.html
+loading comment
+$ wait
+curl --no-buffer -s http://localhost:5196/blog/hello-world -o   0.01s user 0.01s system 0% cpu 2.019 total
+$ grep -o "a slow comment, arrived late" /tmp/out.html
+a slow comment, arrived late
+```
+
+ที่ 300ms มี 3825 byte — รวม markup สถานะ pending `loading comment…` — มาถึงแล้ว ขณะที่ request ทั้งก้อนจบที่ 2.019s ตอน promise ของ comment resolve เท่านั้น ตัว shell ของเพจไม่ได้รอส่วนที่ช้าเลย
+
+## $app/state เทียบกับ $app/stores ที่เลิกใช้แล้ว
+
+คอร์สนี้ใช้ **`page`, `navigating`, และ `updated` จาก `$app/state`** ทุกที่ (เห็นแล้วในบท routing ตรง `page.error`) module นั้นต้องการ Svelte 5 โค้ดเก่า — และโค้ดที่ AI generate จำนวนมากที่เทรนจากตัวอย่างก่อน 2.12 — import สิ่งเดียวกันจาก **`$app/stores`** แทน ซึ่งเป็น store ที่ต้องอ่านด้วย prefix `$`
+
+```svelte
+<!-- legacy: $app/stores (deprecated) -->
+<script>
+  import { page } from '$app/stores';
+</script>
+<h1>{$page.url.pathname}</h1>
+```
+
+```svelte
+<!-- current: $app/state (Svelte 5) -->
+<script>
+  import { page } from '$app/state';
+</script>
+<h1>{page.url.pathname}</h1>
+```
+
+`$app/stores` ยังทำงานอยู่ — ยังไม่ถูกลบ — แต่ source ของ SvelteKit ที่ติดตั้งอยู่บอกอนาคตของมันไว้ตรง ๆ ที่ export เลย:
+
+```text
+$ grep -n "deprecated" node_modules/@sveltejs/kit/src/runtime/app/stores.js
+9: * @deprecated Use `$app/state` instead (requires Svelte 5, see docs for more info)
+33: * @deprecated Use `page` from `$app/state` instead (requires Svelte 5, see docs for more info)
+50: * @deprecated Use `navigating` from `$app/state` instead (requires Svelte 5, see docs for more info)
+65: * @deprecated Use `updated` from `$app/state` instead (requires Svelte 5, see docs for more info)
+```
+
+[migration guide](https://svelte.dev/docs/kit/migrating-to-sveltekit-2#SvelteKit-2.12:-$app-stores-deprecated) บอกไว้ตรง ๆ: "`$app/stores` is deprecated and subject to be removed in SvelteKit 3" เวลาอ่านโค้ดที่ generate มาแล้วเจอ import `$page` จาก `$app/stores` ให้จำไว้ว่านั่นคือ pattern เก่า ไม่ใช่ฟีเจอร์คนละตัว
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิวโค้ด `load` ที่ generate มา เช็คสิ่งเหล่านี้:
+
+- `await` ค่าที่เพจไม่ต้องใช้ในการ render ครั้งแรก (comment thread, "related posts") แทนที่จะ return promise แบบไม่ await ให้ `{#await}` stream หรือเปล่า?
+- import `page`/`navigating`/`updated` จาก `$app/stores` (เลิกใช้ตั้งแต่ Kit 2.12 พิสูจน์แล้วข้างบน) แทน `$app/state` หรือเปล่า?
+- server `load` return สิ่งที่ไม่ serializable (class instance, function) แทนข้อมูลธรรมดาหรือเปล่า?
+- `load` ของเพจเอง fetch ข้อมูลที่ `load` ของ parent layout fetch ไปแล้วซ้ำ แทนที่จะอ่านผ่าน `parent()` หรือเปล่า?
+- `depends()` ถูกเรียกด้วย key ที่ไม่มีใครเรียก `invalidate()` ด้วยเลยหรือเปล่า — เป็นสาย wiring ที่ตายแล้วแต่หน้าตาเหมือนเปิด selective refresh?
+
+<SpotTheBug code={`<script>
+  import { page } from '$app/stores';
+
+  let pathname = $derived($page.url.pathname);
+</script>
+
+<h1>{pathname}</h1>`}>
+โค้ดนี้ compile และรันได้วันนี้จริง — `$app/stores` ยังไม่ถูกลบ แต่มันคือ module ที่เลิกใช้แล้ว: source ของ SvelteKit เองใส่ `@deprecated Use \`page\` from \`$app/state\` instead` ไว้ทุก export และ migration guide บอกว่า `$app/stores` "is deprecated and subject to be removed in SvelteKit 3" ทางแก้คือ import `page` จาก `$app/state` แทน แล้วตัด prefix `$` ออกทั้งหมด — `page` จาก `$app/state` เป็น reactive object อยู่แล้ว (backed ด้วย `$state`) ไม่ใช่ store จึง `page.url.pathname` คือทั้งหมด ไม่ต้องใช้ syntax subscription
+</SpotTheBug>
+
+## Mental Model
+
+`load` function คือ data contract ของ route ไม่ใช่แค่ fetch call ที่แปะไว้ใน component ค่าที่ return จะกลายเป็น `data` prop ที่ merge มาจากทั้งสาย: `+layout.server.js` → `+layout.js` (ผ่าน `parent()`) → `+page.server.js` → `+page.js` ข้อมูลชิ้นไหนจะ block การ render แรกหรือไม่ เป็นตัวเลือกของ*คุณ*ต่อ field: `await` มันเพื่อการันตีว่าอยู่ใน HTML แรก หรือ return promise เปล่า ๆ ให้ `{#await}` stream เข้ามาทีหลัง `depends()` กับ `invalidate()` ก็เป็นแนวคิดเดียวกันแต่ใช้กับการรันซ้ำ: `load` ไม่รู้เองว่าข้อมูลของมัน stale เมื่อไร มันจึงประกาศ key ที่มันขึ้นกับ แล้วให้ที่อื่นตัดสินใจว่าจะ invalidate key นั้นเมื่อไร
+
+## Trade-offs
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| `+page.js` (universal) | รันใน browser ด้วย — client nav refetch โดยไม่ต้องวิ่งไป server | แตะ secret, database, private env ไม่ได้ |
+| `+page.server.js` (server-only) | เข้าถึง server เต็มที่ (db, secret, cookie) | client navigation ทุกครั้งยังต้องวิ่งไป server |
+| stream promise ที่ไม่ await | time-to-first-byte ต่ำลงสำหรับส่วนที่สำคัญ | ผู้อ่านเห็น loading state; error ข้างในต้องจัดการใน `{#await}` (หรือ `<svelte:boundary>`) แทนที่จะทำให้ทั้งเพจล้ม |
+| `depends()` + `invalidate()` | รันซ้ำแบบเลือกได้ แทนที่จะ `invalidateAll()` ทั้งหมด | key ที่ไม่มีใคร invalidate เลยคือโค้ดที่ตายแล้วแต่หน้าตาเหมือนทำอะไรบางอย่าง |
+
+## Common Misconceptions
+
+- **"universal `load` ก็แค่ server load ที่ด้อยกว่า"** มันเป็นแบบเดียวที่รันใน browser ด้วย — client-side navigation ข้าม server round-trip ไปเลยสำหรับมัน พิสูจน์แล้วในตารางเทียบข้างบน
+- **"ค่าทุกตัวของ `load` ต้อง await ก่อน return เสมอ"** พิสูจน์แล้วข้างบน: promise ที่ไม่ await จะ stream — shell render ทันทีแล้ว `{#await}` เติมส่วนที่เหลือทีหลัง
+- **"`$app/stores` กับ `$app/state` คือชื่อสองชื่อของสิ่งเดียวกัน"** `$app/stores` เลิกใช้แล้ว (พิสูจน์แล้วข้างบน จาก source ของ Kit เองและ migration guide) — `page` ของ `$app/state` เป็น reactive object ธรรมดา ไม่ใช่ store จึงอ่านโดยไม่ต้องมี `$`
+- **"`load` ของ child page ต้อง fetch สิ่งที่ layout load ไปแล้วซ้ำ"** `parent()` return ข้อมูลที่ resolve แล้วของ parent ให้แทน
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**`load`** function return ข้อมูลของเพจ ซึ่งมาถึงเป็น **`data` prop** (`let { data } = $props()`); `load` รันก่อน render ข้อมูลจึงอยู่ใน SSR HTML ตั้งแต่แรก ใช้ **`+page.js`** (universal — server แล้ว client) กับข้อมูลที่ปลอดภัยทุกที่ และ **`+page.server.js`** (server-only) เมื่อโค้ดแตะ **database, secret, private env หรือ auth cookie** ส่วน `load` ของ **`+layout`** แชร์ข้อมูลให้ทุก child route
+**`load`** function return ข้อมูลของเพจ ซึ่งมาถึงเป็น **`data` prop**; `load` รันก่อน render สิ่งที่คุณ `await` จะอยู่ใน SSR HTML ตั้งแต่แรก — แต่ return promise แบบ **ไม่ await** แล้วรับด้วย **`{#await}`** จะ stream มันเข้ามาทีหลังแทน (พิสูจน์แล้วด้วยเวลาจริงข้างบน) ใช้ **`+page.js`** (universal — server แล้ว client) กับข้อมูลที่ปลอดภัยทุกที่ และ **`+page.server.js`** (server-only) เมื่อโค้ดแตะ **database, secret, private env หรือ auth cookie** `load` ของ **`+layout`** แชร์ข้อมูลให้ทุก child route ซึ่งอ่านผ่าน **`parent()`**; **`depends(key)`** บวก **`invalidate(key)`**/**`invalidateAll()`** คุมการรันซ้ำแบบเลือกได้ ใช้ **`page`/`navigating`/`updated` จาก `$app/state`** ไม่ใช่ `$app/stores` ที่เลิกใช้แล้ว (พิสูจน์แล้วข้างบน)
 </Callout>
 
 export const quizLoad = [
@@ -78,6 +296,7 @@ export const quizLoad = [
       'ผ่าน context เท่านั้น',
     ],
     answer: 1,
+    explain: 'ค่าที่ load function return จะถูกส่งให้ page component เป็น data prop ผ่าน $props() เพราะ load รันก่อนเพจ render ข้อมูลนี้จึงอยู่ใน HTML ตั้งแต่แรก',
   },
   {
     q: 'ต้องใช้ `+page.server.js` แทน `+page.js` เมื่อไร',
@@ -88,26 +307,51 @@ export const quizLoad = [
       'เมื่อเพจไม่มีข้อมูล',
     ],
     answer: 1,
+    explain: 'universal load ใน +page.js รันใน browser ด้วยตอน client-side navigation ดังนั้นโค้ดที่ห้ามถึง browser เด็ดขาด (db, secret, private env, cookie) ต้องอยู่ใน +page.server.js แทน',
   },
   {
-    q: 'universal `load` ใน `+page.js` รันที่ไหน',
+    q: '```js\n// src/routes/blog/[slug]/+page.server.js\nexport function load({ params }) {\n  return {\n    comment: loadComment(params.slug),   // returned WITHOUT awaiting\n  };\n}\n```\npromise `comment` ที่ไม่ await ให้เพจทำอะไรได้',
     options: [
-      'ใน browser เท่านั้น',
-      'บน server สำหรับ render แรก แล้วใน browser ตอน client-side navigation',
-      'ตอน build time เท่านั้น',
-      'บน server เสมอเท่านั้น',
+      'error ตอน request time',
+      'เพจ stream มันเข้ามาด้วย `{#await}` ได้ ขณะ HTML ส่วนที่เหลือส่งทันที',
+      'ถูกตัดออกจาก data prop เงียบ ๆ',
+      'บังคับให้ทั้งเพจรอมันอยู่ดี',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วยเวลาจริงข้างบน: HTML แรก (รวม state pending ของ {#await}) มาถึงที่ 36ms / หลัง curl ผ่านไป 300ms ขณะที่ข้อความ comment ที่ resolve แล้วปรากฏหลังผ่านครบ 2 วินาที — shell ไม่ได้ block รอ promise ที่ช้า',
   },
   {
-    q: '`load` ใน `+layout.js` มีประโยชน์กับอะไร',
+    q: '`load` ใน `+layout.js` มีประโยชน์กับอะไร และ child page อ่านข้อมูลนั้นยังไง',
     options: [
-      'จัดสไตล์ layout',
-      'ให้ข้อมูลกับ layout และทุก child route (เช่น current user)',
+      'จัดสไตล์ layout; child fetch ซ้ำเอง',
+      'ให้ข้อมูลกับ layout และทุก child route; load ของ child page อ่านผ่าน `parent()`',
       'นิยาม route',
       'ไม่มีเลย — layout load ข้อมูลไม่ได้',
     ],
     answer: 1,
+    explain: '+layout(.server).js load ให้ข้อมูลกับ layout และทุก route ที่ซ้อนอยู่ child load เรียก await parent() เพื่ออ่านข้อมูลนั้นแทนที่จะ fetch ซ้ำ แล้วค่าที่ตัวเอง return จะถูก merge ทับ — พิสูจน์แล้วด้วย test จริงข้างบน',
+  },
+  {
+    q: 'เรียก `depends(\'app:settings\')` ใน load function ทำอะไร',
+    options: [
+      'ไม่มีอะไรเกิดขึ้นเองโดยไม่มีอะไร invalidate มัน',
+      'ลงทะเบียน key ของตัวเอง ทำให้เรียก `invalidate(\'app:settings\')` ทีหลังรัน load ตัวนี้ซ้ำได้',
+      'ทำให้ load รันครั้งเดียวตลอดไป',
+      'บังคับให้ load รันเฉพาะบน server',
+    ],
+    answer: 1,
+    explain: 'depends() ผูกการรันซ้ำของ load กับ key ที่กำหนดเอง เรียก invalidate() ด้วย key เดียวกันทีหลัง (จาก $app/navigation) จะรันเฉพาะ load ตัวนั้นซ้ำ โดยไม่ต้อง invalidateAll() หรือ reload ทั้งหน้า — พิสูจน์แล้วด้วยการเรียก load ด้วย fake event แล้วเช็คว่า key ถูกลงทะเบียน',
+  },
+  {
+    q: '```svelte\n<script>\n  import { page } from \'$app/stores\';\n</script>\n<h1>{$page.url.pathname}</h1>\n```\nอะไรคือความจริงเกี่ยวกับ pattern นี้',
+    options: [
+      'เป็น compile error ใน Svelte 5',
+      'ยังรันได้ แต่ `$app/stores` เลิกใช้แล้วเพื่อ `$app/state` — export ของมันถูกมาร์ก `@deprecated` และจะถูกลบใน SvelteKit 3',
+      'เป็น pattern สมัยใหม่ที่แนะนำ',
+      '`$page` กับ `page` ทำงานเหมือนกันทุกประการไม่ว่าจะใช้แบบไหน',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วข้างบนด้วยการ grep source ของ SvelteKit ที่ติดตั้งอยู่: export ของ $app/stores ทุกตัวมี JSDoc @deprecated ชี้ไปที่ $app/state และ migration guide บอกว่า "subject to be removed in SvelteKit 3" ส่วน page ของ $app/state เป็น reactive object ธรรมดา (ไม่ต้องมี $) ไม่ใช่ store',
   },
 ];
 

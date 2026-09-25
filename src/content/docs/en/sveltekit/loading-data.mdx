@@ -1,6 +1,6 @@
 ---
 title: 'Loading Data'
-description: 'The load function, universal (+page.js) vs server-only (+page.server.js) loading, consuming data via the data prop, and shared layout data.'
+description: 'The load function, universal (+page.js) vs server-only (+page.server.js) loading, streaming with un-awaited promises, depends/invalidate, parent(), and $app/state vs the deprecated $app/stores.'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Data comes from a load function
 
@@ -56,16 +57,233 @@ export async function load({ locals }) {
 }
 ```
 
-The rule of thumb: **if it touches a database, a secret, or private env, it goes in `+page.server.js`.** Otherwise `+page.js` is fine and lets client navigations refetch without a server round-trip.
+The rule of thumb: **if it touches a database, a secret, or private env, it goes in `+page.server.js`.** Otherwise `+page.js` is fine and lets client navigations refetch without a server round-trip. A full comparison:
 
-## The load event and layout data
+| | `+page.js` (universal) | `+page.server.js` (server-only) |
+|---|---|---|
+| Runs where | Server (first render), then browser (client nav) | Server, always — never ships to the browser |
+| Can touch a database / secret / private env | No — that code would ship to the browser | Yes |
+| `fetch` | The special SvelteKit `fetch` (handles relative URLs, forwards cookies during SSR) | Same special `fetch`, plus direct server-side calls |
+| `cookies`, `locals` | Not available | Available |
+| Return value | Must be serializable *or* plain values usable directly in the component tree | Must be serializable (devalue-encoded to the client) |
+| Also runs for `+layout` | `+layout.js` | `+layout.server.js` |
 
-The `load` function receives an event object with useful fields: `params` (route params), `fetch` (a special fetch that handles relative URLs and forwards cookies during SSR), `url` (the requested URL), `setHeaders`, `cookies` (server load only), `locals` (server load only), and `parent` (to await parent layout data).
+## The load event, depends(), and invalidation
 
-A **`+layout.js` / `+layout.server.js`** `load` provides data to its layout *and* every child page — ideal for things every page needs (the current user, site settings). Child pages merge layout data with their own.
+The `load` function receives an event object with useful fields: `params` (route params), `fetch`, `url` (the requested URL), `setHeaders`, `cookies` (server load only), `locals` (server load only), `parent` (to await parent layout data), and **`depends`** (to register a custom invalidation key).
+
+Calling `depends('app:posts')` inside a `load` ties its re-run to that key. Later, calling **`invalidate('app:posts')`** (from `$app/navigation`) re-runs every `load` that called `depends` with that key — without a full page reload. **`invalidateAll()`** re-runs *every* `load` function on the current page, regardless of keys.
+
+A **`+layout.js` / `+layout.server.js`** `load` provides data to its layout *and* every child page — ideal for things every page needs (the current user, site settings). A child page's `load` can read that data with **`parent()`**, and the child's own return value is merged on top of it for the `data` prop.
+
+```js
+// src/routes/settings/+layout.server.js
+export function load({ depends }) {
+  depends('app:site');            // this layout's data can be re-run on demand
+  return { site: { name: 'Acme' } };
+}
+```
+
+```js
+// src/routes/settings/+page.server.js
+export async function load({ parent, depends }) {
+  depends('app:settings');
+  const { site } = await parent();      // merge in the parent layout's data
+  return { site, theme: 'dark' };       // data prop = { site, theme }
+}
+```
+
+Proving `depends` and `parent()` by calling both `load` functions directly with a fake event, the way you'd unit-test them (no browser needed):
+
+```ts
+// src/routes/settings/load.test.ts
+import { test, expect } from 'vitest';
+import { load as layoutLoad } from './+layout.server.js';
+import { load as pageLoad } from './+page.server.js';
+
+test('+layout.server.js registers a depends key and returns site data', () => {
+  const deps: string[] = [];
+  const data = layoutLoad({ depends: (k: string) => deps.push(k) } as any);
+  expect(deps).toEqual(['app:site']);
+  expect(data).toEqual({ site: { name: 'Acme' } });
+});
+
+test('+page.server.js merges the parent layout data via parent()', async () => {
+  const deps: string[] = [];
+  const data = await pageLoad({
+    depends: (k: string) => deps.push(k),
+    parent: async () => ({ site: { name: 'Acme' } }),
+  } as any);
+  expect(deps).toEqual(['app:settings']);
+  expect(data).toEqual({ site: { name: 'Acme' }, theme: 'dark' });
+});
+```
+
+```text
+✓ +layout.server.js registers a depends key and returns site data
+✓ +page.server.js merges the parent layout data via parent()
+```
+
+From a component, you'd call `invalidate('app:settings')` after some action to make just that `load` re-run, or `invalidateAll()` to refresh the whole page's data:
+
+```svelte
+<script>
+  import { invalidate, invalidateAll } from '$app/navigation';
+</script>
+
+<button onclick={() => invalidate('app:settings')}>Refresh settings only</button>
+<button onclick={() => invalidateAll()}>Refresh everything</button>
+```
+
+## Streaming: returning a promise you don't await
+
+Every example so far `await`s its data before returning — the whole page waits for the slowest piece. SvelteKit can instead **stream**: return a promise *without* awaiting it, and consume it in the template with **`{#await}`**. The initial HTML ships as soon as the awaited parts are ready, and the streamed part fills in once its promise resolves — lower time-to-first-byte for the parts that matter, without blocking on the parts that don't.
+
+```js
+// src/routes/blog/[slug]/+page.server.js
+/** @param {string} slug */
+function loadComment(slug) {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(`a slow comment on ${slug}, arrived late`), 2000);
+  });
+}
+
+export function load({ params }) {
+  return {
+    comment: loadComment(params.slug),   // NOT awaited — a streamed promise
+  };
+}
+```
+
+<Callout title="A merge gotcha: the universal load must forward server data">
+When both `+page.js` and `+page.server.js` exist for the same route, the **universal** load receives the server load's return value as its own `data` parameter — but whatever the universal load itself *returns* is what actually reaches the page. If it doesn't forward `data`, the server load's fields silently disappear from the `data` prop. `svelte-check` catches exactly this: adding `comment` to `+page.server.js` above without also updating `+page.js` to forward it produces a real `Property 'comment' does not exist on type '{ post: any }'` error against the generated `PageData` type — proof that this isn't cosmetic, it's what actually reaches the page at runtime.
+</Callout>
+
+```js
+// src/routes/blog/[slug]/+page.js
+export async function load({ params, fetch, data }) {
+  const res = await fetch(`/api/posts/${params.slug}`);
+  return {
+    post: await res.json(),
+    comment: data.comment,   // forward the server load's streamed promise unchanged
+  };
+}
+```
+
+```svelte
+<!-- src/routes/blog/[slug]/+page.svelte -->
+<script>
+  let { data } = $props();     // data.post and data.comment, merged from both load files
+</script>
+
+<h1>{data.post.title}</h1>
+
+{#await data.comment}
+  <p>Loading comment…</p>
+{:then comment}
+  <p>{comment}</p>
+{/await}
+```
+
+Proving it: a Node script reads the response as a stream and timestamps every chunk against a 2-second `setTimeout` inside `loadComment`.
+
+```text
+$ node stream-timing.mjs
+t=36ms  first bytes arrived
+t=36ms  saw "loading comment…" in the stream (pending state)
+t=2034ms  saw resolved comment text in the stream
+t=2035ms  stream ended
+```
+
+The same thing with plain `curl --no-buffer`, checking how many bytes have arrived after only 300ms:
+
+```text
+$ ( time curl --no-buffer -s http://localhost:5196/blog/hello-world -o /tmp/out.html ) &
+$ sleep 0.3 && wc -c /tmp/out.html && grep -o "loading comment" /tmp/out.html
+    3825 /tmp/out.html
+loading comment
+$ wait
+curl --no-buffer -s http://localhost:5196/blog/hello-world -o   0.01s user 0.01s system 0% cpu 2.019 total
+$ grep -o "a slow comment, arrived late" /tmp/out.html
+a slow comment, arrived late
+```
+
+At 300ms, 3825 bytes — including the pending `loading comment…` markup — have already arrived, and the whole request only finishes at 2.019s once the comment's promise resolves. The shell of the page did not wait for the slow part.
+
+## $app/state vs the deprecated $app/stores
+
+This course uses **`page`, `navigating`, and `updated` from `$app/state`** everywhere (as seen already in the routing lesson's `page.error`). That module needs Svelte 5. Older code — and a lot of AI-generated code trained on pre-2.12 examples — imports the same things from **`$app/stores`** instead, where they're stores you read with a `$` prefix.
+
+```svelte
+<!-- legacy: $app/stores (deprecated) -->
+<script>
+  import { page } from '$app/stores';
+</script>
+<h1>{$page.url.pathname}</h1>
+```
+
+```svelte
+<!-- current: $app/state (Svelte 5) -->
+<script>
+  import { page } from '$app/state';
+</script>
+<h1>{page.url.pathname}</h1>
+```
+
+`$app/stores` still works — it hasn't been removed — but the installed SvelteKit's own source says otherwise about its future, right on the export:
+
+```text
+$ grep -n "deprecated" node_modules/@sveltejs/kit/src/runtime/app/stores.js
+9: * @deprecated Use `$app/state` instead (requires Svelte 5, see docs for more info)
+33: * @deprecated Use `page` from `$app/state` instead (requires Svelte 5, see docs for more info)
+50: * @deprecated Use `navigating` from `$app/state` instead (requires Svelte 5, see docs for more info)
+65: * @deprecated Use `updated` from `$app/state` instead (requires Svelte 5, see docs for more info)
+```
+
+The [migration guide](https://svelte.dev/docs/kit/migrating-to-sveltekit-2#SvelteKit-2.12:-$app-stores-deprecated) says it plainly: "`$app/stores` is deprecated and subject to be removed in SvelteKit 3." When reading generated code that imports `$page` from `$app/stores`, recognize it as the old pattern, not a different feature.
+
+## Reading AI-generated code
+
+When reviewing generated `load` code, check for:
+
+- Does it `await` a value the page doesn't need for its first paint (a comment thread, a "related posts" list) instead of returning the promise unawaited for `{#await}` to stream?
+- Does it import `page`/`navigating`/`updated` from `$app/stores` (deprecated since Kit 2.12, proven above) instead of `$app/state`?
+- Does a server `load` return something non-serializable (a class instance, a function) instead of plain data?
+- Does a page's own `load` re-fetch data the parent layout's `load` already fetched, instead of reading it via `parent()`?
+- Is `depends()` called with a key that nothing ever calls `invalidate()` with — dead wiring that looks like it enables selective refresh but doesn't?
+
+<SpotTheBug code={`<script>
+  import { page } from '$app/stores';
+
+  let pathname = $derived($page.url.pathname);
+</script>
+
+<h1>{pathname}</h1>`}>
+This compiles and runs today — `$app/stores` hasn't been removed. But it's the deprecated module: SvelteKit's own source marks every export `@deprecated Use \`page\` from \`$app/state\` instead`, and the migration guide states `$app/stores` "is deprecated and subject to be removed in SvelteKit 3." The fix is to import `page` from `$app/state` instead and drop the `$` prefix entirely — `page` from `$app/state` is already reactive (a `$state`-backed object), not a store, so `page.url.pathname` is the whole expression, no subscription syntax needed.
+</SpotTheBug>
+
+## Mental Model
+
+A `load` function is a data contract for a route, not a fetch call bolted onto a component. Its return value becomes the `data` prop, merged from the whole chain: `+layout.server.js` → `+layout.js` (via `parent()`) → `+page.server.js` → `+page.js`. Whether a piece of that data blocks the initial render is *your* choice per field: `await` it to guarantee it's in the first HTML, or return the promise bare to let `{#await}` stream it in later. `depends()` and `invalidate()` are the same idea applied to re-runs: a `load` doesn't automatically know when its data is stale, so it declares the keys it depends on, and something else decides when to invalidate them.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `+page.js` (universal) | Runs in the browser too — client nav refetches without a server round-trip | Cannot touch secrets, databases, or private env |
+| `+page.server.js` (server-only) | Full server access (db, secrets, cookies) | Every client navigation still needs a server round-trip |
+| Streaming an unawaited promise | Lower time-to-first-byte for the parts that matter | The reader sees a loading state; errors inside it must be handled in the `{#await}` (or a `<svelte:boundary>`) rather than failing the whole page |
+| `depends()` + `invalidate()` | Selective re-run instead of a full `invalidateAll()` | A key nobody ever invalidates is dead code that looks like it does something |
+
+## Common Misconceptions
+
+- **"A universal `load` is just a worse server load."** It's the only kind that also runs in the browser — client-side navigations skip the server round-trip entirely for it, proven by the comparison table above.
+- **"Every `load` value must be awaited before returning."** Proven above: an unawaited promise streams — the shell renders immediately and `{#await}` fills in the rest.
+- **"`$app/stores` and `$app/state` are two names for the same thing."** `$app/stores` is deprecated (proven above, straight from Kit's own source and the migration guide) — `$app/state`'s `page` is a plain reactive object, not a store, so it's read without `$`.
+- **"A child page's `load` has to re-fetch what the layout already loaded."** `parent()` returns the parent's already-resolved data instead.
 
 <Callout title="The one-line takeaway">
-A **`load`** function returns a page's data, which arrives as the **`data` prop** (`let { data } = $props()`); it runs before render, so data is in the initial SSR HTML. Use **`+page.js`** (universal — server then client) for anywhere-safe data, and **`+page.server.js`** (server-only) whenever code touches a **database, secrets, private env, or auth cookies**. A **`+layout` load** shares data with every child route.
+A **`load`** function returns a page's data, which arrives as the **`data` prop**; it runs before render, so anything you `await` is in the initial SSR HTML — but returning a promise **unawaited** and consuming it with **`{#await}`** streams it in later instead (proven above with real timing). Use **`+page.js`** (universal — server then client) for anywhere-safe data, and **`+page.server.js`** (server-only) whenever code touches a **database, secrets, private env, or auth cookies**. A **`+layout` load** shares data with every child route, which reads it via **`parent()`**; **`depends(key)`** plus **`invalidate(key)`**/**`invalidateAll()`** control selective re-runs. Use **`page`/`navigating`/`updated` from `$app/state`**, not the deprecated `$app/stores` (proven above).
 </Callout>
 
 export const quizLoad = [
@@ -78,6 +296,7 @@ export const quizLoad = [
       'Through context only',
     ],
     answer: 1,
+    explain: 'The load function\'s return value is passed to the page component as the data prop, available via $props(). It runs before the page renders, so this data is present in the initial HTML.',
   },
   {
     q: 'When must you use `+page.server.js` instead of `+page.js`?',
@@ -88,26 +307,51 @@ export const quizLoad = [
       'When the page has no data',
     ],
     answer: 1,
+    explain: 'A universal load in +page.js also runs in the browser on client-side navigations, so any code that must never reach the browser (db access, secrets, private env, cookies) belongs in +page.server.js instead.',
   },
   {
-    q: 'Where does a universal `load` in `+page.js` run?',
+    q: '```js\n// src/routes/blog/[slug]/+page.server.js\nexport function load({ params }) {\n  return {\n    comment: loadComment(params.slug),   // returned WITHOUT awaiting\n  };\n}\n```\nWhat does the un-awaited `comment` promise let the page do?',
     options: [
-      'Only in the browser',
-      'On the server for the first render, then in the browser on client-side navigations',
-      'Only at build time',
-      'Only on the server, always',
+      'It throws an error at request time',
+      'The page can stream it in with `{#await}` while the rest of the HTML ships immediately',
+      'It is silently dropped from the data prop',
+      'It forces the whole page to wait for it anyway',
     ],
     answer: 1,
+    explain: 'Proven above with real timing: the initial HTML (including the pending {#await} state) arrived at 36ms / after 300ms of a curl request, while the resolved comment text only appeared after the full 2-second delay — the shell did not block on the slow promise.',
   },
   {
-    q: 'What is a `+layout.js` load useful for?',
+    q: 'What is a `+layout.js` load useful for, and how does a child page read its data?',
     options: [
-      'Styling the layout',
-      'Providing data to the layout and every child route (e.g. the current user)',
+      'Styling the layout; the child re-fetches it',
+      'Providing data to the layout and every child route; a child page load reads it via `parent()`',
       'Defining routes',
       'Nothing — layouts cannot load data',
     ],
     answer: 1,
+    explain: 'A +layout(.server).js load provides data to its layout and every nested route. A child load calls await parent() to read that data instead of re-fetching it, and its own return value is merged on top for the data prop — proven above with a real test.',
+  },
+  {
+    q: 'What does calling `depends(\'app:settings\')` inside a load function do?',
+    options: [
+      'Nothing by itself — nothing invalidates it automatically',
+      'Registers a custom key so a later `invalidate(\'app:settings\')` call re-runs this load',
+      'Makes the load run only once, ever',
+      'Forces the load to run only on the server',
+    ],
+    answer: 1,
+    explain: 'depends() ties a load\'s re-run to a custom key. Calling invalidate() with that same key later (from $app/navigation) re-runs just that load, without a full invalidateAll() or page reload — proven above by calling the load with a fake event and asserting the key was registered.',
+  },
+  {
+    q: '```svelte\n<script>\n  import { page } from \'$app/stores\';\n</script>\n<h1>{$page.url.pathname}</h1>\n```\nWhat is true about this pattern?',
+    options: [
+      'It is a compile error in Svelte 5',
+      'It still runs, but `$app/stores` is deprecated in favor of `$app/state` — its exports are marked `@deprecated` and slated for removal in SvelteKit 3',
+      'It is the recommended modern pattern',
+      '`$page` and `page` behave identically either way',
+    ],
+    answer: 1,
+    explain: 'Proven above by grepping the installed SvelteKit source: every $app/stores export carries an @deprecated JSDoc tag pointing at $app/state, and the migration guide states it is "subject to be removed in SvelteKit 3." $app/state\'s page is a plain reactive object (no $ prefix needed), not a store.',
   },
 ];
 
