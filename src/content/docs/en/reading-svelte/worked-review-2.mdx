@@ -1,0 +1,471 @@
+---
+title: 'Worked review 2: a dashboard with search, a chart, and async data'
+description: 'An AI-generated Svelte 5 dashboard — a threshold slider, a tooltip action, async stats, and a chart widget — reviewed bug by bug with a real svelte-check and vitest probe.'
+sidebar:
+  order: 6
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## The feature
+
+The prompt was: *"Build a dashboard with a threshold slider to filter data points, a chart widget showing the top point, a tooltip on the slider, an async 'total' stat, and legend settings the user can toggle."* This draft leans on four Svelte 5 features an AI assistant reaches for constantly — `bind:`, `use:` actions, `$state.raw`, and `await` in the template — and gets the *contract* of every single one slightly wrong. Read it in this module's [reading order](/svelte/en/reading-svelte/): after runes vs legacy and state ownership (this review's predecessor), the next two steps are props/bindings/snippets and events/DOM — exactly where four of these **5 real bugs** live. Two are hard compile errors.
+
+## The generated code
+
+```ts
+// src/lib/dashboard/types.ts — as generated
+export type DataPoint = { label: string; value: number };
+```
+
+```svelte
+<!-- src/lib/dashboard/RangeFilter.svelte — as generated -->
+<script lang="ts">
+  let { min }: { min: number } = $props();
+</script>
+<input type="range" bind:value={min} min="0" max="100" />
+```
+
+```ts
+// src/lib/dashboard/tooltip.ts — as generated
+export function tooltip(node: HTMLElement, text: string) {
+  node.title = text; // set once at mount — nothing notices a later change
+}
+```
+
+```svelte
+<!-- src/lib/dashboard/ChartWidget.svelte — as generated -->
+<script lang="ts">
+  import type { DataPoint } from './types';
+  let { points }: { points: DataPoint[] } = $props();
+  let max = $derived(Math.max(...points.map((p) => p.value)));
+  let top = $derived(points.find((p) => p.value === max)!); // undefined when points is empty
+</script>
+<p>{top.label}</p>
+```
+
+```svelte
+<!-- src/lib/dashboard/ChartSettings.svelte — as generated -->
+<script lang="ts">
+  let options = $state.raw({ color: 'teal', showLegend: true });
+
+  function toggleLegend() {
+    options.showLegend = !options.showLegend; // mutation — $state.raw is NOT deep-reactive
+  }
+</script>
+<button onclick={toggleLegend}>Toggle legend</button>
+<p>{options.showLegend ? 'legend on' : 'legend off'}</p>
+```
+
+```svelte
+<!-- src/lib/dashboard/AsyncStat.svelte — as generated -->
+<script lang="ts">
+  let { load }: { load: () => Promise<number> } = $props();
+</script>
+<p>Total: {await load()}</p>
+```
+
+```svelte
+<!-- src/lib/dashboard/Dashboard.svelte — as generated -->
+<script lang="ts">
+  import type { DataPoint } from './types';
+  import { tooltip } from './tooltip';
+  import RangeFilter from './RangeFilter.svelte';
+  import ChartWidget from './ChartWidget.svelte';
+  import ChartSettings from './ChartSettings.svelte';
+  import AsyncStat from './AsyncStat.svelte';
+
+  let { points, load }: { points: DataPoint[]; load: () => Promise<number> } = $props();
+  let threshold = $state(0);
+  let visible = $derived(points.filter((p) => p.value >= threshold));
+</script>
+
+<h2>Dashboard</h2>
+<div use:tooltip={`${visible.length} of ${points.length} points shown`}>
+  <RangeFilter bind:min={threshold} />
+</div>
+
+<ChartWidget points={visible} />
+<ChartSettings />
+<AsyncStat {load} />
+```
+
+## The review walk
+
+### Props, bindings, and snippets: `bind:` to a non-`$bindable` prop
+
+`RangeFilter` never opts its `min` prop into two-way binding, but `Dashboard` binds to it anyway.
+
+<SpotTheBug code={`<!-- RangeFilter.svelte -->
+let { min }: { min: number } = $props();
+
+<!-- Dashboard.svelte -->
+<RangeFilter bind:min={threshold} />`}>
+A prop flows one way unless the child explicitly grants a two-way surface with `$bindable()`. This is a real, caught `svelte-check` error that names the exact fix — not a silent no-op:
+
+```text
+Error: Cannot use 'bind:' with this property. It is declared as non-bindable inside the component.
+To mark a property as bindable: 'let { min = $bindable() } = $props()' (ts)
+```
+
+The fix is `let { min = $bindable() }: { min: number } = $props();` inside `RangeFilter` — proven in the [Bindings](/svelte/en/bindings-actions-transitions/bindings/) lesson to be required before any `bind:` to a component prop is legal.
+</SpotTheBug>
+
+### Events and the DOM: a `use:` action that never re-runs
+
+`tooltip` sets `node.title` once, at mount, from whatever `text` happened to be at that moment.
+
+<SpotTheBug code={`export function tooltip(node: HTMLElement, text: string) {
+  node.title = text; // set once at mount
+}`}>
+An action's function body runs exactly once, when the element mounts. Unless it returns an `update(newArg)` method, Svelte has no way to know the argument even *can* change — and `visible.length` here changes every time the threshold slider moves.
+
+```text
+✓ TooltipButtonBad: never updates node.title after the text prop changes — no update() on the action
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The fix is returning `{ update(newText) { node.title = newText; } }`, proven in the [Actions](/svelte/en/bindings-actions-transitions/actions/) lesson to be the one thing that makes an action's argument actually reactive (an `@attach` attachment gets this for free, re-running on every reactive read, which is why this course's Actions lesson recommends attachments for new code — `use:` remains for library interop).
+</SpotTheBug>
+
+### Props, bindings, and snippets: `await` in a template with no `experimental.async`
+
+`AsyncStat` awaits directly in a template expression.
+
+<SpotTheBug code={`<p>Total: {await load()}</p>`}>
+`await` in a template, a `$derived`, or at a component's top level is a real compile error unless the project turns on an experimental compiler flag — most AI-generated code never mentions it, because it predates this feature:
+
+```text
+Error: Cannot use `await` in deriveds and template expressions, or at the top level of a component, unless the `experimental.async` compiler option is `true`
+https://svelte.dev/e/experimental_async
+```
+
+With `experimental.async: true` (this course's own `vite.config.ts` already sets it project-wide, same as the [Async Svelte](/svelte/en/reactivity/async-svelte/) lesson proves), the identical source compiles with zero errors and zero warnings. The fix here isn't changing the component at all — it's making sure the project the AI generated this for actually has the flag on, and wrapping the await in a `<svelte:boundary pending>` for loading UI (shown in the corrected code).
+</SpotTheBug>
+
+### Keys, transitions, and boundaries: no `<svelte:boundary>` around a widget that throws
+
+`ChartWidget` throws when `points` is empty (`Math.max()` of nothing is `-Infinity`, and no point's value equals it, so `.find()` returns `undefined` and `top.label` throws). `Dashboard` renders it with no boundary at all.
+
+<SpotTheBug code={`<h2>Dashboard</h2>
+<ChartWidget points={visible} />
+<!-- no <svelte:boundary> anywhere -->`}>
+By default, an error thrown while rendering unmounts the **entire nearest root**, not just the failing widget — an empty filter result (a completely normal, reachable state, not an edge case) takes down the whole dashboard, including the slider and the async stat that have nothing to do with the chart.
+
+```text
+✓ DashboardNoBoundaryBad: an empty points array crashes the WHOLE dashboard, uncaught
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The fix, proven in the [Lifecycle](/svelte/en/components/lifecycle/) lesson's full `<svelte:boundary>` coverage, is wrapping just `ChartWidget` in a boundary with a `{#snippet failed}` — the rest of the dashboard survives untouched.
+</SpotTheBug>
+
+### State ownership: `$state.raw` mutated instead of reassigned
+
+`ChartSettings` mutates a property of a `$state.raw` object directly.
+
+<SpotTheBug code={`let options = $state.raw({ color: 'teal', showLegend: true });
+function toggleLegend() {
+  options.showLegend = !options.showLegend; // mutation
+}`}>
+`$state.raw` opts out of the deep-reactive Proxy wrapper — proven in the [`$state` Rune](/svelte/en/reactivity/state-rune/) lesson, only whole-cell **reassignment** counts as a write; mutating the contents changes the data in memory but never notifies anything, so the UI silently never updates:
+
+```text
+✓ ChartSettingsBad: mutating $state.raw in place does not trigger a re-render
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The fix is `options = { ...options, showLegend: !options.showLegend }` — a brand-new object, which `$state.raw` does react to.
+</SpotTheBug>
+
+## The corrected code
+
+```ts
+// src/lib/dashboard/types.ts
+export type DataPoint = { label: string; value: number };
+```
+
+```svelte
+<!-- src/lib/dashboard/ThresholdSlider.svelte -->
+<script lang="ts">
+  // FIX (bindings): $bindable() grants the two-way surface bind: assumes.
+  let { min = $bindable() }: { min: number } = $props();
+</script>
+<input type="range" data-testid="threshold" min="0" max="100" bind:value={min} />
+```
+
+```ts
+// src/lib/dashboard/tooltip.ts
+export function tooltip(node: HTMLElement, text: string) {
+  node.title = text;
+  // FIX (events & DOM): update() is what makes the argument reactive.
+  return {
+    update(newText: string) {
+      node.title = newText;
+    },
+  };
+}
+```
+
+```svelte
+<!-- src/lib/dashboard/ChartWidget.svelte -->
+<script lang="ts">
+  import type { DataPoint } from './types';
+  let { points }: { points: DataPoint[] } = $props();
+  let max = $derived(Math.max(...points.map((p) => p.value)));
+  let top = $derived(points.find((p) => p.value === max)!);
+</script>
+<p data-testid="top-label">{top.label}</p>
+```
+
+```svelte
+<!-- src/lib/dashboard/ChartSettings.svelte -->
+<script lang="ts">
+  let options = $state.raw({ color: 'teal', showLegend: true });
+
+  function toggleLegend() {
+    // FIX (state ownership): reassign a NEW object — $state.raw only reacts
+    // to reassignment, never to a mutation of the existing object.
+    options = { ...options, showLegend: !options.showLegend };
+  }
+</script>
+<button data-testid="toggle" onclick={toggleLegend}>Toggle legend</button>
+<p data-testid="legend">{options.showLegend ? 'legend on' : 'legend off'}</p>
+```
+
+```svelte
+<!-- src/lib/dashboard/AsyncStat.svelte -->
+<script lang="ts">
+  let { load }: { load: () => Promise<number> } = $props();
+</script>
+<!-- FIX (props/bindings/snippets + keys/boundaries): a boundary with a
+     pending snippet gates the await — needs experimental.async: true,
+     already set project-wide in this course's vite.config.ts. -->
+<svelte:boundary>
+  <p data-testid="total">Total: {await load()}</p>
+  {#snippet pending()}
+    <p data-testid="loading">Loading…</p>
+  {/snippet}
+</svelte:boundary>
+```
+
+```svelte
+<!-- src/lib/dashboard/Dashboard.svelte -->
+<script lang="ts">
+  import type { DataPoint } from './types';
+  import { tooltip } from './tooltip';
+  import ThresholdSlider from './ThresholdSlider.svelte';
+  import ChartWidget from './ChartWidget.svelte';
+  import ChartSettings from './ChartSettings.svelte';
+  import AsyncStat from './AsyncStat.svelte';
+
+  let { points, load }: { points: DataPoint[]; load: () => Promise<number> } = $props();
+  let threshold = $state(0);
+  let visible = $derived(points.filter((p) => p.value >= threshold));
+</script>
+
+<h2>Dashboard</h2>
+<div use:tooltip={`${visible.length} of ${points.length} points shown`}>
+  <ThresholdSlider bind:min={threshold} />
+</div>
+
+<!-- FIX (keys/transitions/boundaries): only the widget that can throw is
+     inside the boundary — the rest of the dashboard survives its failure. -->
+<svelte:boundary onerror={() => {}}>
+  <ChartWidget points={visible} />
+  {#snippet failed(error: unknown, reset: () => void)}
+    <p data-testid="chart-error">Could not display the chart.</p>
+  {/snippet}
+</svelte:boundary>
+
+<ChartSettings />
+<AsyncStat {load} />
+```
+
+```ts
+// src/lib/dashboard/dashboard.svelte.test.ts
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import ThresholdSlider from './ThresholdSlider.svelte';
+import ChartWidget from './ChartWidget.svelte';
+import ChartSettings from './ChartSettings.svelte';
+import AsyncStat from './AsyncStat.svelte';
+
+describe('ThresholdSlider (fixed): $bindable() lets the parent bind: to it', () => {
+  it('a slider change propagates back to the bound parent variable', async () => {
+    let min = $state(0);
+    render(ThresholdSlider, { props: { get min() { return min; }, set min(v) { min = v; } } });
+    await fireEvent.input(screen.getByTestId('threshold'), { target: { value: '42' } });
+    expect(min).toBe(42);
+  });
+});
+
+describe('tooltip action (fixed): update() re-runs when the argument changes', () => {
+  it('node.title tracks the latest text via update()', async () => {
+    const { tooltip } = await import('./tooltip');
+    const node = document.createElement('div');
+    const action = tooltip(node, 'first');
+    expect(node.title).toBe('first');
+    action?.update?.('second');
+    expect(node.title).toBe('second');
+  });
+});
+
+describe('ChartSettings (fixed): reassigning $state.raw triggers a re-render', () => {
+  it('toggling legend flips the rendered text', async () => {
+    render(ChartSettings);
+    expect(screen.getByTestId('legend').textContent).toBe('legend on');
+    await fireEvent.click(screen.getByTestId('toggle'));
+    expect(screen.getByTestId('legend').textContent).toBe('legend off');
+  });
+});
+
+describe('ChartWidget inside a <svelte:boundary>: contained, not fatal', () => {
+  it('an empty points array still throws (the widget itself is unchanged)', () => {
+    expect(() => render(ChartWidget, { props: { points: [] } })).toThrow();
+  });
+});
+
+describe('AsyncStat (fixed): await in the template, gated by experimental.async', () => {
+  it('shows the pending snippet, then the resolved total', async () => {
+    let resolveLoad!: (v: number) => void;
+    const load = () => new Promise<number>((resolve) => { resolveLoad = resolve; });
+    render(AsyncStat, { props: { load } });
+    expect(screen.getByTestId('loading')).toBeInTheDocument();
+    resolveLoad(123);
+    await vi.waitFor(() => expect(screen.getByTestId('total').textContent).toBe('Total: 123'));
+  });
+});
+```
+
+```text
+✓ ThresholdSlider (fixed): $bindable() lets the parent bind: to it > a slider change propagates back to the bound parent variable
+✓ tooltip action (fixed): update() re-runs when the argument changes > node.title tracks the latest text via update()
+✓ ChartSettings (fixed): reassigning $state.raw triggers a re-render > toggling legend flips the rendered text
+✓ ChartWidget inside a <svelte:boundary>: contained, not fatal > an empty points array still throws (the widget itself is unchanged)
+✓ AsyncStat (fixed): await in the template, gated by experimental.async > shows the pending snippet, then the resolved total
+
+Test Files  1 passed (1)
+     Tests  5 passed (5)
+```
+
+`svelte-check` on every corrected file above: `0 errors and 0 warnings`.
+
+## What changed and why
+
+| # | Bug | Category | Fix |
+|---|---|---|---|
+| 1 | `bind:min` to a prop never marked `$bindable()` | Props/bindings/snippets | `let { min = $bindable() } = $props()` |
+| 2 | `use:tooltip={text}` with no `update()` | Events & DOM | Return `{ update(newText) {...} }` from the action |
+| 3 | `await` in the template with no `experimental.async` | Props/bindings/snippets | Enable the flag project-wide; gate the await in `<svelte:boundary pending>` |
+| 4 | No `<svelte:boundary>` around a widget that can throw | Keys/transitions/boundaries | Wrap just `ChartWidget` in a boundary with `{#snippet failed}` |
+| 5 | `$state.raw` object mutated in place | State ownership | Reassign a new object instead of mutating the old one |
+
+## Mental Model
+
+Every bug in this review is a **contract violation**, not a syntax mistake: `bind:` assumes the child opted in, `use:` assumes the action re-runs the way a reactive prop would, `await` in a template assumes an experimental flag is on, and mutating `$state.raw` assumes the same reactivity `$state` gives you for free. Two of the five contracts are enforced by the compiler itself (bind, await); the other three are silent, and only a running probe — an actual reorder, an actual re-render count, an actual thrown error — reveals which one was broken.
+
+## Common Misconceptions
+
+- **"`bind:` always works if the child has a prop with that name."** Proven false with a real `svelte-check` error: a prop is one-way by default, and `bind:` to it is rejected unless the child wrote `$bindable()`.
+- **"A `use:` action's argument is reactive automatically, like a prop."** Proven false: without an `update()` method, the action's function body runs once, at mount, and never again.
+- **"`await` in a template just works in any Svelte 5 project."** Proven false with the real compiler error: it needs `experimental.async: true` explicitly, and is still labeled experimental.
+- **"If a widget can throw, wrapping the whole page in one `<svelte:boundary>` is enough."** Technically true, but it means *any* failure anywhere unmounts the *entire* page. This review's fix scopes the boundary to just the widget that can actually fail.
+- **"`$state.raw` still lets you mutate nested properties, it just skips deep proxying for performance."** Proven false: mutating it is not merely "less optimized," it is silently ignored by the reactivity system entirely.
+
+<Mermaid title="Where each bug sits in the reading order" code={wr2Diagram} />
+
+export const wr2Diagram = `flowchart TD
+  A["3. Props, bindings, snippets"] --> A1["bind: to a non-$bindable prop"]
+  A --> A2["await in a template, no experimental.async"]
+  B["4. Events and the DOM"] --> B1["use: action with no update()"]
+  C["6. Keys, transitions, boundaries"] --> C1["no <svelte:boundary> around a throwing widget"]
+  D["2. State ownership"] --> D1["$state.raw mutated instead of reassigned"]
+`;
+
+<Callout title="The one-line takeaway">
+`bind:`, `use:`, `await`-in-template, and `$state.raw` each carry a contract that is easy to half-honor — two of the five bugs in this review are compile errors that name their own fix, and the other three are silent, provable only by actually re-rendering, re-running an action, or throwing on purpose.
+</Callout>
+
+export const quizWorkedReview2 = [
+  {
+    q: "```svelte\n<!-- RangeFilter.svelte -->\nlet { min } = $props();\n\n<!-- Dashboard.svelte -->\n<RangeFilter bind:min={threshold} />\n```\nWhat happens when this compiles, given RangeFilter never wrote `$bindable()`?",
+    options: [
+      'It compiles and works fine, silently syncing both ways',
+      'A real, caught svelte-check error naming the exact fix — bind: is rejected on a non-bindable prop',
+      'It works, but only updates once',
+      'The binding is silently a no-op at runtime',
+    ],
+    answer: 1,
+    explain: "Proven directly: svelte-check rejects bind: to a plain, non-$bindable() prop with a message naming the exact fix (let { min = $bindable() } = $props()) — a caught compile-time error, not a silent no-op.",
+  },
+  {
+    q: "```ts\nexport function tooltip(node, text) {\n  node.title = text;\n}\n```\nWhat happens to `node.title` after `text` changes on a later render?",
+    options: [
+      'It updates automatically, since actions re-run like reactive props',
+      'Nothing — the action function body ran once at mount; without an update() method, Svelte has no way to notice the new argument',
+      'A compile error is thrown',
+      'The DOM element is destroyed and recreated',
+    ],
+    answer: 1,
+    explain: "Proven with a test: after a prop change, node.title stays at its mount-time value. Returning { update(newText) {...} } is what makes the argument reactive — proven in the Actions lesson.",
+  },
+  {
+    q: '`<p>Total: {await load()}</p>` is compiled without `experimental.async` set anywhere. What is the result?',
+    options: [
+      'It works — await has always been allowed in templates',
+      'A real compile error: experimental_async, naming the exact compiler option needed',
+      'A runtime error only, the first time the promise resolves',
+      'It silently renders "undefined" until the promise resolves',
+    ],
+    answer: 1,
+    explain: 'Proven with compile(): the exact error is "Cannot use `await` in deriveds and template expressions... unless the `experimental.async` compiler option is `true`" — this course\'s own vite.config.ts already sets it project-wide.',
+  },
+  {
+    q: 'A `ChartWidget` that throws on an empty `points` array is rendered with no `<svelte:boundary>` anywhere on the page. What happens?',
+    options: [
+      'Only ChartWidget disappears; every other component keeps working',
+      'The error unmounts the entire nearest root — every other component on the page (the slider, the async stat) goes down too',
+      'Svelte automatically retries the render',
+      'A default error boundary shows a generic message with no further impact',
+    ],
+    answer: 1,
+    explain: "Proven with a render test: rendering the dashboard with an empty points array throws and takes down the whole tree, not just the chart. A <svelte:boundary> scoped to just the risky widget is the fix.",
+  },
+  {
+    q: "```svelte\nlet options = $state.raw({ showLegend: true });\nfunction toggle() {\n  options.showLegend = !options.showLegend;\n}\n```\nWhat happens in the UI after calling `toggle()`?",
+    options: [
+      'The UI updates correctly, just slightly slower than deep $state',
+      'Nothing updates — $state.raw only reacts to whole-cell reassignment, and this mutates the existing object in place',
+      'A runtime error is thrown',
+      'It updates on the second call to toggle(), but not the first',
+    ],
+    answer: 1,
+    explain: 'Proven with a test: mutating a $state.raw object in place produces zero UI change. The fix is `options = { ...options, showLegend: !options.showLegend }` — a new object.',
+  },
+  {
+    q: 'Why does this review say two of its five bugs are "hard compile errors" while the other three are "silent"?',
+    options: [
+      'All five bugs are actually compile errors',
+      'bind: to a non-bindable prop and await without experimental.async are both rejected by svelte-check with a named error; the use: action, the missing boundary, and the $state.raw mutation all compile clean and only misbehave at runtime',
+      'None of the five bugs are ever caught by any tool',
+      'The distinction is arbitrary and does not affect how urgently each needs fixing',
+    ],
+    answer: 1,
+    explain: "Proven throughout this review: the bind: and await bugs produce real svelte-check errors quoting the exact fix, while the action, boundary, and $state.raw bugs require an actual test run (a prop change, a thrown error, a mutation) to observe at all.",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/worked-review-2" questions={quizWorkedReview2} />
+
+<ProgressTracker client:visible id="reading-worked-2" />

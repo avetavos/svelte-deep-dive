@@ -1,0 +1,667 @@
+---
+title: 'รีวิวเคสจริง 1: todo list ที่มีตัวกรอง undo และแผงสถิติ'
+description: 'ฟีเจอร์ todo app แบบ Svelte 5 ที่ AI เขียนให้ — ตัวกรอง undo และแผงสถิติ — ไล่รีวิวทีละบั๊กกับ svelte-check และ vitest probe จริง'
+sidebar:
+  order: 5
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## ฟีเจอร์นี้คืออะไร
+
+โจทย์ที่ให้ AI คือ *"สร้าง todo list ที่มี add/rename/toggle, ประวัติ undo, แถบตัวกรอง, badge นับจำนวนที่เสร็จแล้ว และแผงสถิติที่แสดงจำนวนที่ยังไม่เสร็จ"* ผลลัพธ์ด้านล่างคือแบบร่างที่ AI มักส่งกลับมาสำหรับฟีเจอร์ Svelte 5 เล็ก ๆ — ทุกไฟล์ใช้ `$props()`/`$state`/`$derived` อยู่ที่ใดที่หนึ่ง ทำให้ทั้งโปรเจกต์ (ถูกบังคับเข้า runes mode โดย `vite.config.ts` ของคอร์สนี้เอง เหมือนโปรเจกต์ที่ AI สร้างส่วนใหญ่ตั้งแต่ Svelte 5.0) ปฏิบัติต่อทุกไฟล์ว่าเป็นโค้ดโหมด runes อ่านตาม[ลำดับการอ่าน](/svelte/th/reading-svelte/)ของโมดูลนี้: runes เทียบกับ legacy mode ก่อน แล้วดูว่าใครเป็นเจ้าของ state แต่ละก้อน แล้วก็ props/bindings/snippets แล้วก็ event กับ DOM แล้วก็ key โค้ดนี้มี **บั๊กจริง 6 จุด** จาก 4 หมวดที่ต่างกัน และ 2 จุดในนั้นเป็น compile error จริงที่ `svelte-check` จับได้ทันที — อีก 4 จุดคอมไพล์ผ่านสะอาดแต่พฤติกรรมผิด
+
+## โค้ดที่ AI สร้างให้
+
+```ts
+// src/lib/todos/types.ts — as generated
+export type Todo = { id: string; text: string; done: boolean };
+export type Filter = 'all' | 'active' | 'completed';
+```
+
+```svelte
+<!-- src/lib/todos/TodoStats.svelte — as generated -->
+<script lang="ts">
+  import type { Todo } from './types';
+  export let todos: Todo[];
+  $: activeCount = todos.filter((t) => !t.done).length;
+  $: percentDone = todos.length === 0 ? 0 : Math.round(((todos.length - activeCount) / todos.length) * 100);
+</script>
+
+<dl>
+  <dt>Active</dt><dd>{activeCount}</dd>
+  <dt>Done</dt><dd>{percentDone}%</dd>
+</dl>
+```
+
+```svelte
+<!-- src/lib/todos/CompletedBadge.svelte — as generated -->
+<script lang="ts">
+  import type { Todo } from './types';
+  let { todos }: { todos: Todo[] } = $props();
+  let doneCount = $state(0);
+  $effect(() => {
+    doneCount = todos.filter((t) => t.done).length;
+  });
+</script>
+<p>{doneCount} done</p>
+```
+
+```svelte
+<!-- src/lib/todos/EditableLabel.svelte — as generated -->
+<script lang="ts">
+  let { text, onSave }: { text: string; onSave: (v: string) => void } = $props();
+  let draft = $state(text); // mirrors the prop once, at mount
+</script>
+<input bind:value={draft} onblur={() => onSave(draft)} />
+```
+
+```svelte
+<!-- src/lib/todos/TodoItem.svelte — as generated -->
+<script lang="ts">
+  import type { Todo } from './types';
+  import EditableLabel from './EditableLabel.svelte';
+  let {
+    todo,
+    onToggle,
+    onRename,
+  }: { todo: Todo; onToggle: (id: string) => void; onRename: (id: string, text: string) => void } = $props();
+  let selected = $state(false);
+</script>
+
+<li>
+  <input type="checkbox" bind:checked={selected} />
+  <input type="checkbox" checked={todo.done} onchange={() => onToggle(todo.id)} />
+  <EditableLabel text={todo.text} onSave={(v) => onRename(todo.id, v)} />
+</li>
+```
+
+```svelte
+<!-- src/lib/todos/TodoList.svelte — as generated -->
+<script lang="ts">
+  import type { Todo } from './types';
+  import TodoItem from './TodoItem.svelte';
+  let {
+    todos,
+    onToggle,
+    onRename,
+  }: { todos: Todo[]; onToggle: (id: string) => void; onRename: (id: string, text: string) => void } = $props();
+</script>
+
+<ul>
+  {#each todos as todo}
+    <TodoItem {todo} {onToggle} {onRename} />
+  {/each}
+</ul>
+```
+
+```svelte
+<!-- src/lib/todos/TodoApp.svelte — as generated -->
+<script lang="ts">
+  import type { Filter, Todo } from './types';
+  import TodoList from './TodoList.svelte';
+  import TodoStats from './TodoStats.svelte';
+  import CompletedBadge from './CompletedBadge.svelte';
+
+  let nextId = 1;
+  let todos = $state<Todo[]>([]);
+  let filter = $state<Filter>('all');
+  let history = $state<Todo[][]>([]);
+
+  function pushHistory() {
+    history.push(todos.map((t) => ({ ...t })));
+  }
+  function addTodo(text: string) {
+    pushHistory();
+    todos.push({ id: String(nextId++), text, done: false });
+  }
+  function toggleTodo(id: string) {
+    pushHistory();
+    const t = todos.find((t) => t.id === id);
+    if (t) t.done = !t.done;
+  }
+  function renameTodo(id: string, text: string) {
+    pushHistory();
+    const t = todos.find((t) => t.id === id);
+    if (t) t.text = text;
+  }
+  function undo() {
+    const prev = history.pop();
+    if (prev) todos = prev;
+  }
+
+  let visible = $derived(
+    todos.filter((t) => (filter === 'active' ? !t.done : filter === 'completed' ? t.done : true)),
+  );
+</script>
+
+{#snippet emptyState()}
+  <p>No todos match this filter.</p>
+{/snippet}
+
+<div>
+  <button onclick={() => addTodo(`Task ${nextId}`)}>Add</button>
+  <button onclick={undo} disabled={history.length === 0}>Undo</button>
+  <div role="group">
+    {#each ['all', 'active', 'completed'] as const as f}
+      <button aria-pressed={filter === f} on:click={() => (filter = f)}>{f}</button>
+    {/each}
+  </div>
+
+  <TodoList todos={visible} onToggle={toggleTodo} onRename={renameTodo} />
+
+  <TodoStats {todos} />
+  <CompletedBadge {todos} />
+</div>
+```
+
+## ไล่รีวิวทีละบั๊ก
+
+### Runes เทียบกับ legacy mode: `export let` กับ `$:` ปนอยู่ในไฟล์ runes
+
+`TodoStats` เอา `export let`/`$:` ซึ่งเป็นกลไก reactivity ของ Svelte 4 มาปนกับโปรเจกต์ที่อยู่ใน runes mode ทุกที่ (รูนไหนก็ตามที่โผล่ในไฟล์ — หรืออย่างที่นี่ คือ compiler option `runes: true` ระดับโปรเจกต์ — ทำให้ไฟล์นั้นเข้า runes mode) นี่คือรูปแบบบั๊ก Svelte ที่ AI สร้างพบบ่อยที่สุด และไม่ใช่ warning เบา ๆ:
+
+<SpotTheBug code={`export let todos: Todo[];
+$: activeCount = todos.filter((t) => !t.done).length;`}>
+ทั้งสองบรรทัดเป็น compile error จริงทันทีที่ไฟล์อยู่ใน runes mode — ไม่ใช่ "ไม่คาดคิดแต่ยอมให้ผ่าน" แต่เป็น `svelte-check` error จริงที่บล็อกการคอมไพล์:
+
+```text
+Error: Cannot use `export let` in runes mode — use `$props()` instead
+https://svelte.dev/e/legacy_export_invalid
+```
+
+พอลบแค่บรรทัด `export let` แล้วเช็คใหม่ จะเห็นว่ากลไก legacy อีกตัว (`$:`) ก็เป็น error จริงแยกต่างหากของมันเองด้วย — compiler ไม่ได้หยุดแค่ "เจอ legacy หนึ่งแบบพอแล้ว" แต่ละแบบถูกเช็คและปฏิเสธแยกกัน:
+
+```text
+Error: `$:` is not allowed in runes mode, use `$derived` or `$effect` instead
+https://svelte.dev/e/legacy_reactive_statement_invalid
+```
+
+คู่นี้ถูกพิสูจน์ครบวงจรอยู่แล้ว พร้อมข้อความจริงที่ `compile()` throw ออกมา ในบท [Events & Attributes](/svelte/th/foundations/events-and-attributes/) — SpotTheBug นี้แค่ reproduce กับไฟล์ของฟีเจอร์นี้เอง วิธีแก้คือ `$props()` กับ `$derived` ตามที่แสดงด้านล่าง
+</SpotTheBug>
+
+### ใครเป็นเจ้าของ state นี้: `$effect` ที่เขียนค่าที่ `$derived` ควรเป็นเจ้าของ
+
+`CompletedBadge` คำนวณ `doneCount` — ค่าที่ derive ได้เต็มที่จาก `todos` — โดยเขียนมันลง `$state` แยกต่างหากจากข้างใน `$effect`
+
+<SpotTheBug code={`let doneCount = $state(0);
+$effect(() => {
+  doneCount = todos.filter((t) => t.done).length;
+});`}>
+โค้ดนี้คอมไพล์ผ่านสะอาดและดูถูกต้องทุก render ที่เช็คด้วยตา บท [$effect Rune](/svelte/th/reactivity/effect-rune/) พิสูจน์ต้นทุนที่เป็นรูปธรรมด้วย test จริง: ค่าที่ mirror ผ่าน effect จะ**ค้าง (stale)** จริง ๆ ในช่วงเวลาระหว่างการเขียนที่กระตุ้นมันกับ flush รอบถัดไป ซึ่ง `$derived` ไม่มีช่วงเวลาแบบนี้เลย reproduce กับ pattern นี้ตรง ๆ:
+
+```text
+✓ CompletedBadge: re-syncs doneCount through a whole extra $effect commit on every todos change
+✓ bare-state proof: mirroring a derived value via $effect lags one flush behind $derived
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+วิธีแก้คือลบ `$effect` กับตัวแปร `$state` แยกทิ้งไปเลย: `let doneCount = $derived(todos.filter((t) => t.done).length);` คำนวณใหม่ทันทีที่ถูกอ่าน ไม่มีการค้าง ไม่มีที่ที่สองให้ค่านี้อาศัยอยู่
+</SpotTheBug>
+
+### ใครเป็นเจ้าของ state นี้: mirror prop เข้า `$state`
+
+`EditableLabel` copy prop `text` เข้า `draft` ตอน mount เพื่อให้ input มีที่แก้ไขในเครื่องก่อน save
+
+<SpotTheBug code={`let { text, onSave } = $props();
+let draft = $state(text); // mirrors the prop once, at mount`}>
+`$state(text)` อ่าน `text` แค่ครั้งเดียว — ณ ตอนที่บรรทัดนี้รัน — แล้วไม่อ่านอีกเลย `svelte-check` เองก็เตือนเรื่องนี้ให้โดยไม่ต้องถาม:
+
+```text
+Warn: This reference only captures the initial value of `text`. Did you mean to reference it inside a closure instead?
+https://svelte.dev/e/state_referenced_locally
+```
+
+แต่ warning นี้ง่ายที่จะมองข้ามว่าเป็นแค่ noise เลยต้องพิสูจน์พฤติกรรมจริง: ถ้า `text` เปลี่ยนจาก**ภายนอก** component นี้ทีหลัง — undo ที่คืนค่าก่อนหน้าของ todo ตัวเดียวกันเป๊ะ ๆ คือ trigger ที่สมจริงที่สุดในกรณีนี้ — `draft` จะไม่ตามไปด้วย
+
+```text
+✓ EditableLabelBad: does not resync draft when the text prop changes from outside (e.g. undo)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+วิธีแก้คือยังคง local edit-buffer ไว้ (เป็นความจำเป็นด้าน design จริง — bind ตรงเข้า prop ที่ immutable ระหว่างพิมพ์ไม่ได้) แต่ resync มันทุกครั้งที่ค่าต้นทางเปลี่ยน และปิด warning อย่างตรงไปตรงมาด้วย `untrack` (แสดงในโค้ดที่แก้ไขแล้วด้านล่าง) แทนที่จะเมินมันไป
+</SpotTheBug>
+
+### Props, bindings, และ snippets: `{#snippet}` ที่ไม่เคยถูก `{@render}`
+
+`TodoApp` ประกาศ snippet ชื่อ `emptyState` ไว้สำหรับตอนที่ list ที่กรองแล้วว่างเปล่า แต่ไม่เคย render มันที่ไหนเลยจริง ๆ
+
+<SpotTheBug code={`{#snippet emptyState()}
+  <p>No todos match this filter.</p>
+{/snippet}
+
+<!-- ...TodoList is always rendered, unconditionally, regardless of visible.length -->`}>
+`{#snippet}` block เป็นค่า (value) ไม่ใช่ declaration ที่มีผลข้างเคียง — แค่ประกาศมันไม่ทำอะไรเลย มีแค่ `{@render name()}` เท่านั้นที่เอา markup ของมันไปวางบนหน้า ไม่มีอะไรตรงนี้ compile ไม่ผ่านหรือ warning เลย: snippet เป็นแค่ dead code และกรณี filter ว่างเปล่าก็ render `<ul>` ว่าง ๆ ออกมาโดยไม่มีคำอธิบายใด ๆ
+
+```text
+✓ EmptyStateBad: never shows the empty-state snippet because it is declared but never {@render}ed
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+วิธีแก้คือ `{#if visible.length === 0}{@render emptyState()}{:else}...{/if}` ครอบสองกิ่งนี้ไว้ ซึ่งพิสูจน์แล้วในบท [Snippets & Render](/svelte/th/components/snippets-and-render/) ว่าเป็น contract จริงที่ชื่อของ snippet แบกอยู่
+</SpotTheBug>
+
+### Event กับ DOM: `on:click` แทนที่จะเป็น `onclick`
+
+ปุ่มตัวกรองใช้ syntax event-directive แบบ Svelte 4
+
+<SpotTheBug code={`<button aria-pressed={filter === f} on:click={() => (filter = f)}>{f}</button>`}>
+ต่างจาก `export let`/`$:` นี่คือ syntax จริงที่ใช้งานได้ ซึ่ง compiler ยังจำได้และแปลงให้ถูกต้อง — มันลดระดับลงเป็นแค่ deprecation warning ไม่ใช่ error:
+
+```text
+Warn: Using `on:click` to listen to the click event is deprecated. Use the event attribute `onclick` instead
+https://svelte.dev/e/event_directive_deprecated
+```
+
+วิธีแก้คือ `onclick` ซึ่งเป็น property ธรรมดาเหมือน event handler อื่น ๆ ของ Svelte 5 ทั้งหมด พิสูจน์แล้วพร้อมตารางการจดจำ legacy แบบเต็มในบท [Events & Attributes](/svelte/th/foundations/events-and-attributes/)
+</SpotTheBug>
+
+### Key กับ identity: `{#each}` ไม่มี key ที่มี child เก็บ state
+
+`TodoList` วน `todos` โดยไม่มี key `(todo.id)` และแต่ละ `TodoItem` ก็เก็บ state `selected` ของตัวเอง — local ล้วน ๆ ไม่ผูกกับอะไรในข้อมูลเลย
+
+<SpotTheBug code={`{#each todos as todo}
+  <TodoItem {todo} {onToggle} {onRename} />
+{/each}`}>
+ถ้าไม่มี key, Svelte จะใช้ component instance เดิม — พร้อม local state ที่มันถืออยู่ — ของแต่ละ**ตำแหน่ง**ใน list ซ้ำ ไม่ใช่ตาม identity ของ todo ตราบใดที่ list ไม่เคยเปลี่ยนลำดับ โค้ดนี้ก็ดูปกติดีทุกอย่าง ทันทีที่มีรายการถูกแทรกไว้หน้าสุด — ซึ่งเป็นสิ่งที่ "Undo" และประวัติของแอปนี้เองทำได้พอดี — state ภายในของแถว**เก่า** (checkbox `selected` ของมัน) จะยังติดอยู่กับรายการที่บังเอิญมาอยู่ตำแหน่งเดิมนั้น
+
+```text
+✓ TodoListBad (keyless each): bleeds per-row selection to the WRONG row after prepending an item
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+วิธีแก้คือ `{#each todos as todo (todo.id)}` — id ที่คงที่จากข้อมูล ไม่ใช่ตำแหน่งปัจจุบันของแถว
+</SpotTheBug>
+
+## โค้ดที่แก้ไขแล้ว
+
+```ts
+// src/lib/todos/types.ts
+export type Todo = { id: string; text: string; done: boolean };
+export type Filter = 'all' | 'active' | 'completed';
+```
+
+```svelte
+<!-- src/lib/todos/TodoStats.svelte -->
+<script lang="ts">
+  import type { Todo } from './types';
+  let { todos }: { todos: Todo[] } = $props();
+  // FIX (runes vs legacy): $props() and $derived, not export let/$:.
+  let activeCount = $derived(todos.filter((t) => !t.done).length);
+  let percentDone = $derived(
+    todos.length === 0 ? 0 : Math.round(((todos.length - activeCount) / todos.length) * 100),
+  );
+</script>
+
+<dl>
+  <dt>Active</dt><dd data-testid="active-count">{activeCount}</dd>
+  <dt>Done</dt><dd data-testid="percent-done">{percentDone}%</dd>
+</dl>
+```
+
+```svelte
+<!-- src/lib/todos/CompletedBadge.svelte -->
+<script lang="ts">
+  import type { Todo } from './types';
+  let { todos }: { todos: Todo[] } = $props();
+  // FIX (state ownership): $derived, no $effect, no separate $state variable.
+  let doneCount = $derived(todos.filter((t) => t.done).length);
+</script>
+<p data-testid="done-count">{doneCount} done</p>
+```
+
+```svelte
+<!-- src/lib/todos/EditableLabel.svelte -->
+<script lang="ts">
+  import { untrack } from 'svelte';
+  let { text, onSave }: { text: string; onSave: (v: string) => void } = $props();
+  // FIX (mirrored prop): untrack makes the "read once at mount" intentional
+  // (silences state_referenced_locally honestly, instead of ignoring it),
+  // and the $effect below resyncs draft whenever text changes from OUTSIDE.
+  let draft = $state(untrack(() => text));
+  $effect(() => {
+    draft = text;
+  });
+</script>
+<input data-testid="draft" bind:value={draft} onblur={() => onSave(draft)} />
+```
+
+```svelte
+<!-- src/lib/todos/TodoItem.svelte -->
+<script lang="ts">
+  import type { Todo } from './types';
+  import EditableLabel from './EditableLabel.svelte';
+  let {
+    todo,
+    onToggle,
+    onRename,
+  }: { todo: Todo; onToggle: (id: string) => void; onRename: (id: string, text: string) => void } = $props();
+  let selected = $state(false);
+</script>
+
+<li>
+  <input type="checkbox" data-testid="select" bind:checked={selected} />
+  <input type="checkbox" data-testid="done" checked={todo.done} onchange={() => onToggle(todo.id)} />
+  <EditableLabel text={todo.text} onSave={(v) => onRename(todo.id, v)} />
+</li>
+```
+
+```svelte
+<!-- src/lib/todos/TodoList.svelte -->
+<script lang="ts">
+  import type { Todo } from './types';
+  import TodoItem from './TodoItem.svelte';
+  let {
+    todos,
+    onToggle,
+    onRename,
+  }: { todos: Todo[]; onToggle: (id: string) => void; onRename: (id: string, text: string) => void } = $props();
+</script>
+
+<!-- FIX (keys & identity): key by todo.id so per-row local state (selected)
+     follows the right todo across a reorder (undo, prepend). -->
+<ul>
+  {#each todos as todo (todo.id)}
+    <TodoItem {todo} {onToggle} {onRename} />
+  {/each}
+</ul>
+```
+
+```svelte
+<!-- src/lib/todos/TodoApp.svelte -->
+<script lang="ts">
+  import type { Filter, Todo } from './types';
+  import TodoList from './TodoList.svelte';
+  import TodoStats from './TodoStats.svelte';
+  import CompletedBadge from './CompletedBadge.svelte';
+
+  let nextId = 1;
+  let todos = $state<Todo[]>([]);
+  let filter = $state<Filter>('all');
+  let history = $state<Todo[][]>([]);
+
+  function pushHistory() {
+    history.push(todos.map((t) => ({ ...t })));
+  }
+  function addTodo(text: string) {
+    pushHistory();
+    todos.push({ id: String(nextId++), text, done: false });
+  }
+  function toggleTodo(id: string) {
+    pushHistory();
+    const t = todos.find((t) => t.id === id);
+    if (t) t.done = !t.done;
+  }
+  function renameTodo(id: string, text: string) {
+    pushHistory();
+    const t = todos.find((t) => t.id === id);
+    if (t) t.text = text;
+  }
+  function undo() {
+    const prev = history.pop();
+    if (prev) todos = prev;
+  }
+
+  let visible = $derived(
+    todos.filter((t) => (filter === 'active' ? !t.done : filter === 'completed' ? t.done : true)),
+  );
+</script>
+
+{#snippet emptyState()}
+  <p data-testid="empty">No todos match this filter.</p>
+{/snippet}
+
+<div>
+  <button onclick={() => addTodo(`Task ${nextId}`)}>Add</button>
+  <button onclick={undo} disabled={history.length === 0}>Undo</button>
+  <div role="group">
+    <!-- FIX (events & DOM): onclick, not the deprecated on:click. -->
+    {#each ['all', 'active', 'completed'] as const as f}
+      <button aria-pressed={filter === f} onclick={() => (filter = f)}>{f}</button>
+    {/each}
+  </div>
+
+  <!-- FIX (props/bindings/snippets): the empty-state snippet is now actually rendered. -->
+  {#if visible.length === 0}
+    {@render emptyState()}
+  {:else}
+    <TodoList todos={visible} onToggle={toggleTodo} onRename={renameTodo} />
+  {/if}
+
+  <TodoStats {todos} />
+  <CompletedBadge {todos} />
+</div>
+```
+
+```ts
+// src/lib/todos/todos.svelte.test.ts
+import { describe, it, expect, vi } from 'vitest';
+import { flushSync } from 'svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import EditableLabel from './EditableLabel.svelte';
+import CompletedBadge from './CompletedBadge.svelte';
+import TodoStats from './TodoStats.svelte';
+import TodoItem from './TodoItem.svelte';
+import TodoList from './TodoList.svelte';
+
+describe('EditableLabel (fixed): resyncs the draft whenever text changes from outside', () => {
+  it('updates the input after an upstream change (e.g. undo)', async () => {
+    const onSave = () => {};
+    const { rerender } = render(EditableLabel, { props: { text: 'buy milk', onSave } });
+    expect((screen.getByTestId('draft') as HTMLInputElement).value).toBe('buy milk');
+    await rerender({ text: 'buy bread', onSave });
+    expect((screen.getByTestId('draft') as HTMLInputElement).value).toBe('buy bread');
+  });
+});
+
+describe('CompletedBadge (fixed): $derived needs no separate $effect commit', () => {
+  it('reflects a todos change synchronously, in the same update as the render', async () => {
+    const { rerender } = render(CompletedBadge, { props: { todos: [{ id: '1', text: 'a', done: false }] } });
+    expect(screen.getByTestId('done-count').textContent).toBe('0 done');
+    await rerender({ todos: [{ id: '1', text: 'a', done: true }] });
+    expect(screen.getByTestId('done-count').textContent).toBe('1 done');
+  });
+
+  it('bare-state proof: mirroring a derived value via $effect lags one flush behind $derived', () => {
+    const destroy = $effect.root(() => {
+      let doneCount = $state(0);
+      let todos = $state([{ done: false }]);
+      $effect(() => {
+        doneCount = todos.filter((t) => t.done).length;
+      });
+      flushSync();
+      expect(doneCount).toBe(0);
+
+      todos[0].done = true;
+      expect(doneCount).toBe(0); // stale — read before the effect's next flush
+
+      let doneCountDerived = $derived(todos.filter((t) => t.done).length);
+      expect(doneCountDerived).toBe(1); // correct instantly, no flush needed
+
+      flushSync();
+      expect(doneCount).toBe(1);
+    });
+    destroy();
+  });
+});
+
+describe('TodoStats (fixed): $derived recomputes every render', () => {
+  it('updates activeCount as todos change', async () => {
+    const { rerender } = render(TodoStats, { props: { todos: [{ id: '1', text: 'a', done: false }] } });
+    expect(screen.getByTestId('active-count').textContent).toBe('1');
+    await rerender({ todos: [{ id: '1', text: 'a', done: false }, { id: '2', text: 'b', done: false }] });
+    expect(screen.getByTestId('active-count').textContent).toBe('2');
+  });
+});
+
+describe('TodoItem select checkbox', () => {
+  it('keeps its own local selection state independent of unrelated prop changes', async () => {
+    const onToggle = () => {};
+    const onRename = () => {};
+    const { rerender } = render(TodoItem, {
+      props: { todo: { id: 'a', text: 'Alpha', done: false }, onToggle, onRename },
+    });
+    await fireEvent.click(screen.getByTestId('select'));
+    expect((screen.getByTestId('select') as HTMLInputElement).checked).toBe(true);
+    await rerender({ todo: { id: 'a', text: 'Alpha', done: true }, onToggle, onRename });
+    expect((screen.getByTestId('select') as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+describe('TodoList (fixed): key={todo.id} keeps per-row state on the RIGHT row after a reorder', () => {
+  it('the selection stays on the item it was checked on, not on position 0', async () => {
+    const noop = () => {};
+    const items = [
+      { id: 'a', text: 'Alpha', done: false },
+      { id: 'b', text: 'Bravo', done: false },
+    ];
+    const { container, rerender } = render(TodoList, { props: { todos: items, onToggle: noop, onRename: noop } });
+    const selects = () => Array.from(container.querySelectorAll('[data-testid="select"]')) as HTMLInputElement[];
+    await fireEvent.click(selects()[0]); // check Alpha, currently at position 0
+    expect(selects().map((b) => b.checked)).toEqual([true, false]);
+    await rerender({
+      todos: [{ id: 'z', text: 'Zulu', done: false }, ...items],
+      onToggle: noop,
+      onRename: noop,
+    });
+    // Zulu is now at position 0, but the checked state followed Alpha (now position 1)
+    expect(selects().map((b) => b.checked)).toEqual([false, true, false]);
+  });
+});
+```
+
+รันผ่าน test ไฟล์ด้านบนได้จริง พร้อม `svelte-check` สะอาดในทุกไฟล์ที่แก้ไขแล้ว:
+
+```text
+✓ EditableLabel (fixed): resyncs the draft whenever text changes from outside > updates the input after an upstream change (e.g. undo)
+✓ CompletedBadge (fixed): $derived needs no separate $effect commit > reflects a todos change synchronously, in the same update as the render
+✓ CompletedBadge (fixed): $derived needs no separate $effect commit > bare-state proof: mirroring a derived value via $effect lags one flush behind $derived
+✓ TodoStats (fixed): $derived recomputes every render > updates activeCount as todos change
+✓ TodoItem select checkbox > keeps its own local selection state independent of unrelated prop changes
+✓ TodoList (fixed): key={todo.id} keeps per-row state on the RIGHT row after a reorder > the selection stays on the item it was checked on, not on position 0
+
+Test Files  1 passed (1)
+     Tests  6 passed (6)
+```
+
+## สิ่งที่เปลี่ยนและเหตุผล
+
+| # | บั๊ก | หมวด | วิธีแก้ |
+|---|---|---|---|
+| 1 | `export let`/`$:` ปนอยู่ในไฟล์ runes mode | Runes vs legacy | `$props()` + `$derived` — ทั้งสอง legacy form เป็น compile error จริง ไม่ใช่ warning |
+| 2 | `$effect` เขียน `doneCount` แทนที่จะ derive มัน | State ownership | ลบ `$effect` กับ `$state` แยกทิ้ง ใช้ `$derived` |
+| 3 | `$state(text)` mirror prop ครั้งเดียว ไม่เคย resync | State ownership | resync ผ่าน `$effect`; ปิด warning (ที่ถูกต้อง) ด้วย `untrack` |
+| 4 | `{#snippet emptyState}` ประกาศไว้ แต่ไม่เคย `{@render}` | Props/bindings/snippets | `{@render emptyState()}` ใน `{#if visible.length === 0}` |
+| 5 | `on:click` บนปุ่มตัวกรอง | Events & DOM | `onclick` — syntax เดียวกัน แค่ deprecated แต่ยังทำงาน |
+| 6 | `{#each todos as todo}` ไม่มี key ที่มี `TodoItem` เก็บ state | Keys & identity | `{#each todos as todo (todo.id)}` |
+
+## Mental Model
+
+สองในหกบั๊กนี้ไม่ถึงขั้น runtime เลยด้วยซ้ำ — `svelte-check` ปฏิเสธไม่ให้คอมไพล์ เพราะ runes mode กับ legacy mode เป็นสอง compiler pass ที่แยกกันและรวมกันไม่ได้ อีกสี่จุดที่เหลือคอมไพล์ผ่านสะอาดทั้งหมดและดูถูกต้องใน render เดียว: ค่าที่ mirror ผ่าน effect จะผิดในช่วงเวลาที่การเทสด้วยมือส่วนใหญ่ไม่มีทางเจอ, prop ที่ mirror ไว้จะผิดก็ต่อเมื่อมีการเปลี่ยนแปลงจากภายนอกครั้งที่สอง, snippet ที่ตายจะผิดก็ต่อเมื่อ list บังเอิญว่างเปล่า, list ที่ไม่มี key จะผิดก็ต่อเมื่อมีการเรียงลำดับใหม่ การอ่านโค้ดครั้งเดียวพิสูจน์อะไรไม่ได้เลยสำหรับสี่จุดหลัง มีแต่การรันจริงเท่านั้น — `svelte-check` ผ่านจริงบวก `vitest` ที่รันจริงกับการ reorder และการเปลี่ยน prop ปลอม ๆ — ถึงจะพิสูจน์ได้
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ถ้าอยู่ในไฟล์ `.svelte` เดียวกัน `export let` กับ `$state` ปนกันได้ Svelte จะจัดการเอง"** พิสูจน์แล้วว่าผิด สองครั้งด้วยข้อความ error จริง: ทันทีที่รูนไหนก็ตามโผล่ในไฟล์ (หรือโปรเจกต์บังคับ runes mode) `export let` กับ `$:` เป็น compile error จริง ไม่ใช่ warning แบบ "เลือกเอาอันเดียว"
+- **"ตัวแปร `$state` ที่ initialize จาก prop จะ sync กับ prop นั้นตลอดไป"** พิสูจน์แล้วว่าผิด: `$state(text)` อ่าน `text` แค่ครั้งเดียวเป๊ะ ๆ compiler ของ Svelte เองยังเตือนบรรทัดนี้ตรง ๆ — `state_referenced_locally` — ซึ่งควรเชื่อมันมากกว่าจะมองข้าม
+- **"แค่ประกาศ `{#snippet}` ก็พอทำให้มันปรากฏแล้ว"** snippet เป็นค่า (value) มีแค่ `{@render name()}` เท่านั้นที่เอามันไปวางบนหน้า snippet ที่ไม่ถูก render ไม่สร้าง error, warning, หรือ console output ใด ๆ เลย
+- **"list `key` ที่หายไปมีผลแค่เรื่อง performance"** พิสูจน์แล้วว่าผิดด้วย reorder test: ถ้าไม่มี key, local state ของแถวที่ไม่เกี่ยวข้อง (ในที่นี้คือ checkbox การเลือก) จะตาม*ตำแหน่ง*ของ list ไม่ใช่ข้อมูล — เป็นบั๊กด้าน correctness ไม่ใช่ performance
+
+<Mermaid title="แต่ละบั๊กอยู่ตรงไหนในลำดับการอ่าน" code={wr1Diagram} />
+
+export const wr1Diagram = `flowchart TD
+  A["1. Runes vs legacy mode"] --> A1["export let / $: mixed into a runes file"]
+  B["2. State ownership"] --> B1["$effect writing a derived value"]
+  B --> B2["prop mirrored into $state, never resynced"]
+  C["3. Props, bindings, snippets"] --> C1["snippet defined, never {@render}ed"]
+  D["4. Events and the DOM"] --> D1["on:click instead of onclick"]
+  E["6. Keys, transitions, boundaries"] --> E1["keyless {#each} with a stateful child"]
+`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+สองในหกบั๊กของรีวิวนี้เป็น compile error จริงทันทีที่ไฟล์อยู่ใน runes mode — `export let` กับ `$:` ไม่เหลือความหมายให้ fallback แล้ว — ส่วนอีกสี่จุดคอมไพล์ผ่านสะอาดและพังก็ต่อเมื่อ render รอบสอง, การ reorder, หรือการเปลี่ยนแปลงจากภายนอกเท่านั้น นี่คือเหตุผลที่รีวิวนี้ต้องรัน `svelte-check` และ `vitest` probe จริง แทนที่จะอ่านโค้ดผ่าน ๆ ครั้งเดียว
+</Callout>
+
+export const quizWorkedReview1 = [
+  {
+    q: "```svelte\n<script>\n  export let todos;\n  $: activeCount = todos.filter((t) => !t.done).length;\n</script>\n```\nเกิดอะไรขึ้นเมื่อไฟล์นี้คอมไพล์ในโปรเจกต์ที่บังคับ runes mode?",
+    options: [
+      'คอมไพล์ผ่านปกติ — export let กับ $: ยังใช้ได้ตราบใดที่ไฟล์เดียวกันไม่มี $state',
+      'compile error จริงสองจุดแยกกัน: export let ถูกปฏิเสธ (legacy_export_invalid) และ $: ก็ถูกปฏิเสธแยกต่างหาก (legacy_reactive_statement_invalid)',
+      'deprecation warning เดียวครอบคลุมทั้งสองบรรทัด',
+      'มัน fallback กลับไปเป็น legacy mode เงียบ ๆ สำหรับไฟล์นี้ไฟล์เดียว',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์กับไฟล์นี้ตรง ๆ: svelte-check รายงาน Cannot use `export let` in runes mode ก่อน พอลบบรรทัดนั้นออกก็เจอ error จุดที่สองแยกต่างหากสำหรับ `$:` — compiler รวมสอง reactivity system เข้าไฟล์เดียวไม่ได้',
+  },
+  {
+    q: '`CompletedBadge` คำนวณ `doneCount` ด้วย `$effect(() => { doneCount = todos.filter(t => t.done).length })` แทนที่จะใช้ `$derived` ทำไมนี่ถึงเป็นบั๊กจริง ไม่ใช่แค่สไตล์การเขียน?',
+    options: [
+      'เป็นแค่สไตล์ล้วน ๆ — สองวิธีให้ผลเหมือนกันทุกประการ',
+      'การอ่าน doneCount ทันทีหลังการเขียนที่กระตุ้นมันจะได้ค่า*เก่า* — พิสูจน์ด้วย flushSync test — ในขณะที่ $derived ที่เทียบเท่ากันถูกต้องทันทีที่ถูกอ่าน',
+      '$effect อ่านตัวแปร $state ไม่ได้เลย',
+      'มันทำให้เกิด infinite loop',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในรีวิวนี้ (และในบท $effect Rune): ค่าที่ mirror ผ่าน effect จะค้างไปหนึ่ง flush โค้ดใดก็ตามที่อ่านมันแบบ synchronous ในช่วงนั้นจะได้ข้อมูลเก่า ในขณะที่ $derived ไม่มีช่วงเวลานี้เลย',
+  },
+  {
+    q: "```svelte\nlet { text, onSave } = $props();\nlet draft = $state(text);\n```\n`svelte-check` พูดอะไรเกี่ยวกับบรรทัด `$state(text)` โดยไม่ต้องถาม?",
+    options: [
+      'ไม่มีอะไรเลย — บรรทัดนี้ไม่เคยสร้าง diagnostic ใด ๆ',
+      "warning: 'This reference only captures the initial value of text. Did you mean to reference it inside a closure instead?' (state_referenced_locally)",
+      'compile error จริง',
+      'warning เฉพาะตอนเปิด strict mode เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ: svelte-check ส่ง state_referenced_locally บนบรรทัดนี้เป๊ะ ๆ ง่ายที่จะมองข้ามว่าเป็นแค่ noise แต่ runtime test ในรีวิวนี้ยืนยันว่ามันอธิบายบั๊กจริง — draft ไม่เคย resync เมื่อ text เปลี่ยนจากภายนอก',
+  },
+  {
+    q: "block `{#snippet emptyState()}...{/snippet}` ถูกประกาศไว้ใน component แต่ `{@render emptyState()}` ไม่เคยปรากฏที่ไหนเลย เกิดอะไรขึ้น?",
+    options: [
+      'svelte-check รายงาน unused-snippet warning',
+      'ไม่มีอะไรถูก flag เลย — snippet เป็นแค่ dead code และไม่เคยปรากฏบนหน้าเลย พิสูจน์ด้วย render test',
+      'runtime error ถูก throw ตอน component render ครั้งแรก',
+      'snippet จะ render อัตโนมัติที่ท้าย component',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย render test: todos array ว่างเปล่าไม่สร้างข้อความ empty-state และไม่มี error/warning ใด ๆ เลย {#snippet} เป็นค่า (value) — มีแค่ {@render} เท่านั้นที่เอา markup ของมันไปวางบนหน้า',
+  },
+  {
+    q: "```svelte\n{#each todos as todo}\n  <TodoItem {todo} />\n{/each}\n```\n`TodoItem` แต่ละตัวมี state `selected` ของตัวเอง สังเกตอะไรได้บ้างหลังติ๊กแถวแรกแล้วแทรก todo ใหม่ไว้หน้าสุด?",
+    options: [
+      'ไม่มีอะไรเปลี่ยน — key จำเป็นแค่ตอนลบรายการ ไม่ใช่ตอนเพิ่ม',
+      'สถานะ selected ยังอยู่ที่ตำแหน่ง 0 — ซึ่งตอนนี้เป็นคนละ todo ไปแล้ว พิสูจน์ด้วย reorder test',
+      'svelte-check ปฏิเสธ each block ที่ไม่มี key',
+      'list ทั้งหมด remount แล้ว local state ทั้งหมดหายไป',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย reorder test: ติ๊กแถว 0 แล้วแทรกรายการใหม่ไว้หน้าสุด ทำให้สถานะติ๊กยังอยู่ที่ตำแหน่ง 0 ซึ่งตอนนี้ผูกกับ todo ที่ถูกแทรกใหม่แทนที่จะเป็นตัวที่ถูกติ๊กจริง วิธีแก้: {#each todos as todo (todo.id)}',
+  },
+  {
+    q: 'ทำไม `on:click={() => (filter = f)}` ถึงคอมไพล์ผ่านได้ ในขณะที่ `export let`/`$:` ไม่ผ่าน ทั้งที่ทั้งสามเป็นรูปแบบของ Svelte 4?',
+    options: [
+      'ทั้งสามถูกปฏิบัติเหมือนกันหมด — นี่คือพฤติกรรม compiler ที่ไม่สอดคล้องกัน',
+      'export let กับ $: เป็นระบบ reactivity ของ Svelte 4 ซึ่งไม่เหลือความหมายเลยเมื่อเปิด runes mode จึงเป็น hard error ส่วน on:click เป็น syntax อิสระที่ compiler ยังแปลงให้ถูกต้องได้ จึงลดระดับลงเป็นแค่ deprecation warning',
+      'on:click ไม่เคยถูก deprecate จริง ๆ',
+      'มีแค่ $: เท่านั้นที่เป็น hard error; export let เป็นแค่ warning',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในบท Events & Attributes และ reproduce ที่นี่: event_directive_deprecated เป็น warning ไม่ใช่ error เพราะ on:click เป็น syntax ที่ compiler ยังจำได้ทั้งสองแบบ — ต่างจาก reactivity primitive ที่ไม่เหลืออะไรให้ fallback เลย',
+  },
+];
+
+<Quiz client:visible id="reading-svelte/worked-review-1" questions={quizWorkedReview1} />
+
+<ProgressTracker client:visible id="reading-worked-1" />

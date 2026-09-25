@@ -1,0 +1,459 @@
+---
+title: 'รีวิวเคสจริง 3: แอป SvelteKit ตั้งค่าที่มี login และ form action'
+description: 'แอป SvelteKit ตั้งค่าที่ AI เขียนให้ — login, form action, การ import env, และ session ที่แชร์กัน — ไล่รีวิวทีละบั๊กกับ adapter-node build จริงและ curl'
+sidebar:
+  order: 7
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import Mermaid from '../../../../components/Mermaid.astro';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## ฟีเจอร์นี้คืออะไร
+
+โจทย์ที่ให้ AI คือ *"สร้างแอปตั้งค่าเล็ก ๆ: ฟอร์ม login ที่ตั้งผู้ใช้ปัจจุบัน และหน้าตั้งค่าที่โชว์ว่าใคร login อยู่กับชื่อสาธารณะของแอป"* นี่คือฟีเจอร์ที่สั้นที่สุดในโมดูลนี้เมื่อนับจำนวนไฟล์ และอันตรายที่สุด — **บั๊กจริงทั้ง 5 จุด** อยู่ที่ SvelteKit server boundary ซึ่งเป็นขั้นสุดท้ายใน[ลำดับการอ่าน](/svelte/th/reading-svelte/)ของโมดูลนี้: `try/catch` ที่กลืน redirect จริง, validation failure ที่โกหกเรื่อง HTTP status ของตัวเอง, secret ส่วนตัวที่ import ไว้ในที่ที่ browser เข้าถึงได้, syntax store ที่ deprecated แล้ว, และที่แย่ที่สุดคือ "ผู้ใช้ปัจจุบัน" ที่ไม่ได้ผูกกับ request เลยจริง ๆ ไม่มีจุดไหนในห้าจุดนี้เป็น compile error ทั้งห้าจุดถูกพิสูจน์ที่นี่ด้วยวิธีเดียวที่พิสูจน์พฤติกรรม server ได้จริง: กับ server `adapter-node` ที่ build จริงและ `curl` จริง
+
+## โค้ดที่ AI สร้างให้
+
+```ts
+// src/lib/server/session.svelte.ts — as generated
+// shared module-level state — the whole running SERVER process's "current user"
+export const session = $state({ user: null as string | null });
+```
+
+```ts
+// src/routes/wr3/login/+page.server.ts — as generated
+import { redirect } from '@sveltejs/kit';
+import { session } from '$lib/server/session.svelte';
+import type { Actions } from './$types';
+
+export const actions: Actions = {
+	default: async ({ request }) => {
+		const data = await request.formData();
+		const username = data.get('username')?.toString() ?? '';
+		if (!username) {
+			return { error: 'Username is required' }; // BUG: plain object, not fail()
+		}
+		try {
+			session.user = username;
+			redirect(303, '/wr3/settings'); // throws — swallowed below
+		} catch (e) {
+			console.error('login failed', e);
+			return { error: 'Something went wrong' };
+		}
+	}
+};
+```
+
+```svelte
+<!-- src/routes/wr3/login/+page.svelte — as generated -->
+<script lang="ts">
+	let { form }: { form?: { error?: string } } = $props();
+</script>
+<h1>Log in</h1>
+<form method="POST">
+	<input name="username" />
+	<button>Log in</button>
+</form>
+{#if form?.error}<p data-testid="error">{form.error}</p>{/if}
+```
+
+```ts
+// src/routes/wr3/settings/+page.server.ts — as generated
+import { session } from '$lib/server/session.svelte';
+import type { PageServerLoad } from './$types';
+
+export const load: PageServerLoad = async () => {
+	return { user: session.user };
+};
+```
+
+```ts
+// src/routes/wr3/settings/+page.ts — as generated
+import { API_SECRET } from '$env/static/private'; // BUG: private env in a universal load
+import type { PageLoad } from './$types';
+
+export const load: PageLoad = async () => {
+	return { hasSecret: Boolean(API_SECRET) };
+};
+```
+
+```svelte
+<!-- src/routes/wr3/settings/+page.svelte — as generated -->
+<script lang="ts">
+	import { page } from '$app/stores'; // BUG: deprecated since Kit 2.12
+	let { data }: { data: { user: string | null } } = $props();
+</script>
+<h1>Settings</h1>
+<p data-testid="user">Logged in as: {data.user ?? 'nobody'}</p>
+<p data-testid="path">Current path: {$page.url.pathname}</p>
+```
+
+## ไล่รีวิวทีละบั๊ก
+
+### SvelteKit server boundary: `throw redirect()` ถูกกลืนโดย `try/catch` ที่กว้างเกินไป
+
+action ของ login ครอบ `session.user = username; redirect(303, ...)` ด้วย `try/catch` ที่ตั้งใจจะจัดการการเขียนที่ล้มเหลวจริง ๆ
+
+<SpotTheBug code={`try {
+  session.user = username;
+  redirect(303, '/wr3/settings'); // throws
+} catch (e) {
+  console.error('login failed', e);
+  return { error: 'Something went wrong' };
+}`}>
+`redirect()` กับ `error()` ทำงานด้วยการ**throw** object พิเศษที่ถูกจดจำ — เป็นบั๊กคลาสสิกที่พิสูจน์แล้วด้วย `curl` จริงในบท [Server & API](/svelte/th/sveltekit/server-and-api/) `catch` ทั่วไปแยกค่าที่ throw นั้นออกจาก failure จริงไม่ได้ เลยกลืนมันไป พิสูจน์กับ route นี้ตรง ๆ ที่ build ด้วย `adapter-node` แล้วรันเป็น Node process จริง:
+
+```text
+$ curl -s -i -X POST http://localhost:5302/wr3/login \
+    -d "username=alice" -H "Content-Type: application/x-www-form-urlencoded" \
+    -H "Accept: text/html" -H "Origin: http://localhost:5302"
+
+HTTP/1.1 200 OK
+content-type: text/html
+...
+<h1>Log in</h1> <form method="POST">...</form>
+<p data-testid="error">Something went wrong</p>
+```
+
+log ของ server เองยืนยันสิ่งที่ถูกกลืนไปตรง ๆ:
+
+```text
+login failed Redirect { status: 303, location: '/wr3/settings' }
+```
+
+`303` จริง ๆ ถูก throw และอยู่ตรงนั้นใน log เป๊ะ — แต่ response ที่ browser ได้รับคือ `200` พร้อมข้อความ error เพราะ `catch` ปฏิบัติกับมันเหมือนเป็น failure วิธีแก้คือเช็ค `isRedirect(e)`/`isHttpError(e)` ก่อนปฏิบัติกับ catch ว่าเป็น failure จริง — หรือง่ายกว่านั้นในกรณีนี้คือย้าย `redirect()` ออกไปนอก block `try` ทั้งหมด เพราะไม่มีอะไรเกี่ยวกับตัว redirect เองที่จะ fail ได้
+</SpotTheBug>
+
+### SvelteKit server boundary: form action คืน plain object แทนที่จะเป็น `fail()`
+
+action เดียวกันคืน `{ error: 'Username is required' }` ตอน validation ล้มเหลว
+
+<SpotTheBug code={`if (!username) {
+  return { error: 'Username is required' };
+}`}>
+ค่านี้ไปลงที่ `form` prop เหมือนกับข้อมูลจาก `fail()` เป๊ะ — `{#if form?.error}` render ได้ปกติทั้งสองแบบ — จึงพลาดได้ง่ายตอนอ่านโค้ดผ่าน ๆ พิสูจน์กับแอปที่ build แล้ว:
+
+```text
+$ curl -s -i -X POST http://localhost:5302/wr3/login \
+    -d "username=" -H "Content-Type: application/x-www-form-urlencoded" \
+    -H "Accept: application/json" -H "Origin: http://localhost:5302" -H "x-sveltekit-action: true"
+
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"type":"success","status":200,"data":"[{\"error\":1},\"Username is required\"]"}
+```
+
+`"type":"success"` และ status `200` — สำหรับ request ที่ validation ล้มเหลวจริง ช่องว่างนี้ (รูปร่างถูก แต่ HTTP status ผิด) พิสูจน์ครบวงจรอยู่แล้วในบท [Forms & Actions](/svelte/th/sveltekit/forms-and-actions/) วิธีแก้คือ `return fail(400, { error: 'Username is required' })`
+</SpotTheBug>
+
+### SvelteKit server boundary: private env var ถูก import เข้า universal load
+
+`+page.ts` (universal load — รันในเบราว์เซอร์ได้ด้วย ไม่ใช่แค่ server) import `$env/static/private`
+
+<SpotTheBug code={`// src/routes/wr3/settings/+page.ts
+import { API_SECRET } from '$env/static/private';`}>
+load ของ `+page.js`/`+page.ts` ไม่ใช่ server-only — มันรันซ้ำบน client ตอน navigate แบบ client-side ด้วย guard ของ Vite เองที่ทำสำหรับ SvelteKit จับสิ่งนี้ได้ตั้งแต่ build time ก่อนที่มันจะถูกส่งออกไปด้วยซ้ำ:
+
+```text
+$ npx vite build
+
+Error: Cannot import $env/static/private into code that runs in the browser, as this could leak sensitive information.
+
+ src/routes/wr3/settings/+page.ts imports
+  $env/static/private
+```
+
+build ล้มเหลวตรง ๆ เลย — โค้ดนี้ไม่มีทางไปถึง production วิธีแก้คือย้ายโค้ดไปไว้ใน `+page.server.ts` (server-only ปลอดภัยสำหรับ private import ใด ๆ) หรือถ้าค่านั้นต้องไปถึง browser จริง ๆ ก็ใช้ `$env/static/public` (ตัวแปรที่ขึ้นต้นด้วย `PUBLIC_`) แทน — แสดงในโค้ดที่แก้ไขแล้ว
+</SpotTheBug>
+
+### SvelteKit server boundary: `$page` จาก `$app/stores` ที่ deprecated แล้ว
+
+หน้าตั้งค่า import `page` จาก `$app/stores`
+
+<SpotTheBug code={`import { page } from '$app/stores';
+...
+<p>Current path: {$page.url.pathname}</p>`}>
+โค้ดนี้คอมไพล์และรันได้ในวันนี้ — `$app/stores` ยังไม่ถูกลบ แต่บท [Loading Data](/svelte/th/sveltekit/loading-data/) พิสูจน์ไว้แล้ว ตรงจาก source code ของ SvelteKit ที่ติดตั้งจริง ว่าทุก export ถูกทำเครื่องหมาย deprecated:
+
+```text
+9: * @deprecated Use `page` from `$app/state` instead (requires Svelte 5, see docs for more info)
+```
+
+วิธีแก้คือ import `page` จาก `$app/state` แทน แล้วตัด prefix `$` ทิ้ง — `page` ที่นั่นเป็น reactive object อยู่แล้ว ไม่ใช่ store
+</SpotTheBug>
+
+### เจ้าของ state: "ผู้ใช้ปัจจุบัน" ที่อยู่ใน `$state` ระดับโมดูลที่แชร์กัน
+
+`session.svelte.ts` เก็บผู้ใช้ปัจจุบันไว้ใน object `$state` ระดับโมดูล ซึ่งถูก import ทั้งจาก login action และ settings load
+
+<SpotTheBug code={`// src/lib/server/session.svelte.ts
+export const session = $state({ user: null as string | null });`}>
+ทุกตัวที่ import แชร์**object ตัวเดียวกันเป๊ะ** — พิสูจน์ตรง ๆ ในบท [$state Rune](/svelte/th/reactivity/state-rune/): มี instance เดียวสำหรับทั้ง process ที่กำลังรัน ไม่ใช่หนึ่งต่อ request บน server นั่นหมายความว่า login ของผู้ใช้คนหนึ่งรั่วไปยัง request ที่ไม่เกี่ยวข้องกันเลยได้ พิสูจน์กับแอปที่ build จริง: login เป็น `"carol"` จาก curl call หนึ่ง แล้วยิง **curl call ใหม่เอี่ยมอีกครั้งโดยไม่มี cookie เลย** — จำลองผู้เยี่ยมชมที่ไม่เกี่ยวข้อง — ไปที่หน้าตั้งค่า:
+
+```text
+$ curl -s -o /dev/null -X POST http://localhost:5302/wr3/login \
+    -d "username=carol" -H "Content-Type: application/x-www-form-urlencoded" \
+    -H "Origin: http://localhost:5302"
+
+$ curl -s http://localhost:5302/wr3/settings | grep -o 'data-testid="user">[^<]*'
+data-testid="user">Logged in as: carol
+```
+
+request ที่ไม่เคย login เลยและไม่มี cookie ที่บอกว่าเป็น `carol` เลย กลับถูกโชว์ session ของ `carol` อยู่ดี — เพราะ `session` เป็น object เดียวที่แชร์กันทั้ง server process วิธีแก้คือไม่เก็บข้อมูลรายผู้ใช้ไว้ที่ระดับโมดูลบน server เลย ให้อ่านสดใหม่ทุก request จากสิ่งที่ผูกกับ request จริง ๆ — cookie ผ่าน `event.locals` ที่ตั้งค่าใน `hooks.server.ts` — แสดงในโค้ดที่แก้ไขแล้ว
+</SpotTheBug>
+
+## โค้ดที่แก้ไขแล้ว
+
+```ts
+// src/app.d.ts
+declare global {
+	namespace App {
+		interface Locals {
+			user: string | null;
+		}
+	}
+}
+
+export {};
+```
+
+```ts
+// src/hooks.server.ts
+import type { Handle } from '@sveltejs/kit';
+
+// FIX (module-state SSR leak): the current user is read fresh from a
+// per-request cookie into event.locals — never a shared module-level
+// $state — so one request can never see another request's user.
+export const handle: Handle = async ({ event, resolve }) => {
+	event.locals.user = event.cookies.get('user') ?? null;
+	return resolve(event);
+};
+```
+
+```ts
+// src/routes/wr3/login/+page.server.ts
+import { fail, isRedirect, redirect } from '@sveltejs/kit';
+import type { Actions } from './$types';
+
+export const actions: Actions = {
+	default: async ({ request, cookies }) => {
+		const data = await request.formData();
+		const username = data.get('username')?.toString() ?? '';
+		if (!username) {
+			// FIX (fail() vs plain object): a real 4xx status, not a 200.
+			return fail(400, { error: 'Username is required' });
+		}
+		try {
+			cookies.set('user', username, { path: '/' });
+		} catch (e) {
+			// FIX (redirect swallowed by try/catch): rethrow anything SvelteKit
+			// itself recognizes as a redirect/HTTP error before treating the
+			// catch as a real failure.
+			if (isRedirect(e)) throw e;
+			console.error('login failed', e);
+			return fail(500, { error: 'Something went wrong' });
+		}
+		redirect(303, '/wr3/settings'); // thrown OUTSIDE any try/catch
+	}
+};
+```
+
+```svelte
+<!-- src/routes/wr3/login/+page.svelte -->
+<script lang="ts">
+	let { form }: { form?: { error?: string } } = $props();
+</script>
+<h1>Log in</h1>
+<form method="POST">
+	<input name="username" />
+	<button>Log in</button>
+</form>
+{#if form?.error}<p data-testid="error">{form.error}</p>{/if}
+```
+
+```ts
+// src/routes/wr3/settings/+page.server.ts
+import type { PageServerLoad } from './$types';
+
+export const load: PageServerLoad = async ({ locals }) => {
+	// FIX (module-state SSR leak): locals.user is set fresh per request by
+	// hooks.server.ts, never shared across requests.
+	return { user: locals.user };
+};
+```
+
+```ts
+// src/routes/wr3/settings/+page.ts — illustrative (the proof below is a real build/run, not this harness's shared probe, which has no .env)
+import { PUBLIC_APP_NAME } from '$env/static/public'; // FIX: only PUBLIC_ env vars in a universal load
+import type { PageLoad } from './$types';
+
+export const load: PageLoad = async ({ data }) => {
+	return { ...data, appName: PUBLIC_APP_NAME };
+};
+```
+
+```svelte
+<!-- src/routes/wr3/settings/+page.svelte -->
+<script lang="ts">
+	import { page } from '$app/state'; // FIX: $app/state, not the deprecated $app/stores
+	let { data }: { data: { user: string | null; appName: string } } = $props();
+</script>
+<h1>Settings — {data.appName}</h1>
+<p data-testid="user">Logged in as: {data.user ?? 'nobody'}</p>
+<p data-testid="path">Current path: {page.url.pathname}</p>
+```
+
+```ts
+// src/hooks.server.test.ts
+import { describe, it, expect, vi } from 'vitest';
+import { handle } from './hooks.server';
+
+describe('hooks.server handle (fixed): locals.user comes from a per-request cookie', () => {
+  it('reads the cookie fresh for each event — never a shared module value', async () => {
+    const resolve = vi.fn(async () => new Response('ok'));
+
+    const eventWithCookie = { cookies: { get: () => 'alice' }, locals: {} } as any;
+    await handle({ event: eventWithCookie, resolve } as any);
+    expect(eventWithCookie.locals.user).toBe('alice');
+
+    const eventWithoutCookie = { cookies: { get: () => undefined }, locals: {} } as any;
+    await handle({ event: eventWithoutCookie, resolve } as any);
+    expect(eventWithoutCookie.locals.user).toBeNull();
+  });
+});
+```
+
+```text
+✓ hooks.server handle (fixed): locals.user comes from a per-request cookie > reads the cookie fresh for each event — never a shared module value
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+พิสูจน์ครบวงจรกับ server `adapter-node` ที่ build จริงตัวเดียวกัน — `303` จริง, HTTP status ที่ถูกต้องตอน fail, และการแยก request ต่อ request จริง:
+
+```text
+$ curl -s -i -X POST http://localhost:5303/wr3/login \
+    -d "username=" -H "Content-Type: application/x-www-form-urlencoded" \
+    -H "Accept: application/json" -H "Origin: http://localhost:5303" -H "x-sveltekit-action: true"
+
+HTTP/1.1 200 OK
+{"type":"failure","status":400,"data":"[{\"error\":1},\"Username is required\"]"}
+
+$ curl -s -i -X POST http://localhost:5303/wr3/login \
+    -d "username=dave" -H "Content-Type: application/x-www-form-urlencoded" \
+    -H "Origin: http://localhost:5303" -c cookies.txt
+
+HTTP/1.1 200 OK
+set-cookie: user=dave; Path=/; HttpOnly; SameSite=Lax
+{"type":"redirect","status":303,"location":"/wr3/settings"}
+
+$ curl -s -b cookies.txt http://localhost:5303/wr3/settings | grep -o 'data-testid="user">[^<]*'
+data-testid="user">Logged in as: dave
+
+$ curl -s http://localhost:5303/wr3/settings | grep -o 'data-testid="user">[^<]*'
+data-testid="user">Logged in as: nobody
+```
+
+บรรทัดสุดท้ายคือวิธีแก้ทั้งหมดในรูปย่อ: request ใหม่เอี่ยมที่ไม่มี cookie เลย เห็น `nobody` — ไม่ใช่ `dave` — เพราะตอนนี้ผู้ใช้อยู่ใน cookie ต่อ request ที่อ่านเข้า `event.locals` ไม่ใช่ object ระดับโมดูลที่แชร์กัน `npx vite build` ก็ผ่านแล้วด้วย (การ import private env หายไปแล้ว) ในขณะที่เวอร์ชันที่มีบั๊ก build ล้มเหลวตรง ๆ
+
+## สิ่งที่เปลี่ยนและเหตุผล
+
+| # | บั๊ก | หมวด | วิธีแก้ |
+|---|---|---|---|
+| 1 | `throw redirect()` ถูก `try/catch` ที่กว้างเกินไปจับไว้ | SvelteKit server boundary | เช็ค `isRedirect(e)`; rethrow ก่อนปฏิบัติกับ catch ว่าเป็นของจริง |
+| 2 | validation failure คืน plain object แทน `fail()` | SvelteKit server boundary | `fail(400, { error })` — รูปร่างเดิม HTTP status ถูกต้อง |
+| 3 | `$env/static/private` ถูก import ใน universal `+page.ts` | SvelteKit server boundary | ย้ายไป `+page.server.ts` หรือใช้ `$env/static/public` |
+| 4 | `import { page } from '$app/stores'` | SvelteKit server boundary | `import { page } from '$app/state'` ไม่มี prefix `$` |
+| 5 | `$state` ระดับโมดูลเก็บผู้ใช้ปัจจุบัน | State ownership | `event.locals.user` ตั้งค่าต่อ request จาก cookie ใน `hooks.server.ts` |
+
+## Mental Model
+
+ทุกบั๊กในรีวิวนี้มองไม่เห็นเลยถ้าอ่านแค่ระดับ component: `redirect()`/`error()` ดูเหมือน function call ธรรมดาจนกว่าจะรู้ว่ามัน throw; plain object กับค่าที่ `fail()` คืนดูเหมือนกันเป๊ะใน `form` prop; universal load ดูเหมือน server load เป๊ะจนกว่า client จะพยายามรันมัน; `$app/stores` ดูเหมือน `$app/state` แทบจะเป๊ะเมื่อมองผ่าน ๆ; และ object `$state` ระดับโมดูลดูเหมือน pattern "shared state" ที่บท Advanced Runes ของคอร์สนี้เองแนะนำสำหรับ state ของแอปฝั่ง**client เท่านั้น** เป๊ะ server boundary คือจุดที่ "ดูถูกต้อง" กับ "ถูกต้องจริง" แยกห่างกันมากที่สุดใน Svelte ทั้งหมด — นี่คือเหตุผลที่ทุกการพิสูจน์ในรีวิวนี้มาจาก process ที่รันจริง ไม่ใช่การอ่านผ่าน ๆ
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`redirect()`/`error()` เป็นค่าที่ return เหมือน JavaScript ทั่วไป"** พิสูจน์แล้วว่าผิด ด้วย log ของ server เองที่โชว์ object `Redirect` จริงที่ถูกจับ: มันคือการ throw และ `try/catch` ใด ๆ ที่ครอบโค้ดที่เรียกมันต้องมีการเช็ค `isRedirect`/`isHttpError` ชัดเจน
+- **"การคืน `{ error: '...' }` จาก action เหมือนกับ `fail(400, { error: '...' })`"** พิสูจน์แล้วว่าผิด: ทั้งสองลงที่ `form` prop เหมือนกัน แต่มีแค่ `fail()` เท่านั้นที่ตั้ง HTTP status ที่ไม่ใช่ `200` ให้ถูกต้อง — เห็นได้แค่ตอนตรวจ response ไม่ใช่หน้าที่ render ออกมา
+- **"universal `load` (`+page.js`) เป็นแค่ server load ที่บังเอิญรันบน client ด้วย"** พิสูจน์แล้วว่าผิดด้วย build failure จริง: มันถูกบังคับด้วยกฎของ browser ทุกที่ รวมถึง import ของตัวมันเองด้วย
+- **"object `$state` ระดับโมดูลเป็นวิธีแชร์ผู้ใช้ปัจจุบันที่เบาและใช้ได้ดี"** พิสูจน์แล้วว่าผิดโดยเฉพาะบน server: process เดียว object เดียว ทุก request — เป็นการรั่วข้ามผู้ใช้จริง ไม่ใช่แค่ความเสี่ยงในทางทฤษฎี
+
+<Mermaid title="แต่ละบั๊กอยู่ตรงไหนในลำดับการอ่าน" code={wr3Diagram} />
+
+export const wr3Diagram = `flowchart TD
+  A["5. The SvelteKit server boundary"] --> A1["redirect() swallowed by try/catch"]
+  A --> A2["plain object instead of fail()"]
+  A --> A3["$env/static/private in a universal load"]
+  A --> A4["$app/stores instead of $app/state"]
+  B["2. State ownership"] --> B1["module-level $state shared across every request"]
+`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+ทุกบั๊กในรีวิวนี้อยู่ที่ SvelteKit server boundary หรือในสิ่งที่นับว่าเป็น state ที่ "แชร์กัน" บน server — ไม่มีจุดไหนเป็น compile error เลย และทั้งห้าจุดถูกพิสูจน์ที่นี่ด้วยวิธีเดียวที่พิสูจน์พฤติกรรม server ได้จริง: กับ process `adapter-node` ที่ build จริง, curl request จริง, cookie จริง, และ build ที่ผ่านหรือล้มเหลวตรง ๆ
+</Callout>
+
+export const quizWorkedReview3 = [
+  {
+    q: "```ts\ntry {\n  session.user = username;\n  redirect(303, '/wr3/settings');\n} catch (e) {\n  return { error: 'Something went wrong' };\n}\n```\ncurl เห็นอะไรเมื่อ action นี้สำเร็จ กับแอปที่ build จริง?",
+    options: [
+      'HTTP 303 redirect จริงไปที่ /wr3/settings',
+      'HTTP 200 พร้อมข้อความ error — catch กลืน redirect ที่ถูก throw ไป พิสูจน์ด้วย log ของ server ที่โชว์ object Redirect จริงที่ถูกจับ',
+      'HTTP 500 Internal Server Error',
+      'connection ค้างจนกว่าจะ timeout',
+    ],
+    answer: 1,
+    explain: "พิสูจน์กับแอป adapter-node ที่ build จริง: curl ได้ HTTP 200 พร้อม 'Something went wrong' ในขณะที่ log ของ server เองโชว์ 'login failed Redirect { status: 303, ... }' — การ throw เกิดขึ้นจริง แต่ catch กลืนมันไป",
+  },
+  {
+    q: "```ts\nif (!username) {\n  return { error: 'Username is required' };\n}\n```\nHTTP response จริงสำหรับ validation failure นี้หน้าตาเป็นอย่างไร?",
+    options: [
+      'HTTP 400 พร้อมข้อมูล error เหมือนกับ fail(400, ...) จะให้',
+      '{\"type\":\"success\",\"status\":200,...} — 200 และ type \"success\" ทั้งที่ validation ล้มเหลวจริง',
+      'HTTP 422 Unprocessable Entity',
+      'action throw error จริง',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย curl กับแอปที่ build แล้ว: response คือ `{"type":"success","status":200,...}` — รูปร่างใน form prop ดูถูกต้อง แต่ HTTP status กับ result type ต่างบอกว่าสำเร็จ fail(400, {...}) คือวิธีแก้',
+  },
+  {
+    q: "`+page.ts` (universal load) import `API_SECRET` จาก `$env/static/private` เกิดอะไรขึ้นตอน build โปรเจกต์?",
+    options: [
+      'build ผ่านปกติ — universal load รันบน server ก่อน เลยมี private env ให้ใช้',
+      'build ล้มเหลวตรง ๆ: "Cannot import $env/static/private into code that runs in the browser"',
+      'build ผ่าน แต่ secret ถูกตัดออกตอน runtime',
+      'มีแค่ deprecation warning เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย `vite build` จริง: build ล้มเหลวด้วยข้อความนั้นเป๊ะ ๆ เพราะ universal load รันในเบราว์เซอร์ได้ด้วยตอน client-side navigation ซึ่ง private env import ต้องเข้าถึงไม่ได้เด็ดขาด',
+  },
+  {
+    q: 'ความเสี่ยงจริงของ `export const session = $state({ user: null })` ในโมดูล `.svelte.ts` ที่ถูก import โดยโค้ด server คืออะไร?',
+    options: [
+      'ไม่มีเลย — $state สร้าง instance ใหม่ทุกครั้งที่ import เสมอ',
+      'ทุกตัวที่ import แชร์ object เดียวกันเป๊ะ บน server ที่จัดการหลาย request หนึ่ง request เขียนเข้า session.user จะเห็นได้จากทุก request อื่น พิสูจน์ด้วย curl call ใหม่เอี่ยมที่ไม่มี cookie แต่ยังเห็น login ก่อนหน้า',
+      'มันใช้ได้แค่ในเบราว์เซอร์เท่านั้น เลยจะเป็น build error',
+      '$state ใช้นอก component ไม่ได้เลย',
+    ],
+    answer: 1,
+    explain: "พิสูจน์ด้วย curl: login เป็น 'carol' ผ่าน request หนึ่ง แล้วยิง request ใหม่เอี่ยมที่ไม่มี cookie เลย ยังเห็น 'Logged in as: carol' — เป็นการรั่วข้าม request จริงจาก object ระดับโมดูลตัวเดียวที่แชร์กัน",
+  },
+  {
+    q: 'วิธีแก้บั๊ก module-state leak คืออะไร และทำไมมันถึงทำงานแยกต่อ request ได้?',
+    options: [
+      'ใช้ $state.raw แทน $state — แชร์เหมือนเดิม แค่ overhead น้อยลง',
+      'อ่านผู้ใช้จาก event.locals ที่ตั้งค่าใหม่ใน hooks.server.ts จาก cookie ต่อ request — locals ถูกสร้างใหม่ทุก request ที่เข้ามา ไม่เคยแชร์กัน',
+      'ใส่ mutex ครอบ session.user',
+      'ย้าย session ไปเป็น Svelte store แทนที่จะเป็น rune',
+    ],
+    answer: 1,
+    explain: "พิสูจน์ด้วย curl: หลังแก้แล้ว request ที่มี cookie ของ dave เห็น 'dave' และ request ถัดมาทันทีที่ไม่มี cookie เลยเห็น 'nobody' — เพราะ locals.user ถูกตั้งใหม่ต่อ request ใน hooks.server.ts ไม่เคยแชร์กันแบบ object ระดับโมดูล",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/worked-review-3" questions={quizWorkedReview3} />
+
+<ProgressTracker client:visible id="reading-worked-3" />

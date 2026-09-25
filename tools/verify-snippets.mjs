@@ -313,6 +313,13 @@ function ensureProbe(refresh) {
       console.error('probe npm install failed');
       process.exit(1);
     }
+    // The test fences need these; a bare `sv create` scaffold does not ship them.
+    const TEST_DEPS = ['vitest', 'jsdom', '@testing-library/svelte', '@testing-library/jest-dom', '@testing-library/user-event'];
+    const dev = spawnSync('npm', ['install', '-D', ...TEST_DEPS], { cwd: PROBE_DIR, stdio: 'inherit' });
+    if (dev.status !== 0) {
+      console.error('probe test devDependencies install failed');
+      process.exit(1);
+    }
   }
   patchViteConfig();
   patchTsconfig();
