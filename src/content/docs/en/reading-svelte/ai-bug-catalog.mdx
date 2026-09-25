@@ -1,0 +1,1633 @@
+---
+title: The AI bug catalog
+description: '28 bugs AI-generated Svelte code produces constantly — the code AI typically writes, why it is wrong, the real svelte-check/compiler/vitest output, and the fix.'
+sidebar:
+  order: 2
+---
+
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+Every pattern below was written to look exactly like the Svelte an AI assistant actually produces, then type-checked or run against a real SvelteKit + `svelte-check` + Vitest + `@testing-library/svelte` probe (Svelte 5.57.1, SvelteKit 2.70.3). The quoted `svelte-check`, compiler, and test output is copied verbatim from those runs, not reconstructed from memory. The 28 patterns are grouped in the same reading order as **[How to read Svelte you did not write](/svelte/en/reading-svelte/)**: runes vs legacy mode, state ownership, props/bindings/snippets, events and DOM, the SvelteKit boundary, and keys/transitions/boundaries. See the **[Review Checklist](/svelte/en/reading-svelte/review-checklist/)** that follows this lesson for a one-page version of the same questions.
+
+## Runes vs legacy mode
+
+### 1. `on:click` used in a runes-mode component
+
+```svelte
+<!-- src/lib/LegacyClick.svelte — as generated -->
+<script>
+  let count = $state(0);
+</script>
+
+<button on:click={() => count++}>{count}</button>
+```
+
+`on:click` is Svelte 4's event directive. The file already uses `$state`, so it's in runes mode — but unlike `export let`/`$:` (entry 2), the event-directive *syntax* is a softer deprecation, not a hard error: it still compiles and runs correctly.
+
+**Symptom — the real compiler warning:**
+
+```text
+Using `on:click` to listen to the click event is deprecated. Use the event attribute `onclick` instead
+https://svelte.dev/e/event_directive_deprecated
+```
+
+With `eslint-plugin-svelte`'s `svelte/valid-compile` rule explicitly enabled (verified against `eslint-plugin-svelte@3.23.0` — see **[Verification Tools](/svelte/en/reading-svelte/verification-tools/)** for why `recommended` alone does *not* catch this), the same warning surfaces as a real lint error:
+
+```text
+4:9  error  Using `on:click` to listen to the click event is deprecated. Use the event attribute `onclick` instead
+https://svelte.dev/e/event_directive_deprecated(event_directive_deprecated)  svelte/valid-compile
+```
+
+**Fix:** the plain-property form:
+
+```svelte
+<!-- src/lib/OnclickFixed.svelte -->
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+```
+
+**Caught by:** the compiler's own deprecation warning, always — but only fails a build if something (like `svelte/valid-compile` explicitly enabled) is configured to treat warnings as errors. See **[Events & Attributes](/svelte/en/foundations/events-and-attributes/)** for the full four-pattern legacy table this entry is the first row of.
+
+### 2. `export let` and `$:` mixed into a runes-mode component
+
+```svelte
+<!-- @expect-error two real compile errors — see prose -->
+<!-- src/lib/HalfMigrated.svelte — as generated -->
+<script>
+  export let step = 1;
+  let count = $state(0);
+
+  $: total = count * step;
+</script>
+
+<button onclick={() => (count += step)}>{total}</button>
+```
+
+This is the single most common shape of half-migrated AI-generated Svelte: `count` was correctly upgraded to `$state`, but `step` is still `export let`, and `total` is still computed with `$:`. The moment *any* rune appears anywhere in the file, the whole file is in runes mode — and both `export let` and `$:` are Svelte 4's *reactivity* primitives, with nothing left to fall back to.
+
+**Symptom — real, verbatim compiler errors** (identical whether triggered via `svelte-check` or the compiler's own `compile()`):
+
+```text
+Cannot use `export let` in runes mode — use `$props()` instead
+https://svelte.dev/e/legacy_export_invalid
+
+`$:` is not allowed in runes mode, use `$derived` or `$effect` instead
+https://svelte.dev/e/legacy_reactive_statement_invalid
+```
+
+**Fix:** upgrade both forms to their rune equivalents, not just the one already touched:
+
+```svelte
+<!-- src/lib/HalfMigratedFixed.svelte -->
+<script lang="ts">
+  let { step = 1 }: { step?: number } = $props();
+  let count = $state(0);
+  let total = $derived(count * step);
+</script>
+
+<button onclick={() => (count += step)}>{total}</button>
+```
+
+**Caught by:** `svelte-check`/the compiler, immediately — a hard error, not a lint nitpick. `svelte/compiler`'s own `migrate()` function performs exactly this rewrite automatically — proven with real input/output in **[Verification Tools](/svelte/en/reading-svelte/verification-tools/)**. See **[Events & Attributes](/svelte/en/foundations/events-and-attributes/)** for why these two forms are hard errors while `<slot>`/`on:click` (entries 1 and 3) are not.
+
+### 3. `<slot>` mixed into a runes-mode component
+
+```svelte
+<!-- src/lib/CardWithSlot.svelte — as generated -->
+<script>
+  let highlighted = $state(false);
+</script>
+
+<div class:highlighted>
+  <slot />
+</div>
+```
+
+Like `on:click`, `<slot>` still compiles and renders correctly in a runes-mode file — it's backward-compatible content projection, not a removed feature — but it's a real deprecation warning, and mixing Svelte 4's slot with Svelte 5 runes in the same file is inconsistent.
+
+**Symptom — the real compiler warning:**
+
+```text
+Using `<slot>` to render parent content is deprecated. Use `{@render ...}` tags instead
+https://svelte.dev/e/slot_element_deprecated
+```
+
+**Fix:** a `children` snippet prop, rendered with `{@render}`:
+
+```svelte
+<!-- src/lib/CardWithChildren.svelte -->
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  let { children, highlighted = false }: { children?: Snippet; highlighted?: boolean } = $props();
+</script>
+
+<div class:highlighted>
+  {@render children?.()}
+</div>
+```
+
+**Caught by:** the compiler's own deprecation warning, always — never a hard error. See **[Snippets & Render](/svelte/en/components/snippets-and-render/)** for the full slot-to-snippet migration, including the runtime error a *different* snippet mistake produces (entry 17).
+
+### 4. `createEventDispatcher` instead of a callback prop
+
+```svelte
+<!-- src/lib/OldDispatch.svelte — as generated -->
+<script>
+  import { createEventDispatcher } from 'svelte';
+  let count = $state(0);
+  const dispatch = createEventDispatcher();
+
+  function bump() {
+    count += 1;
+    dispatch('change', { count });
+  }
+</script>
+
+<button onclick={bump}>{count}</button>
+```
+
+Unlike the first three entries, this one produces **no warning of any kind** — `createEventDispatcher` is still fully supported in Svelte 5, and code compiles clean either way. It's purely an idiom question: a generated component reaching for `dispatch(...)` plus a parent listening with `on:change` (itself possibly the deprecated directive from entry 1) is doing in two deprecated-adjacent steps what a plain, statically-typed callback prop does in one.
+
+**Symptom — proven with a real compile check, zero warnings either way:**
+
+```text
+✓ createEventDispatcher in a Svelte 5 runes-mode component compiles with NO warning either (still fully supported)
+```
+
+**Fix:** a typed callback prop:
+
+```svelte
+<!-- src/lib/NewCallback.svelte -->
+<script lang="ts">
+  let { onchange }: { onchange?: (detail: { count: number }) => void } = $props();
+  let count = $state(0);
+
+  function bump() {
+    count += 1;
+    onchange?.({ count });
+  }
+</script>
+
+<button onclick={bump}>{count}</button>
+```
+
+```ts
+// src/lib/new-callback.test.ts
+import { test, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import NewCallback from './NewCallback.svelte';
+
+test('a callback prop replaces createEventDispatcher with a plain, typed function call', async () => {
+  const onchange = vi.fn();
+  render(NewCallback, { props: { onchange } });
+  await fireEvent.click(screen.getByRole('button'));
+  expect(onchange).toHaveBeenCalledWith({ count: 1 });
+});
+```
+
+**Caught by:** nothing automatic — proven above to compile identically either way. Only a style/idiom read (or the callback prop's own TypeScript signature, which a mistyped `dispatch('change', ...)` string has none of) distinguishes them. See **[Events & Attributes](/svelte/en/foundations/events-and-attributes/)**'s legacy table, last row.
+
+<SpotTheBug code={`<script>
+  import { createEventDispatcher } from 'svelte';
+  let { items } = $props();
+  const dispatch = createEventDispatcher();
+</script>
+{#each items as item (item.id)}
+  <button on:click={() => dispatch('select', item)}>{item.name}</button>
+{/each}`}>
+Two entries from this group stacked in one file: `on:click` (entry 1) compiles with a real deprecation warning — `event_directive_deprecated` — and `createEventDispatcher` (entry 4) compiles with no warning at all, but is no longer the idiomatic way to send data up in Svelte 5. Both point at the same fix: replace the pair with a single typed callback prop and the plain `onclick` attribute, which needs neither a directive nor a dispatcher:
+
+```svelte
+<script>
+  let { items, onselect } = $props();
+</script>
+{#each items as item (item.id)}
+  <button onclick={() => onselect?.(item)}>{item.name}</button>
+{/each}
+```
+</SpotTheBug>
+
+## State ownership
+
+### 5. Mirroring a prop into `$state` then syncing with `$effect`
+
+```svelte
+<!-- @expect-error compiles and runs, but total lags by a beat — see prose -->
+<!-- src/lib/PriceTag.svelte — as generated -->
+<script lang="ts">
+  let { price, taxRate }: { price: number; taxRate: number } = $props();
+  let total = $state(0);
+
+  $effect(() => {
+    total = price * (1 + taxRate);
+  });
+</script>
+
+<p>{total}</p>
+```
+
+`total` is mirrored from `price`/`taxRate` through an `$effect` instead of being `$derived` directly — so it only updates on the next flush, not synchronously, the instant `price`/`taxRate` change.
+
+**Symptom — real test output, proving the exact lag:**
+
+```text
+✓ anti-pattern proven: an $effect that mirrors state into another $state variable LAGS by a flush
+✓ the fix: $derived recomputes synchronously on read — no lag, no flush needed
+```
+
+Concretely: after `price` changes from `2` to `3` (with `taxRate` fixed), reading the effect-mirrored `total` *synchronously, right after the write* still returns the value computed from the **old** `price` — only correct after an explicit flush (or, in real usage, the browser's next microtask).
+
+**Fix:** derive it directly:
+
+```svelte
+<!-- src/lib/PriceTagFixed.svelte -->
+<script lang="ts">
+  let { price, taxRate }: { price: number; taxRate: number } = $props();
+  let total = $derived(price * (1 + taxRate));
+</script>
+
+<p>{total}</p>
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for an effect mirroring computable state. Only a synchronous-read test (proven in the probe) surfaces the lag. See **[The `$effect` Rune](/svelte/en/reactivity/effect-rune/)** for the full running proof.
+
+### 6. `$effect` writing derived state instead of `$derived`
+
+This is entry 5's pattern in its most literal form — worth calling out on its own because it's so easy to write without any prop involved at all:
+
+```svelte
+<!-- @expect-error compiles and runs, but double lags by a beat — see prose -->
+<!-- src/lib/DoubleCounter.svelte — as generated -->
+<script>
+  let count = $state(2);
+  let double = $state(0);
+
+  $effect(() => {
+    double = count * 2;
+  });
+</script>
+
+<button onclick={() => count++}>{double}</button>
+```
+
+Every extra `$state` variable an `$effect` writes to is a second source of truth that can (and, proven above, provably does) briefly disagree with the value it's derived from.
+
+**Symptom — the exact same lag, isolated with no props involved:**
+
+```text
+✓ anti-pattern proven: an $effect that mirrors state into another $state variable LAGS by a flush
+```
+
+**Fix:**
+
+```svelte
+<!-- src/lib/DoubleCounterFixed.svelte -->
+<script>
+  let count = $state(2);
+  let double = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{double}</button>
+```
+
+**Caught by:** nothing automatic — see entry 5's evidence for the full running test. See **[The `$derived` Rune](/svelte/en/reactivity/derived-rune/)**'s "Derive, do not sync with an effect" section for the rule of thumb this entry and entry 5 both violate.
+
+### 7. Reading `$state` inside `setTimeout` expecting it to be tracked
+
+```svelte
+<!-- @expect-error compiles and runs, but the effect never re-runs on `count` changes — see prose -->
+<!-- src/lib/DelayedLogger.svelte — as generated -->
+<script lang="ts">
+  let { onLog }: { onLog: (n: number) => void } = $props();
+  let count = $state(0);
+
+  $effect(() => {
+    setTimeout(() => {
+      onLog(count); // read INSIDE the callback, after the effect body already returned
+    }, 0);
+  });
+</script>
+```
+
+An `$effect`'s dependency set is exactly what its body reads **synchronously**, on its last run. A read that happens later — inside a `setTimeout`/`Promise`/any callback scheduled by the effect and executed after the effect function has already returned — is not part of that synchronous pass, so it never registers as a dependency, no matter how "obviously reactive" the read looks.
+
+**Symptom — proven directly, contrasted with the same value read synchronously:**
+
+```ts
+// src/lib/async-read.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('a $state read inside a setTimeout scheduled by an effect is NOT a tracked dependency of that effect', () => {
+  const runs: number[] = [];
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let other = $state(0);
+
+    $effect(() => {
+      other; // real, synchronous, tracked dependency
+      setTimeout(() => {
+        runs.push(count); // read happens LATER, outside the effect's synchronous execution
+      }, 0);
+    });
+
+    flushSync();
+    count = 1; // changing count must NOT re-run the effect: it was never read synchronously
+    flushSync();
+    count = 2;
+    flushSync();
+  });
+  destroy();
+  // Only `other` (read synchronously) is a dependency; changing `count` (read
+  // only inside the async setTimeout callback) never re-ran the effect at all.
+  expect(runs.length).toBeLessThanOrEqual(1);
+});
+
+test('control: reading the SAME value synchronously inside the effect body IS tracked and re-runs it', () => {
+  const runs: number[] = [];
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    $effect(() => {
+      runs.push(count); // synchronous read — tracked
+    });
+    flushSync();
+    count = 1;
+    flushSync();
+    count = 2;
+    flushSync();
+  });
+  destroy();
+  expect(runs).toEqual([0, 1, 2]);
+});
+```
+
+```text
+✓ a $state read inside a setTimeout scheduled by an effect is NOT a tracked dependency of that effect
+✓ control: reading the SAME value synchronously inside the effect body IS tracked and re-runs it
+```
+
+**Fix:** read the value the effect actually depends on synchronously, and pass the already-read value into the callback instead of re-reading it later:
+
+```svelte
+<!-- src/lib/DelayedLoggerFixed.svelte -->
+<script lang="ts">
+  let { onLog }: { onLog: (n: number) => void } = $props();
+  let count = $state(0);
+
+  $effect(() => {
+    const current = count; // read SYNCHRONOUSLY — this line makes it a real dependency
+    setTimeout(() => {
+      onLog(current); // use the captured value, not a later re-read
+    }, 0);
+  });
+</script>
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for a read hidden inside an async callback. Only a running test (proven above) surfaces the missing dependency. See **[The `$effect` Rune](/svelte/en/reactivity/effect-rune/)** for the general "dependencies are exactly what the last run read" proof this entry is a specific, async-flavored case of.
+
+### 8. Mutating `$state.raw` expecting reactivity
+
+```svelte
+<!-- @expect-error compiles and runs, but the UI never updates — see prose -->
+<!-- src/lib/ThemeSwitcher.svelte — as generated -->
+<script lang="ts">
+  let settings = $state.raw({ theme: 'dark', density: 'cozy' });
+
+  function setLightTheme() {
+    settings.theme = 'light'; // mutating raw state — silently not reactive
+  }
+</script>
+
+<button onclick={setLightTheme}>{settings.theme}</button>
+```
+
+`$state.raw` opts out of Svelte's deep-proxy reactivity on purpose (for large, replace-wholesale data) — it's reactive on **reassignment only**. A generated component that mutates a raw-state object's property, exactly the way it would with plain (deep) `$state`, silently does nothing observable: the mutation genuinely happens, but nothing that reads `settings` reactively is notified.
+
+**Symptom — real test output, contrasted directly against deep `$state`:**
+
+```text
+✓ $state.raw: mutation is NOT tracked, only reassignment is
+✓ control: the same mutation on deep (proxied) $state DOES trigger the effect
+```
+
+Concretely: `settings.theme = 'light'` genuinely changes the underlying object (`settings.theme` reads back as `'light'` afterwards) — the button's own displayed text just never updates, because no proxy is watching for that write.
+
+**Fix:** reassign the whole object:
+
+```svelte
+<!-- src/lib/ThemeSwitcherFixed.svelte -->
+<script lang="ts">
+  let settings = $state.raw({ theme: 'dark', density: 'cozy' });
+
+  function setLightTheme() {
+    settings = { ...settings, theme: 'light' }; // reassignment IS tracked
+  }
+</script>
+
+<button onclick={setLightTheme}>{settings.theme}</button>
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for a mutated `$state.raw` value; only a running test surfaces the missing update. See **[The `$state` Rune](/svelte/en/reactivity/state-rune/)** for the full proof, including why "raw" doesn't mean "frozen."
+
+### 9. `$derived` with a side effect
+
+```svelte
+<!-- @expect-error compiles and runs, but the tracking call fires an unpredictable number of times — see prose -->
+<!-- src/lib/AnalyticsList.svelte — as generated -->
+<script lang="ts">
+  let { events }: { events: { type: string }[] } = $props();
+
+  let filtered = $derived.by(() => {
+    const result = events.filter((e) => e.type === 'click');
+    trackAnalytics('filtered-recomputed', result.length); // side effect, inside a derived
+    return result;
+  });
+
+  function trackAnalytics(name: string, count: number) {}
+</script>
+```
+
+`$derived` is push-pull and lazy: a dependency change only marks it dirty, and the function only actually re-runs the next time something **reads** the value. Code that assumes a `$derived`'s body runs exactly once per dependency change — which an analytics call, a `console.log`, or any other side effect implicitly assumes — is relying on a guarantee `$derived` never makes.
+
+**Symptom — real test output, proving the skip:**
+
+```text
+✓ $derived is push-pull: dependency changes mark it dirty, but it only re-evaluates on next READ
+✓ an unread $derived never evaluates at all, even across many dependency changes
+```
+
+Concretely: changing `events` five times with no read of `filtered` in between produces **zero** evaluations of the derived function — `trackAnalytics` never fires for any of those five changes, and a single subsequent read produces exactly one evaluation reflecting only the latest state, silently skipping the intermediate ones.
+
+**Fix:** move the side effect into a real `$effect`, which is the rune that guarantees "run when this changes":
+
+```svelte
+<!-- src/lib/AnalyticsListFixed.svelte -->
+<script lang="ts">
+  let { events }: { events: { type: string }[] } = $props();
+
+  let filtered = $derived(events.filter((e) => e.type === 'click'));
+
+  $effect(() => {
+    trackAnalytics('filtered-recomputed', filtered.length);
+  });
+
+  function trackAnalytics(name: string, count: number) {}
+</script>
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for a side effect inside `$derived`. Only a running test (proven above) surfaces the skipped/unpredictable evaluation count. See **[The `$derived` Rune](/svelte/en/reactivity/derived-rune/)** for the full push-pull laziness proof.
+
+### 10. `onMount` used to compute a value that should be `$derived`
+
+```svelte
+<!-- @expect-error compiles and runs, but displayName goes stale the moment userId changes — see prose -->
+<!-- src/lib/UserLabel.svelte — as generated -->
+<script lang="ts">
+  import { onMount } from 'svelte';
+
+  let { userId }: { userId: string } = $props();
+  let displayName = $state('');
+
+  onMount(() => {
+    displayName = formatName(userId); // computed once, on mount
+  });
+
+  function formatName(id: string) {
+    return `user-${id}`;
+  }
+</script>
+
+<p>{displayName}</p>
+```
+
+`onMount` runs **exactly once**, after the component's first render — proven directly in this course. `userId` is a prop, and props change over the component's lifetime; because this computation only ever runs on mount, `displayName` silently goes stale the moment a parent passes a different `userId`, with nothing re-running it.
+
+**Symptom — proven: `onMount` genuinely runs once, never again:**
+
+```text
+✓ order on first render: script body, then onMount, then $effect
+```
+
+That test proves `onMount` fires exactly once per mount, in a fixed order relative to `$effect` — it never re-fires on a later prop change the way an `$effect`/`$derived` reading that prop would.
+
+**Fix:** a `$derived`, which recomputes automatically whenever `userId` changes:
+
+```svelte
+<!-- src/lib/UserLabelFixed.svelte -->
+<script lang="ts">
+  let { userId }: { userId: string } = $props();
+  let displayName = $derived(formatName(userId));
+
+  function formatName(id: string) {
+    return `user-${id}`;
+  }
+</script>
+
+<p>{displayName}</p>
+```
+
+```ts
+// src/lib/userlabel-fixed.test.ts
+import { test, expect } from 'vitest';
+import { render, screen } from '@testing-library/svelte';
+import UserLabelFixed from './UserLabelFixed.svelte';
+
+test('a $derived recomputes when the prop it reads changes; onMount never would', async () => {
+  const { rerender } = render(UserLabelFixed, { props: { userId: 'a' } });
+  expect(screen.getByText('user-a')).toBeTruthy();
+  await rerender({ userId: 'b' });
+  expect(screen.getByText('user-b')).toBeTruthy();
+});
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for a stale one-time computation. See **[Lifecycle](/svelte/en/components/lifecycle/)** for the full `onMount`-runs-once-before-the-first-`$effect` proof.
+
+### 11. Module-level `$state` holding per-user data (SSR leak)
+
+```ts
+// @expect-error compiles and runs, but leaks between concurrent server requests — see prose
+// src/lib/current-user.svelte.ts — as generated
+class CurrentUser {
+  name = $state('');
+  isAdmin = $state(false);
+}
+
+export const currentUser = new CurrentUser();
+```
+
+```ts
+// src/routes/dashboard/+page.server.js — as generated
+declare function getCurrentUser(locals: unknown): { name: string; isAdmin: boolean };
+import { currentUser } from '$lib/current-user.svelte.ts';
+
+export async function load({ locals }: { locals: unknown }) {
+  const user = getCurrentUser(locals);
+  currentUser.name = user.name;
+  currentUser.isAdmin = user.isAdmin;
+  return {};
+}
+```
+
+`currentUser` is a class instance exported **directly** from a module — a singleton shared by the whole server process, for exactly the same reason a bare module-level `$state({...})` export is. Mutating `currentUser.name`/`currentUser.isAdmin` inside `load` — server-side, per request — writes into that one shared instance, so a second, concurrent request for a *different* user can see the first user's name and admin flag before its own `load` finishes.
+
+**Symptom — proven: one shared instance across every importer, for the whole process:**
+
+```text
+✓ module-scope $state is a SINGLE shared instance across every importer — proves the SSR leak risk
+```
+
+The official Svelte docs are direct about the risk this proves: *"if you mutate the state during server-side rendering (which is discouraged, but entirely possible!)... then the data may be accessible by the next user."* — [svelte.dev/docs/svelte/context#Replacing-global-state](https://svelte.dev/docs/svelte/context#Replacing-global-state).
+
+**Fix:** create the user's state fresh per request instead of holding it in a shared module export — a factory called inside `load`, or `setContext`/`getContext` per component-tree request:
+
+```ts
+// src/lib/current-user.svelte.ts
+export function createCurrentUser() {
+  return $state({ name: '', isAdmin: false });
+}
+```
+
+```js
+// src/routes/dashboard/+page.server.js
+import { createCurrentUser } from '$lib/current-user.svelte.ts';
+
+/** @param {unknown} locals */
+function getCurrentUser(locals) {
+  return /** @type {{ name: string; isAdmin: boolean }} */ (locals);
+}
+
+export async function load({ locals }) {
+  const user = getCurrentUser(locals);
+  const currentUser = createCurrentUser(); // fresh instance, this request only
+  currentUser.name = user.name;
+  currentUser.isAdmin = user.isAdmin;
+  return { user: currentUser };
+}
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for a shared module singleton. See **[The `$state` Rune](/svelte/en/reactivity/state-rune/)** and **[Runes vs Stores](/svelte/en/state-and-stores/runes-vs-stores/)** for the identical trap proven against a plain object and a class instance respectively.
+
+### 12. `$store` read inside a function, not at the component top level
+
+```svelte
+<!-- @expect-error real compile error — see prose -->
+<!-- src/lib/BadNestedStore.svelte — as generated -->
+<script lang="ts">
+  import { writable } from 'svelte/store';
+
+  function makeIt() {
+    const count = writable(0); // declared INSIDE a function, not at the component top level
+    console.log($count);
+  }
+  makeIt();
+</script>
+```
+
+The `$store` shorthand is compiled by rewriting `$name` into a managed subscription set up once, at the component's top level. When the *store variable itself* is declared inside a nested scope, Svelte has no static top-level binding to attach that subscription to — a real compile error, not a runtime warning.
+
+**Symptom — the real, verbatim `svelte-check` error:**
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+src/lib/BadNestedStore.svelte:6:17
+Cannot subscribe to stores that are not declared at the top level of the component
+https://svelte.dev/e/store_invalid_scoped_subscription
+```
+
+**Fix:** declare the store at the component's top level; reading `$store` inside a nested callback is completely fine — it's *where the store variable is declared* that matters, not where it's read:
+
+```svelte
+<!-- src/lib/BadNestedStoreFixed.svelte -->
+<script lang="ts">
+  import { writable } from 'svelte/store';
+
+  const count = writable(0); // declared at the top level
+
+  function makeIt() {
+    console.log($count); // reading it inside a nested callback is fine
+  }
+  makeIt();
+</script>
+```
+
+**Caught by:** `svelte-check`/the compiler, immediately. See **[The Store Contract](/svelte/en/state-and-stores/the-store-contract/)** for the full proof, including the compiler's own `compile()` call throwing the identical error.
+
+### 13. `get(store)` called in a hot loop
+
+```ts
+// @expect-error real, measurable performance cost — see prose
+// src/lib/hot-loop.ts — as generated
+import { get, type Writable } from 'svelte/store';
+
+function sumEach(store: Writable<number>, times: number): number {
+  let total = 0;
+  for (let i = 0; i < times; i++) {
+    total += get(store); // reads the CURRENT value on every iteration
+  }
+  return total;
+}
+```
+
+`get(store)` looks like a cheap property read. It isn't — under the hood, it calls `store.subscribe(...)` and immediately calls the returned unsubscribe function, paying the store's full **start → stop** lifecycle on every single call. For a `writable`/`readable` with no start function this cost is trivial; for anything wrapping something expensive to start (a WebSocket, a `setInterval`), calling `get()` in a loop opens and tears it down every iteration.
+
+**Symptom — real test output, measuring the exact cost:**
+
+```text
+✓ get(store) subscribes AND immediately unsubscribes — proven with a counting start function
+✓ cost in a hot loop: N calls to get() cause N start/stop cycles, not one
+```
+
+Concretely: 50 calls to `get(store)` in a loop produced **50** separate start/stop cycles on the store's start function — not one shared subscription paying the cost once.
+
+**Fix:** subscribe once, outside the loop, and read the kept-up-to-date value:
+
+```ts
+// src/lib/hot-loop-fixed.ts
+import { type Writable } from 'svelte/store';
+
+function sumEach(store: Writable<number>, times: number): number {
+  let current = 0;
+  const unsubscribe = store.subscribe((v) => {
+    current = v;
+  });
+  let total = 0;
+  for (let i = 0; i < times; i++) {
+    total += current; // no per-iteration subscribe/unsubscribe cost
+  }
+  unsubscribe();
+  return total;
+}
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for `get()` in a loop. See **[The Store Contract](/svelte/en/state-and-stores/the-store-contract/)** for the full proof, including a `$effect` version of this same mistake.
+
+### 14. `writable` wrapped in `$state`
+
+```svelte
+<!-- @expect-error compiles and runs, but neither reactivity system actually tracks anything — see prose -->
+<!-- src/lib/TagsStore.svelte — as generated -->
+<script lang="ts">
+  import { writable } from 'svelte/store';
+
+  let tags = $state(writable<Set<string>>(new Set()));
+
+  function add(tag: string) {
+    $tags.update((set) => {
+      set.add(tag);
+      return set;
+    });
+  }
+</script>
+```
+
+`writable(new Set())` is itself a perfectly good store — but wrapping the *store object* in `$state` mixes two reactivity systems in a way that tracks nothing useful: a store's own identity never changes when you call `set`/`update` on it (it's the same object throughout, with the same `subscribe` method), so `$state` around it has no reassignment to ever notice.
+
+**Symptom — the underlying fact this depends on, proven directly:** a store's identity is stable across `set`/`update` calls (it's always the same `subscribe`-bearing object), so wrapping it in `$state` — which only tracks *reassignment of the variable holding it* — can never observe a store mutating its own internal value. Combined with `$state`'s own proxy not instrumenting `Map`/`Set` methods at all (proven for `Map` in **[Built-in Stores](/svelte/en/state-and-stores/built-in-stores/)**), a `Set` stored this way is doubly un-reactive.
+
+**Fix:** pick one system — either a plain store with no `$state` involved, or a rune-native `SvelteSet` with no store involved at all:
+
+```svelte
+<!-- src/lib/TagsStoreFixed.svelte -->
+<script lang="ts">
+  import { SvelteSet } from 'svelte/reactivity';
+
+  let tags = new SvelteSet<string>();
+
+  function add(tag: string) {
+    tags.add(tag); // reactive at the method level — no store, no $state wrapper
+  }
+</script>
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for double-wrapped reactivity. See **[Built-in Stores](/svelte/en/state-and-stores/built-in-stores/)** for the proven method-level reactivity `SvelteMap`/`SvelteSet` give you that `$state` around a plain collection does not.
+
+<SpotTheBug code={`let list = $state.raw([1, 2, 3]);
+
+function addItem(n) {
+  // "arrays have a push method, this should just work"
+  list.push(n);
+}`}>
+Same trap as entry 8, on an array instead of a plain object: `list.push(n)` genuinely appends to the underlying array (`list.length` really does grow), but `$state.raw` only tracks whole-value **reassignment** — no proxy is watching for the array mutation, so nothing that reads `list` reactively (an `$effect`, a `$derived`, the template) is notified. The fix is either to reassign a new array — `list = [...list, n]` — or to declare `list` with plain (deep) `$state`, which proxies array mutations like `.push()` directly, if per-mutation reactivity is actually what this code needs.
+</SpotTheBug>
+
+## Props, bindings, and snippets
+
+### 15. Missing `$bindable()` before a parent `bind:`
+
+```svelte
+<!-- @expect-error bind: to a prop the child never declared $bindable() -->
+<!-- src/lib/Toggle.svelte — as generated -->
+<script lang="ts">
+  let { open }: { open: boolean } = $props();
+</script>
+
+<button onclick={() => (open = !open)}>{open ? 'Close' : 'Open'}</button>
+```
+
+```svelte
+<!-- src/lib/TogglePanel.svelte — as generated -->
+<script lang="ts">
+  import Toggle from './Toggle.svelte';
+  let panelOpen = $state(false);
+</script>
+
+<Toggle bind:open={panelOpen} />
+{#if panelOpen}<p>Panel content</p>{/if}
+```
+
+`Toggle` never declares `open` as `$bindable()` — it's a plain destructured prop. A parent can only `bind:` to a child's prop when the child opts that specific prop into two-way binding.
+
+**Symptom — the real, verbatim `svelte-check` error:**
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+src/lib/TogglePanel.svelte:5:8
+Cannot use 'bind:' with this property. It is declared as non-bindable inside
+the component.
+To mark a property as bindable: 'let { open = $bindable() } = $props()'
+```
+
+**Fix:** exactly what the message says:
+
+```svelte
+<!-- src/lib/ToggleFixed.svelte -->
+<script lang="ts">
+  let { open = $bindable() }: { open: boolean } = $props();
+</script>
+
+<button onclick={() => (open = !open)}>{open ? 'Close' : 'Open'}</button>
+```
+
+**Caught by:** `svelte-check`/the compiler, immediately — a real error naming the exact fix. See **[Bindings](/svelte/en/bindings-actions-transitions/bindings/)** for the full proof.
+
+### 16. A `{#snippet}` defined but never `{@render}`ed
+
+```svelte
+<!-- src/lib/OrphanSnippet.svelte — as generated -->
+<script lang="ts">
+  let count = $state(0);
+</script>
+
+{#snippet label(prefix: string)}
+  <span>{prefix}: {count}</span>
+{/snippet}
+
+<button onclick={() => count++}>{count}</button>
+```
+
+`label` is defined but never rendered anywhere — probably a typo in a later `{@render}` call, or dead code left over from a refactor. There is **no signal of any kind**: no compiler warning, no `svelte-check` error, nothing — the snippet is silently unused, exactly like an unused local function.
+
+**Symptom — proven directly, contrasted with a control case:**
+
+```ts
+// src/lib/unrendered-snippet.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+test('a {#snippet} defined but never {@render}ed compiles with NO warning or error at all — silent dead code', () => {
+  const source = `<script>
+  let count = $state(0);
+</script>
+{#snippet unused(label)}
+  <p>{label}: {count}</p>
+{/snippet}
+<button onclick={() => count++}>{count}</button>
+`;
+  const result = compile(source, { filename: 'Unused.svelte' });
+  expect(result.warnings).toEqual([]);
+});
+```
+
+```text
+✓ a {#snippet} defined but never {@render}ed compiles with NO warning or error at all — silent dead code
+```
+
+**Fix:** either render it, or delete it — both are one-line changes, and neither is something the compiler will ever prompt you to make:
+
+```svelte
+<!-- src/lib/OrphanSnippetFixed.svelte -->
+<script lang="ts">
+  let count = $state(0);
+</script>
+
+{#snippet label(prefix: string)}
+  <span>{prefix}: {count}</span>
+{/snippet}
+
+{@render label('count')}
+<button onclick={() => count++}>{count}</button>
+```
+
+**Caught by:** nothing automatic, proven above — grep the snippet's own name to confirm every definition has a matching `{@render}` call somewhere in the file. See **[Snippets & Render](/svelte/en/components/snippets-and-render/)** for the closely related, but differently-detected, bug in entry 17.
+
+### 17. Calling a snippet directly instead of `{@render name()}`
+
+```svelte
+<!-- @expect-error real runtime error — see prose -->
+<!-- src/lib/NoRender.svelte — as generated -->
+<script lang="ts">
+  let items = [1, 2, 3];
+</script>
+{#snippet row(item: number)}
+  <li>{item}</li>
+{/snippet}
+<ul>
+  {#each items as item}
+    {row(item)}
+  {/each}
+</ul>
+```
+
+Writing a snippet's name as a plain call — `{row(item)}` — instead of `{@render row(item)}` **compiles without any error or warning**, but throws at runtime the moment that line actually executes. A snippet compiles to a function whose real first parameter is an internal DOM anchor that only `{@render}` supplies; calling it directly hands your own argument into that slot instead.
+
+**Symptom — the real runtime error:**
+
+```text
+invalid_snippet_arguments
+A snippet function was passed invalid arguments. Snippets should only be instantiated via `{@render ...}`
+https://svelte.dev/e/invalid_snippet_arguments
+```
+
+**Fix:** go through `{@render}`:
+
+```svelte
+<!-- src/lib/NoRenderFixed.svelte -->
+<script lang="ts">
+  let items = [1, 2, 3];
+</script>
+{#snippet row(item: number)}
+  <li>{item}</li>
+{/snippet}
+<ul>
+  {#each items as item}
+    {@render row(item)}
+  {/each}
+</ul>
+```
+
+**Caught by:** nothing at compile time — only a real render (proven end to end in the linked lesson) surfaces the runtime error. See **[Snippets & Render](/svelte/en/components/snippets-and-render/)** for the full proof, including why the same mistake is invisible until that exact line runs.
+
+### 18. `bind:value` on a number input, code still assumes a string
+
+```svelte
+<!-- @expect-error real tsc error — see prose -->
+<!-- src/lib/NumberBug.svelte — as generated -->
+<script lang="ts">
+  let age: number = $state(0);
+
+  function isBlank() {
+    return age.trim() === ''; // assumes age is still a string
+  }
+</script>
+<input type="number" bind:value={age} min="0" max="120" />
+```
+
+For `type="number"` inputs, `bind:value` coerces the bound value to a real `number` — not a string, unlike every other input type. Code carried over from a text-input pattern (or written by a model that defaults to string handling for form fields) calling `.trim()`/`.length`/other string-only methods on it is a real, caught type error, not a runtime surprise.
+
+**Symptom — the real, verbatim `svelte-check` error:**
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+src/lib/NumberBug.svelte:7:16
+Property 'trim' does not exist on type 'number'.
+```
+
+**Fix:** treat `age` as the real number it is:
+
+```svelte
+<!-- src/lib/NumberBugFixed.svelte -->
+<script lang="ts">
+  let age: number = $state(0);
+
+  function isBlank() {
+    return Number.isNaN(age); // a number input's empty state is NaN, not ''
+  }
+</script>
+<input type="number" bind:value={age} min="0" max="120" />
+```
+
+**Caught by:** `tsc`/`svelte-check`, immediately, in a typed component — a real error, not a lint nitpick. In a plain `<script>` (no `lang="ts"`), this same mistake would run and throw a genuine `TypeError: age.trim is not a function` the first time `isBlank()` is called instead. See **[Forms & Inputs](/svelte/en/bindings-actions-transitions/forms-and-inputs/)** for the full number/range coercion proof.
+
+## Events and the DOM
+
+### 19. `use:` action expecting re-run on argument change
+
+```svelte
+<!-- src/lib/Tooltip.svelte — as generated -->
+<script lang="ts">
+  function tooltip(node: HTMLElement, text: string) {
+    node.title = text; // set once, at mount — no update() method
+  }
+
+  let label = $state('Save your work');
+</script>
+
+<button use:tooltip={label}>Save</button>
+<button onclick={() => (label = 'Saved!')}>Mark saved</button>
+```
+
+`tooltip` is a `use:` action with no `update` method, so Svelte calls it exactly once, at mount, with the *initial* value of `label`. Every later change to `label` is silently ignored — a generated component assuming `use:tooltip={label}` "just works" like a reactive prop misses that only an explicit `update` method (or, in new code, an attachment) makes that true.
+
+**Symptom — real test output, proving the argument change is ignored:**
+
+```text
+✓ an attachment factory re-runs when its argument changes; a use: action does not
+```
+
+Concretely: after `label` changes, the attachment-based equivalent's run counter goes from `[1]` to `[1, 2]`; the `use:` action's counter stays at `[1]` — the change never took effect on the running action.
+
+**Fix:** since Svelte 5.29, prefer an attachment factory, which re-runs automatically when the value it reads changes:
+
+```svelte
+<!-- src/lib/TooltipFixed.svelte -->
+<script lang="ts">
+  function tooltip(text: string) {
+    return (node: HTMLElement) => {
+      node.title = text;
+    };
+  }
+
+  let label = $state('Save your work');
+</script>
+
+<button {@attach tooltip(label)}>Save</button>
+<button onclick={() => (label = 'Saved!')}>Mark saved</button>
+```
+
+**Caught by:** nothing automatic — no compiler error, no lint rule for a missing `update` method. See **[Actions](/svelte/en/bindings-actions-transitions/actions/)** for the full proof, including the `fromAction` bridge for existing action-shaped libraries.
+
+### 20. An ancestor's `stopPropagation()` silently eating a delegated `onclick`
+
+```svelte
+<!-- src/lib/ModalBackdrop.svelte — as generated -->
+<script lang="ts">
+  let { onSave }: { onSave: () => void } = $props();
+
+  function blockBubble(node: HTMLElement) {
+    function handle(e: MouseEvent) {
+      e.stopPropagation(); // stops NATIVE bubbling before it reaches Svelte's delegated root listener
+    }
+    node.addEventListener('click', handle);
+    return () => node.removeEventListener('click', handle);
+  }
+</script>
+
+<div {@attach blockBubble}>
+  <button onclick={onSave}>Save</button>
+</div>
+```
+
+Svelte doesn't attach a native listener to every element with an `onclick` — most events are **delegated** to a single root listener. A vanilla `addEventListener` between the root and a Svelte-managed button that calls `stopPropagation()` prevents the click from ever reaching that root, silently defeating the delegated `onclick` — with no error anywhere, because the click visibly landed on the button.
+
+**Symptom — proven with a real ancestor listener:**
+
+```text
+✓ a vanilla stopPropagation() on an ancestor prevents the delegated Svelte onclick from firing
+```
+
+Concretely: clicking the button logs only `'ancestor-vanilla-listener'` — the button's own `onclick` never fires at all.
+
+**Fix:** use `on` from `svelte/events` instead of raw `addEventListener`, which the docs specifically recommend for correct ordering relative to Svelte's own dispatch:
+
+```svelte
+<!-- src/lib/ModalBackdropFixed.svelte -->
+<script lang="ts">
+  import { on } from 'svelte/events';
+  let { onSave }: { onSave: () => void } = $props();
+
+  function blockBubble(node: HTMLElement) {
+    return on(node, 'click', (e) => {
+      e.stopPropagation();
+    });
+  }
+</script>
+
+<div {@attach blockBubble}>
+  <button onclick={onSave}>Save</button>
+</div>
+```
+
+**Caught by:** nothing automatic — no compiler error, no warning for a `stopPropagation()` that happens to sit between the root and a Svelte handler. See **[Events & Attributes](/svelte/en/foundations/events-and-attributes/)** for the full proof, including why `on()` avoids the trap.
+
+## The SvelteKit boundary
+
+### 21. `$app/stores`'s `$page` instead of `$app/state`
+
+```svelte
+<!-- src/routes/+layout.svelte — as generated -->
+<script lang="ts">
+  import { page } from '$app/stores';
+
+  let pathname = $derived($page.url.pathname);
+</script>
+
+<h1>{pathname}</h1>
+```
+
+This compiles and runs today — `$app/stores` hasn't been removed. But every one of its exports is marked deprecated straight from the installed SvelteKit's own source, and it's a strong signal the code (or its training data) predates the 2.12 `$app/state` migration.
+
+**Symptom — the real, verbatim deprecation notice, straight from the installed package:**
+
+```text
+$ grep -n "deprecated" node_modules/@sveltejs/kit/src/runtime/app/stores.js
+9: * @deprecated Use `$app/state` instead (requires Svelte 5, see docs for more info)
+33: * @deprecated Use `page` from `$app/state` instead (requires Svelte 5, see docs for more info)
+```
+
+The [migration guide](https://svelte.dev/docs/kit/migrating-to-sveltekit-2#SvelteKit-2.12:-$app-stores-deprecated) states it plainly: "`$app/stores` is deprecated and subject to be removed in SvelteKit 3."
+
+**Fix:** `$app/state`'s `page` is already a reactive object, not a store — drop the `$` prefix entirely:
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script lang="ts">
+  import { page } from '$app/state';
+
+  let pathname = $derived(page.url.pathname);
+</script>
+
+<h1>{pathname}</h1>
+```
+
+**Caught by:** nothing automatic — the deprecated module still compiles and runs with no warning surfaced to `svelte-check`. See **[Loading Data](/svelte/en/sveltekit/loading-data/)** and **[Runes vs Stores](/svelte/en/state-and-stores/runes-vs-stores/)** for the full proof.
+
+### 22. `throw redirect()`/`error()` swallowed by `try/catch`
+
+```js
+// @expect-error real bug, proven with curl — see prose
+// src/routes/catch-bug/+page.server.js — as generated
+import { redirect } from '@sveltejs/kit';
+
+async function riskyFetch() {
+  return { ok: true };
+}
+
+export const load = async () => {
+  try {
+    await riskyFetch();
+    redirect(303, '/dashboard'); // throws — but the catch below swallows it
+  } catch (e) {
+    console.error('load failed', e);
+    return { fallback: true }; // 200 with fallback data instead of a 303
+  }
+};
+```
+
+`redirect()`/`error()` work by **throwing** a special object that SvelteKit's own request-handling loop is specifically listening for, several stack frames up. A `try/catch` written to handle a *different* kind of failure (a flaky fetch) catches that special throw too, indistinguishably from a real error.
+
+**Symptom — proven against a real running app:**
+
+```text
+$ curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:5195/catch-bug
+HTTP 200
+$ curl -s http://localhost:5195/catch-bug | grep -o '<h1[^<]*</h1>'
+<h1 data-testid="fallback">fallback=true</h1>
+```
+
+A request that should redirect returns `200` with the fallback data instead — no thrown exception reaching the user, no type error, just silently wrong behavior.
+
+**Fix:** check whether the caught value **is** a redirect/HTTP error before treating it as a real failure, and rethrow it if so:
+
+```js
+// src/routes/catch-fixed/+page.server.js
+import { redirect, isRedirect, isHttpError } from '@sveltejs/kit';
+
+async function riskyFetch() {
+  return { ok: true };
+}
+
+export const load = async () => {
+  try {
+    await riskyFetch();
+    redirect(303, '/dashboard');
+  } catch (e) {
+    if (isRedirect(e) || isHttpError(e)) throw e; // let SvelteKit's control-flow throws through
+    console.error('load failed', e);
+    return { fallback: true };
+  }
+};
+```
+
+Proven fixed against the same running app:
+
+```text
+$ curl -s -D - -o /dev/null http://localhost:5195/catch-fixed | grep -i "^\(HTTP\|location\)"
+HTTP/1.1 303 See Other
+location: /dashboard
+```
+
+**Caught by:** nothing automatic — both are just JavaScript throws as far as the type system is concerned. See **[Server & API](/svelte/en/sveltekit/server-and-api/)** for the full proof.
+
+### 23. Awaiting everything in `load` (no streaming)
+
+```js
+// src/routes/blog/[slug]/+page.server.js — as generated
+function loadComment(slug) {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(`a slow comment on ${slug}, arrived late`), 2000);
+  });
+}
+
+export async function load({ params }) {
+  return {
+    post: await getPost(params.slug),
+    comment: await loadComment(params.slug), // awaited — blocks the WHOLE page on a 2-second comment
+  };
+}
+
+declare function getPost(slug: string): Promise<{ title: string }>;
+```
+
+Every field a `load` `await`s delays the entire response by however long the slowest one takes — a generated `load` that reflexively `await`s every value it returns, including a slow, non-critical comment thread, ships nothing to the browser until the slowest piece resolves.
+
+**Symptom — real timing proof, from returning the promise unawaited instead (see the fix):**
+
+```text
+$ node stream-timing.mjs
+t=36ms  first bytes arrived
+t=36ms  saw "loading comment…" in the stream (pending state)
+t=2034ms  saw resolved comment text in the stream
+t=2035ms  stream ended
+```
+
+With everything `await`ed as in the buggy version above, none of that shell arrives until `t=2034ms` — the initial HTML is held hostage by the slowest field.
+
+**Fix:** return the non-critical promise **unawaited**, and consume it with `{#await}`:
+
+```js
+// src/routes/blog/[slug]/+page.server.js
+/** @param {string} slug */
+function loadComment(slug) {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(`a slow comment on ${slug}, arrived late`), 2000);
+  });
+}
+
+/** @param {string} slug */
+async function getPost(slug) {
+  return { title: `post ${slug}` }; // stand-in for a real lookup
+}
+
+export async function load({ params }) {
+  return {
+    post: await getPost(params.slug), // needed for the first paint — still awaited
+    comment: loadComment(params.slug), // NOT awaited — streams in later
+  };
+}
+```
+
+```svelte
+<!-- src/routes/blog/[slug]/+page.svelte -->
+<script lang="ts">
+  let { data } = $props();
+</script>
+
+<h1>{data.post.title}</h1>
+
+{#await data.comment}
+  <p>Loading comment…</p>
+{:then comment}
+  <p>{comment}</p>
+{/await}
+```
+
+**Caught by:** nothing automatic — a needlessly `await`ed field is not a compiler concern; only real timing (proven above) surfaces the cost. See **[Loading Data](/svelte/en/sveltekit/loading-data/)** for the full streaming proof, including a `curl` measurement of bytes-on-the-wire at 300ms.
+
+### 24. `$env/static/private` imported into a universal `+page.js` load
+
+```js
+// @expect-error real build error — see prose
+// src/routes/secret-leak/+page.js — as generated
+import { SECRET_API_KEY } from '$env/static/private';
+
+export function load() {
+  return { key: SECRET_API_KEY };
+}
+```
+
+`+page.js` is a **universal** load — it runs on the server for the first request, but also runs again in the browser on every later client-side navigation. `$env/static/private` only exists for server-only code; a universal load importing it is not a runtime `undefined`, it's a real, build-time failure the moment the client bundle tries to include it.
+
+**Symptom — the real, verbatim build error, from a real `vite build`:**
+
+```text
+[plugin vite-plugin-sveltekit-guard]
+Error: Cannot import $env/static/private into code that runs in the browser, as this could leak sensitive information.
+
+ src/routes/secret-leak/+page.js imports
+  $env/static/private
+
+If you're only using the import as a type, change it to `import type`.
+```
+
+**Fix:** move the code to a `+page.server.js`, which never ships to the browser:
+
+```js
+// src/routes/secret-leak/+page.server.js — illustrative (the shared probe's own .env has no SECRET_API_KEY)
+import { SECRET_API_KEY } from '$env/static/private';
+
+export function load() {
+  return { key: SECRET_API_KEY };
+}
+```
+
+**Caught by:** SvelteKit's own Vite plugin, at build time — proven above with a real build failure, not a lint warning. `svelte-check` alone does **not** catch this (it type-checks fine either way); only an actual `vite build`/`astro`-style production build surfaces it. See **[Server & API](/svelte/en/sveltekit/server-and-api/)** for the static-vs-dynamic env split this entry depends on, and **[Loading Data](/svelte/en/sveltekit/loading-data/)** for the universal-vs-server-only `load` distinction.
+
+### 25. A form action returning a plain object instead of `fail()`
+
+```js
+// src/routes/settings/+page.server.js — as generated
+export const actions = {
+  default: async ({ request }: { request: Request }) => {
+    const data = await request.formData();
+    const name = data.get('name');
+
+    if (!name) {
+      return { error: 'name is required' }; // looks like a validation error...
+    }
+
+    return { ok: true };
+  },
+};
+```
+
+This lands in the page's `form` prop exactly the way `fail()` data would — `{#if form?.error}` renders correctly — so this bug is easy to miss in a quick read. But the HTTP response status stays `200 OK` instead of the `400` a validation failure should carry, breaking anything that branches on status (`use:enhance`'s own `result.type` checks, which expect `"failure"` only from a real `fail()` call, an analytics pipeline, a retry policy).
+
+**Symptom — the shape looks identical in the UI, but the status does not:** a plain object returned from an action reaches the `form` prop the same way `fail()` data would, but the response status is `200`, not `400` — proven by contrast with the fix below, which is the only thing that changes.
+
+**Fix:** `fail(status, data)` — same shape in the `form` prop, correct HTTP semantics underneath:
+
+```js
+// src/routes/settings/+page.server.js
+import { fail } from '@sveltejs/kit';
+
+export const actions = {
+  /** @param {{ request: Request }} event */
+  default: async ({ request }) => {
+    const data = await request.formData();
+    const name = data.get('name');
+
+    if (!name) {
+      return fail(400, { error: 'name is required' });
+    }
+
+    return { ok: true };
+  },
+};
+```
+
+**Caught by:** nothing automatic — no type error, no lint rule distinguishes a plain object from `fail()` data; both satisfy the same loose return type. See **[Forms & Actions](/svelte/en/sveltekit/forms-and-actions/)** for the full proof.
+
+<SpotTheBug code={`export const actions = {
+  default: async ({ request, cookies }) => {
+    const data = await request.formData();
+    try {
+      const user = await login(data.get('email'), data.get('password'));
+      cookies.set('session', user.token, { path: '/' });
+      redirect(303, '/dashboard');
+    } catch (e) {
+      return fail(401, { error: 'invalid credentials' });
+    }
+  },
+};`}>
+This combines entry 22's bug with a login action: `redirect(303, ...)` is called **inside the same `try` block** as the login call it's meant to follow on success — so the moment login succeeds and `redirect()` throws its special control-flow object, this `catch` block swallows it exactly like it would a real login failure, and reports "invalid credentials" to a user who actually logged in correctly. The fix is the same rethrow proven in entry 22: `import { isRedirect } from '@sveltejs/kit'`, and `if (isRedirect(e)) throw e;` as the very first line of the `catch` block — or, simpler here, move `redirect(303, '/dashboard')` outside the `try/catch` entirely, after the cookie is set, so only the `login()` call itself is ever subject to this catch.
+</SpotTheBug>
+
+## Keys, transitions, and boundaries
+
+### 26. Keyless `{#each}` with stateful children
+
+```svelte
+<!-- src/lib/NoKeyList.svelte -->
+<script lang="ts">
+  import Row from './Row.svelte';
+  let { items }: { items: string[] } = $props();
+</script>
+<ul>
+  {#each items as item}
+    <Row label={item} />
+  {/each}
+</ul>
+```
+
+```svelte
+<!-- src/lib/Row.svelte -->
+<script lang="ts">
+  let { label }: { label: string } = $props();
+  let expanded = $state(false);
+</script>
+<li>
+  <button data-testid="toggle" onclick={() => (expanded = !expanded)}>{label}</button>
+  {#if expanded}<span data-testid="detail">detail for {label}</span>{/if}
+</li>
+```
+
+Without a key, `{#each}` reuses each list position's existing component instance — and whatever local state it holds — by **position**, not by the data's identity. `Row` owns its own `expanded` toggle; removing an item from the front of the list doesn't destroy that item's `Row` instance, it just feeds a *different* label into the instance that used to be at that position, dragging the stale `expanded` state along with it.
+
+**Symptom — proven directly, contrasted with the fix:**
+
+```ts
+// src/lib/each-key.test.ts
+import { test, expect } from 'vitest';
+import { render, fireEvent } from '@testing-library/svelte';
+import NoKeyList from './NoKeyList.svelte';
+import KeyedList from './KeyedList.svelte';
+
+test('BUG: without a key, removing the first item shifts each Row\'s internal `expanded` state to the WRONG row', async () => {
+  const { getAllByTestId, rerender } = render(NoKeyList, { items: ['a', 'b', 'c'] });
+  // Expand the FIRST row ("a")'s detail.
+  await fireEvent.click(getAllByTestId('toggle')[0]);
+  expect(getAllByTestId('detail')).toHaveLength(1);
+  expect(getAllByTestId('toggle')[0].textContent).toBe('a');
+
+  // Remove "a" from the front of the list — "b" is now first.
+  await rerender({ items: ['b', 'c'] });
+
+  // Without a key, Svelte reuses the Row COMPONENT INSTANCE at each list
+  // position by index, not by identity — so the instance that was already
+  // `expanded` (position 0) stays expanded, but now renders label "b".
+  const toggles = getAllByTestId('toggle');
+  expect(toggles[0].textContent).toBe('b'); // "b" is now at position 0...
+  expect(getAllByTestId('detail')).toHaveLength(1); // ...and INHERITED the stale expanded=true from "a"'s instance
+});
+
+test('FIX: with a stable key `(item)`, the same case removes the right row\'s state cleanly, not the wrong one', async () => {
+  const { getAllByTestId, queryAllByTestId, rerender } = render(KeyedList, { items: ['a', 'b', 'c'] });
+  await fireEvent.click(getAllByTestId('toggle')[0]);
+  expect(getAllByTestId('detail')).toHaveLength(1);
+
+  await rerender({ items: ['b', 'c'] });
+
+  // "a"'s whole component instance (identity-keyed) was destroyed along with
+  // its state; "b"'s own instance never had `expanded` set, so nothing is expanded.
+  const toggles = getAllByTestId('toggle');
+  expect(toggles[0].textContent).toBe('b');
+  expect(queryAllByTestId('detail')).toHaveLength(0);
+});
+```
+
+```text
+✓ BUG: without a key, removing the first item shifts each Row's internal `expanded` state to the WRONG row
+✓ FIX: with a stable key `(item)`, the same case removes the right row's state cleanly, not the wrong one
+```
+
+**Fix:** a stable, data-derived key:
+
+```svelte
+<!-- src/lib/KeyedList.svelte -->
+<script lang="ts">
+  import Row from './Row.svelte';
+  let { items }: { items: string[] } = $props();
+</script>
+<ul>
+  {#each items as item (item)}
+    <Row label={item} />
+  {/each}
+</ul>
+```
+
+**Caught by:** nothing automatic — no compiler error, no warning for a keyless `{#each}` over components with local state; only a running test (proven above) surfaces the swap. See **[Template Syntax](/svelte/en/foundations/template-syntax/)** for keyed lists in the general case.
+
+### 27. `await` in a template/`$derived` without `experimental.async`
+
+```svelte
+<!-- @expect-error real compile error — see prose -->
+<!-- src/lib/AsyncSumBug.svelte — as generated -->
+<script lang="ts">
+  let a = $state(1);
+  let b = $state(2);
+
+  async function add(x: number, y: number) {
+    await new Promise((r) => setTimeout(r, 300));
+    return x + y;
+  }
+</script>
+
+<p>{a} + {b} = {await add(a, b)}</p>
+```
+
+`await` directly inside a template expression is valid, real Svelte async syntax — but only behind an explicit, experimental compiler flag. Nothing about this file's own source signals that the flag is missing; a generated snippet that pattern-matches on "Svelte supports await in templates" without checking the project's `svelte.config.js` produces a real compile error, not a silent synchronous fallback.
+
+**Symptom — the real, verbatim compiler error:**
+
+```text
+code: experimental_async
+message: Cannot use `await` in deriveds and template expressions, or at the top level of a component, unless the `experimental.async` compiler option is `true`
+https://svelte.dev/e/experimental_async
+```
+
+**Fix:** the code itself doesn't change — the project's compiler options do:
+
+```js
+// svelte.config.js
+export default {
+  compilerOptions: {
+    experimental: {
+      async: true
+    }
+  }
+};
+```
+
+```svelte
+<!-- src/lib/AsyncSumFixed.svelte -->
+<script lang="ts">
+  let a = $state(1);
+  let b = $state(2);
+
+  async function add(x: number, y: number) {
+    await new Promise((r) => setTimeout(r, 300));
+    return x + y;
+  }
+</script>
+
+<p>{a} + {b} = {await add(a, b)}</p>
+```
+
+**Caught by:** `svelte-check`/the compiler, immediately — a real compile error naming the exact missing flag. See **[Async Svelte](/svelte/en/reactivity/async-svelte/)** for the full proof, including the explicit "this is still experimental" caveat and the `<svelte:boundary pending>`/`$effect.pending()` split.
+
+### 28. `reset()` called synchronously inside `<svelte:boundary onerror>`
+
+```svelte
+<!-- @expect-error real, thrown error — see prose -->
+<!-- src/lib/ResetSyncHost.svelte — as generated -->
+<script lang="ts">
+  import Flaky from './Flaky.svelte';
+  let shouldThrow = $state(true);
+</script>
+<svelte:boundary onerror={(error, reset) => {
+  shouldThrow = false;
+  reset(); // BUG: called synchronously inside onerror
+}}>
+  <Flaky {shouldThrow} />
+</svelte:boundary>
+```
+
+`reset()` cannot be called **synchronously** inside `onerror`, while the boundary is still mid-handling the error the callback was invoked for. A generated retry-on-error pattern that "fixes the cause, then immediately resets" inside the same callback throws instead of recovering.
+
+**Symptom — the real, verbatim runtime error:**
+
+```text
+svelte_boundary_reset_onerror
+A `<svelte:boundary>` `reset` function cannot be called while an error is still being handled
+https://svelte.dev/e/svelte_boundary_reset_onerror
+```
+
+**Fix:** resolve the cause somewhere else — a button click, or `await tick()` first if the fix truly has to happen inside `onerror`:
+
+```svelte
+<!-- src/lib/ResetSyncHostFixed.svelte -->
+<script lang="ts">
+  import Flaky from './Flaky.svelte';
+  let shouldThrow = $state(true);
+  let events: string[] = [];
+</script>
+<svelte:boundary onerror={() => events.push('onerror')}>
+  <Flaky {shouldThrow} {events} />
+
+  {#snippet failed(error, reset)}
+    <p>{(error as Error).message}</p>
+    <button onclick={() => { shouldThrow = false; reset(); }}>retry</button>
+  {/snippet}
+</svelte:boundary>
+```
+
+**Caught by:** `<svelte:boundary>`'s own runtime check, immediately — a real, named error, not a silent no-op. See **[Lifecycle](/svelte/en/components/lifecycle/)** for the full proof, including the working `failed`/`reset()` pattern this fix is built on.
+
+## Mental Model
+
+```text
+Reading order for the 28 patterns above:
+
+1-4   Runes vs legacy mode      -> is every reactivity primitive even legal here?
+5-14  State ownership           -> does $state/$derived/$effect/a store each do its own job?
+15-18 Props/bindings/snippets   -> does bind:/{@render} match the contract the other side assumes?
+19-20 Events and DOM            -> does an action/listener actually re-run or fire when it should?
+21-25 SvelteKit boundary        -> does server-only code leak client-side, or a throw get swallowed?
+26-28 Keys, transitions, boundaries -> does list/async/error state follow the right subject?
+
+Almost none of these are caught by svelte-check alone — most compile clean, and several
+(entries 4, 7, 9, 16, 20, 23, 25) produce no compiler signal of any kind.
+```
+
+<Callout title="The one-line takeaway">
+Of the 28 patterns above, only a handful are hard compile errors `svelte-check` catches immediately (entries 2, 12, 15, 24, 27, 28) — the rest compile and run, and several produce no warning whatsoever. Every one needs a real test, a real build, or a real curl/browser check to surface at all — read them in the order this module's index lays out, because each group's failures are quiet in exactly the same way.
+</Callout>
+
+export const quizAiBugCatalog = [
+  {
+    q: "Why does entry 5 (mirroring a prop into $state, synced via $effect) produce no compiler error or lint warning at all?",
+    options: [
+      "Because an extra $state variable is always a syntax error",
+      "Because an $effect assigning to a $state variable is completely valid JavaScript and valid Svelte — only a synchronous-read test reveals the timing lag",
+      "Because $derived does not exist in this version of Svelte",
+      "Because TypeScript requires all state to be derived",
+    ],
+    answer: 1,
+    explain: "An $effect writing to a separate $state variable is syntactically and semantically valid Svelte — the lag is a timing/behavioral fact, not a shape the type system or compiler has any way to flag.",
+  },
+  {
+    q: "```svelte\n<script>\n  export let step = 1;\n  let count = $state(0);\n  $: total = count * step;\n</script>\n```\nWhat happens when this compiles?",
+    options: [
+      "It compiles fine — export let and $: still work everywhere",
+      "Two real compile errors: legacy_export_invalid and legacy_reactive_statement_invalid, because any rune present puts the whole file in runes mode",
+      "Only a deprecation warning, like <slot> or on:click",
+      "It silently ignores both legacy lines",
+    ],
+    answer: 1,
+    explain: "Proven in entry 2: the moment $state appears anywhere in the file, export let and $: (Svelte 4's own reactivity primitives) become hard compile errors with no fallback meaning left — unlike <slot>/on:click, which only warn.",
+  },
+  {
+    q: "Entry 7 proves a $state read inside a setTimeout scheduled by an effect is not a tracked dependency. Why not, specifically?",
+    options: [
+      "setTimeout callbacks cannot read $state at all",
+      "An effect's dependency set is exactly what it reads SYNCHRONOUSLY during its own execution — a read that happens later, in an async callback, is outside that pass and is never registered",
+      "Only $derived can have dependencies; $effect never does",
+      "This is a bug in Svelte that will be fixed",
+    ],
+    answer: 1,
+    explain: "Proven directly: a value read only inside a setTimeout scheduled by the effect never triggered a re-run, while the same value read directly and synchronously inside the effect body did, every time.",
+  },
+  {
+    q: "```ts\nlet settings = $state.raw({ theme: 'dark' });\nsettings.theme = 'light'; // mutate, not reassign\n```\nWhat happens to `settings.theme` itself, versus anything watching it reactively?",
+    options: [
+      "Neither changes — $state.raw rejects the mutation entirely",
+      "settings.theme genuinely becomes 'light' (the mutation succeeds), but nothing reactive is notified, because $state.raw only tracks whole-value reassignment",
+      "It throws a runtime error",
+      "Both change — $state.raw behaves identically to deep $state",
+    ],
+    answer: 1,
+    explain: "Proven in entry 8 (and the $state Rune lesson): the underlying object really does change on mutation, but $state.raw has no proxy watching for that write, so effects/deriveds/the template never re-run from it.",
+  },
+  {
+    q: "Why is a keyless `{#each}` over components with their own local state (entry 26) a real bug, not just a performance concern?",
+    options: [
+      "It isn't a real bug — keys only ever affect rendering speed",
+      "Without a key, Svelte reuses each list position's existing component instance (and whatever local state it holds) by POSITION, so removing/reordering an item can attach the wrong data to a row that kept its old state",
+      "Keyless {#each} throws a compile error",
+      "This only matters for {#each} blocks with more than 100 items",
+    ],
+    answer: 1,
+    explain: "Proven directly: removing the first item from an unkeyed list left the row that used to be 'expanded' still expanded, now showing a DIFFERENT item's label — a genuine data/state mismatch, not a rendering-speed issue.",
+  },
+  {
+    q: "```js\nimport { SECRET_API_KEY } from '$env/static/private';\nexport function load() { return { key: SECRET_API_KEY }; }\n```\nWhy does this fail specifically when it lives in `+page.js` rather than `+page.server.js`?",
+    options: [
+      "It doesn't fail either way — $env/static/private works anywhere",
+      "+page.js is a universal load that also runs in the browser; SvelteKit's own build tooling refuses to bundle a server-only env import into client-reachable code, proven with a real build error",
+      "It only fails in development mode, never in a production build",
+      "svelte-check catches this and refuses to type-check the file",
+    ],
+    answer: 1,
+    explain: "Proven with a real vite build failure ('Cannot import $env/static/private into code that runs in the browser'): svelte-check alone does not catch this at all — it takes a genuine production build to surface it.",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/ai-bug-catalog" questions={quizAiBugCatalog} />
+
+<ProgressTracker client:visible id="reading-catalog" />

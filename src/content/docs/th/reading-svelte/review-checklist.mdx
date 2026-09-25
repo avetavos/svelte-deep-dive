@@ -1,0 +1,141 @@
+---
+title: Review checklist
+description: 'เช็คลิสต์หน้าเดียว 6 กลุ่มสำหรับ review โค้ด Svelte — แต่ละบรรทัดเป็นคำถามใช่/ไม่ใช่ ลิงก์ไปยังบทที่อธิบายกฎเบื้องหลัง'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+นี่คือเช็คลิสต์ที่ควรไล่ดูด้วยตา — บน diff ใด ๆ ไม่ว่าจะเป็นของคุณเองหรือของ AI — หลังจากเครื่องมือใน **[Verification Tools](/svelte/th/reading-svelte/verification-tools/)** รันแล้วผ่านสะอาด มันตั้งใจให้พอดีหนึ่งหน้าพิมพ์: เช็คลิสต์ที่ไม่มีใครเปิดจริงตอน review นั้นไร้ค่า ทุกบรรทัดลิงก์ไปยังบทที่อธิบาย *เหตุผล* เพื่อให้หน้านี้ยังเป็นแค่ลิสต์ ไม่ใช่การรื้อฟื้นทั้งคอร์สซ้ำ กลุ่มต่าง ๆ เรียงตามลำดับเดียวกับ **[How to read Svelte you did not write](/svelte/th/reading-svelte/)**
+
+<Mermaid title="อะไรจับแต่ละกลุ่มได้จริง ถ้ามี" code={checklistCoverageDiagram} />
+
+export const checklistCoverageDiagram = `flowchart LR
+  R["Runes vs legacy mode"] --> C["Compiler catches SOME<br/>(export let/$: hard errors; slot/on:click only warn)"]
+  S["State ownership"] --> H["Mostly human review<br/>(a running test is the only real check)"]
+  P["Props/bindings/snippets"] --> C
+  E["Events and DOM"] --> H
+  B["SvelteKit boundary"] --> H
+  K["Keys, transitions, boundaries"] --> H
+`;
+
+## Runes vs legacy mode
+
+- ไฟล์นี้ผสม rune ใด ๆ (`$state`, `$derived`, `$effect`, `$props`) เข้ากับ `export let` หรือ `$:` แบบ top-level หรือไม่? ทั้งคู่เป็น **compile error แข็ง** ทันทีที่มี rune อยู่ ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 2
+- `<slot>` ถูกใช้ที่ไหนก็ตามในไฟล์ที่ใช้ rune อยู่แล้วหรือไม่? มันยัง compile ผ่าน (deprecation warning จริง ไม่ใช่ error) — ควรเป็น snippet ชื่อ `children`/named snippet แทน ดู entry 3
+- ใช้ syntax แบบ directive `on:click` แทนที่จะเป็น property `onclick` ธรรมดาหรือไม่? ดู entry 1
+- `createEventDispatcher` ถูกใช้ในโค้ดใหม่ทั้งที่ callback prop แบบ typed ธรรมดาจะง่ายกว่าและ idiomatic เท่ากันหรือไม่? ดู entry 4
+- config ของ `eslint-plugin-svelte` เปิด `svelte/valid-compile` จริง ๆ หรือไม่ — rule ที่ทำให้ diagnostic ของ compiler เอง (deprecation/error) กลายเป็น lint output — หรือโปรเจกต์พึ่งพา `recommended` เพียงอย่างเดียวซึ่งไม่มี rule นี้รวมอยู่? ดู **[Verification Tools](/svelte/th/reading-svelte/verification-tools/)**
+
+## State ownership
+
+- `$effect` ที่ assign ให้ตัวแปร `$state` นี้ควรเป็น `$derived` แทนหรือไม่? ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 5 และ 6
+- มีค่าที่อ่านภายใน `setTimeout`/`Promise`/callback ที่รันหลังจาก `$effect`/`$derived` ที่ล้อมรอบจบรอบ synchronous ไปแล้ว โดยคาดหวังว่ามันยังเป็น tracked dependency หรือไม่? ดู entry 7
+- ค่า `$state.raw` ถูก **mutate** ตรง ๆ (`.prop = x`, `.push(...)`) โดยคาดหวังว่า UI จะอัพเดต แทนที่จะ reassign หรือไม่? ดู entry 8
+- body ของ `$derived` ทำอะไรมากกว่าการคำนวณและคืนค่า — เรียก API, `console.log`, push เข้า array ภายนอก หรือไม่? ดู entry 9
+- มีค่าที่คำนวณครั้งเดียวภายใน `onMount` ทั้งที่ควรคำนวณใหม่ทุกครั้งที่ prop/state ที่มันพึ่งพาเปลี่ยนหรือไม่? ดู entry 10
+- `$state` ที่ export จากโมดูล `.svelte.ts`/`.svelte.js` (แบบเปล่า หรือ class instance ที่ export ตรง ๆ) ถูก mutate ภายใน `load` function หรือ request handler หรือไม่ — ข้อมูลที่ควรสร้างใหม่ต่อคำขอแทน? ดู entry 11
+- `$store` (รูปแบบย่อ prefix `$`) ถูกอ่านที่ไหนก็ตามนอกเหนือจาก top level ของ component หรือโมดูลหรือไม่? ดู entry 12
+- `get(store)` ถูกเรียกซ้ำ ๆ ภายใน loop, `$effect` ที่รันถี่, หรือทุกครั้งที่พิมพ์ แทนที่จะ subscribe ครั้งเดียวหรือไม่? ดู entry 13
+- store (`writable`/`readable`/`derived`) ถูกห่อด้วย `$state` เป็นครั้งที่สอง ผสมสองระบบ reactivity ที่ไม่ track อะไรที่มีประโยชน์ร่วมกันเลยหรือไม่? ดู entry 14
+
+## Props, bindings และ snippets
+
+- parent ทำ `<Child bind:value={x} />` ทั้งที่ `Child` ไม่เคยประกาศ `value = $bindable()` หรือไม่? ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 15
+- `{#snippet name(...)}` ทุกตัวในไฟล์ถูก render จริงที่ไหนสักแห่งด้วย `{@render name(...)}` ที่จับคู่กัน — ไม่เคยถูกทิ้งไว้ ไม่เคยถูกเรียกเป็น `{name(...)}` เปล่า ๆ หรือไม่? ดู entry 16 และ 17
+- `bind:value` บน input ชนิด `type="number"`/`type="range"` ถูกปฏิบัติเหมือน string ที่ไหนก็ตามในโค้ดถัดไป (`.trim()`, `.length`, การต่อ string) หรือไม่? ดู entry 18
+- snippet prop ถูก type ด้วย `Snippet<[T]>` เมื่อมัน parameter หรือไม่ เพื่อให้รูปร่างที่ไม่ตรงกันเป็น `svelte-check` error ตอน compile แทนที่จะเป็นความประหลาดใจตอนรันจริง? ดู **[Passing UI & Children](/svelte/th/components/passing-ui-and-children/)**
+
+## Event และ DOM
+
+- `use:action={value}` สมมติว่า `value` อัพเดต DOM อัตโนมัติ โดยไม่มี method `update` ประกาศไว้บน action หรือไม่ — หรือควรเป็น attachment ของ Svelte 5.29+ แทน? ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 19
+- `addEventListener` ที่ผูกมือระหว่าง DOM root กับ `onclick` ของ Svelte เรียก `stopPropagation()` ทำลาย delegated handler เงียบ ๆ หรือไม่? ดู entry 20
+- โค้ดที่ต้องการ semantics `passive`/`once` ใช้ฟังก์ชัน `on` จาก `svelte/events` แทน attribute ธรรมดาที่แสดง option เหล่านั้นไม่ได้หรือไม่?
+- `use:` ถูกพยายามใช้บน component (`<MyComponent use:foo />`) หรือไม่? มันใช้ได้แค่กับ DOM element เท่านั้น — attachment คือสิ่งที่เทียบเท่าที่ใช้กับ component ได้
+
+## ขอบเขตของ SvelteKit
+
+- `try/catch` ห่อการเรียก `redirect()`/`error()` โดยไม่ตรวจ `isRedirect`/`isHttpError` ก่อนถือว่า catch คือความล้มเหลวจริงหรือไม่? ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 22
+- `+page.js` (universal load) import `$env/static/private`, `$env/dynamic/private`, หรือโมดูล server-only อื่นใดหรือไม่? ดู entry 24
+- form action คืนค่า object ธรรมดาตอน validation ล้มเหลว แทนที่จะเป็น `fail(status, data)` หรือไม่? ดู entry 25
+- `load` function `await` ค่าที่การวาดครั้งแรกไม่ต้องใช้ แทนที่จะคืน promise แบบไม่ await ให้ `{#await}` stream หรือไม่? ดู entry 23
+- โค้ด import `page`/`navigating`/`updated` จาก `$app/stores` แทนที่จะเป็น `$app/state` ที่ไม่ deprecated หรือไม่? ดู entry 21
+- `event.locals` ถูกใช้ที่ไหนก็ตามโดยไม่มี interface `App.Locals` ที่จับคู่กันประกาศไว้ใน `src/app.d.ts` หรือไม่?
+
+## Keys, transitions และ boundaries
+
+- `{#each}` ทุกตัวเหนือลิสต์ของ component (หรือ element ที่มี local state ที่มีความหมาย) ใช้ key ที่มั่นคงมาจากข้อมูล — ไม่ใช่ array index ไม่เคยละไว้เลยหรือไม่? ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 26
+- `reset()` ถูกเรียกแบบ synchronous ภายใน callback `<svelte:boundary onerror>` แทนที่จะเรียกจาก action แยกต่างหากหรือหลัง `await tick()` หรือไม่? ดู entry 28
+- `await` ปรากฏตรง ๆ ในเทมเพลตหรือ `$derived` โดยไม่มี `compilerOptions.experimental.async: true` ตั้งไว้ที่ไหนเลยในโปรเจกต์หรือไม่? ดู entry 27
+- โค้ดสมมติว่า snippet `<svelte:boundary pending>` จะแสดงสำหรับ**ทุก**การอัพเดตแบบ async รวมถึงตัวที่มาหลังการวาดครั้งแรก — ทั้งที่มีแค่ `$effect.pending()` เท่านั้นที่ครอบคลุมกรณีนั้นหรือไม่?
+- มี `<svelte:boundary>` ล้อมรอบ subtree ที่ throw ได้จริงตอน render หรือใน effect พร้อม `failed`/`onerror` จริง — หรือ widget ที่พังตัวเดียวเสี่ยงทำให้ทั้งหน้า unmount หรือไม่?
+
+<Callout title="เช็คลิสต์ช่วยแคบขอบเขตการค้นหา ไม่ได้แทนที่มัน">
+ทุกบรรทัดข้างบนจับคู่กับหนึ่งใน 28 รูปแบบใน **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** — ซึ่งมีแค่หกรูปแบบเท่านั้นที่เครื่องมือในคอร์สนี้จับได้อัตโนมัติ รันลิสต์นี้กับทุก diff ไม่ว่า `svelte-check` จะผ่านสะอาดแค่ไหนก็ตาม
+</Callout>
+
+export const quizReviewChecklist = [
+  {
+    q: "ทำไม 'module-level $state ถูก mutate ภายใน load function หรือไม่' จึงอยู่ในกลุ่ม 'State ownership' แทนที่จะเป็น 'ขอบเขตของ SvelteKit'?",
+    options: [
+      "ไม่ใช่ — มันควรอยู่กลุ่มขอบเขตของ SvelteKit เพราะ load เกี่ยวข้อง",
+      "เช็คลิสต์จัดกลุ่มตามว่าคำถามพูดถึง 'ใครเป็นเจ้าของ' state — ความเป็นเจ้าของ $state ที่แชร์กันในระดับโมดูลเป็นประเด็นเดียวกันไม่ว่าจะถูก mutate ในคอมโพเนนต์หรือใน load function แม้ว่าอาการ (การรั่วตอน SSR) จะโผล่แค่ในบริบทเซิร์ฟเวอร์เท่านั้น",
+      "load function ไม่เกี่ยวกับ state ownership เลย",
+      "ไม่มีความแตกต่างที่มีความหมายระหว่างสองกลุ่มนี้",
+    ],
+    answer: 1,
+    explain: "กลุ่มต่าง ๆ สะท้อนหกขั้นตอนของลำดับการอ่าน: ประเด็นที่คำถามมุ่งไปเป็นตัวตัดสิน ไม่ใช่ไฟล์ที่บังเอิญกระตุ้นการ mutate module singleton เป็นปัญหาเรื่อง state ownership ที่จุดประกาศของมันเอง แม้ว่า load function จะเป็นแค่หนึ่งในที่ที่มัน mutate ได้",
+  },
+  {
+    q: "```svelte\n<svelte:boundary onerror={(error, reset) => {\n  fixTheError();\n  reset();\n}}>\n```\nกลุ่มไหนในเช็คลิสต์จับสิ่งนี้ได้ และจับได้อย่างไร?",
+    options: [
+      "Props/bindings/snippets — เพราะเกี่ยวกับ snippet",
+      "Keys, transitions, และ boundaries — 'reset() ถูกเรียกแบบ synchronous ภายใน callback <svelte:boundary onerror> หรือไม่?'",
+      "Event และ DOM — เพราะเกี่ยวกับ event handler",
+      "ไม่มีกลุ่มไหนครอบคลุมเรื่องนี้",
+    ],
+    answer: 1,
+    explain: "นี่คือคำถามเรื่องจังหวะเวลาของ reset() ในกลุ่ม keys/transitions/boundaries พอดี — svelte_boundary_reset_onerror คือ error จริงที่ throw เมื่อ reset() ถูกเรียกแบบ synchronous ในขณะที่ boundary ยังจัดการ error อยู่",
+  },
+  {
+    q: "ทำไมเช็คลิสต์จึงถามเจาะจงว่า config ของ `eslint-plugin-svelte` เปิด `svelte/valid-compile` หรือไม่ แทนที่จะถามแค่ 'ติดตั้ง eslint-plugin-svelte หรือยัง'?",
+    options: [
+      "สองคำถามนี้เหมือนกันเป๊ะ",
+      "การติดตั้ง plugin พร้อม config `recommended` เพียงอย่างเดียวไม่มี `svelte/valid-compile` รวมอยู่เลย — ยืนยันโดยตรงแล้ว — ดังนั้น error ของ on:click/legacy-mode จึงยังไม่มี lint output เลยถ้าไม่เปิด rule นี้อย่างชัดเจน",
+      "svelte/valid-compile เปิดอยู่โดย default ในทุก config เสมอ",
+      "เรื่องนี้สำคัญแค่กับโปรเจกต์ TypeScript เท่านั้น",
+    ],
+    answer: 1,
+    explain: "ยืนยันแล้วใน Verification Tools: config recommended ของ eslint-plugin-svelte เพียงอย่างเดียวให้ผลลัพธ์ศูนย์รายการบนไฟล์ที่ใช้ on:click หรือผสม export let กับ rune — มีแค่การเปิด svelte/valid-compile (มีอยู่ใน config all หรือเพิ่มเองด้วยมือ) เท่านั้นที่ทำให้เป็น lint error จริง",
+  },
+  {
+    q: "```js\n// src/routes/report/+page.js\nimport { SECRET_API_KEY } from '$env/static/private';\nexport function load() { return { key: SECRET_API_KEY }; }\n```\nกลุ่มไหนในเช็คลิสต์ครอบคลุมไฟล์นี้ และมันถามอะไร?",
+    options: [
+      "Keys, transitions, และ boundaries",
+      "ขอบเขตของ SvelteKit — universal load import โมดูล server-only หรือไม่?",
+      "Runes vs legacy mode",
+      "Event และ DOM",
+    ],
+    answer: 1,
+    explain: "universal load (+page.js) ที่ import $env/static/private เป็นประเด็นของกลุ่มขอบเขตของ SvelteKit พอดี — เป็นความล้มเหลวตอน build จริง ไม่ใช่คำถามเรื่อง hooks หรือ event delegation",
+  },
+  {
+    q: "เช็คลิสต์บอกให้ตรวจว่า `use:action={value}` สมมติการอัพเดตอัตโนมัติ 'โดยไม่มี method update ประกาศไว้' หรือไม่ ทำไมการมี method `update` จึงสำคัญโดยเฉพาะ?",
+    options: [
+      "ไม่สำคัญ — ทุก use: action อัพเดตอัตโนมัติอยู่แล้วไม่ว่ากรณีใด",
+      "Svelte เรียก method update ของ action (ถ้ามี) ก็ต่อเมื่อ argument ของมันเปลี่ยนเท่านั้น หากไม่มี action จะรันครั้งเดียวตอน mount และการเปลี่ยน argument ทุกครั้งหลังจากนั้นถูกเพิกเฉยเงียบ ๆ",
+      "update จำเป็นต้องมีเพื่อให้ action compile ผ่านได้",
+      "มีแค่ attachment เท่านั้นที่มี argument ที่เปลี่ยนได้",
+    ],
+    answer: 1,
+    explain: "พิสูจน์แล้วใน entry 19 ของ AI Bug Catalog: use: action ที่ไม่มี method update จะเก็บ argument ตอน mount ไว้ตลอดไป ในขณะที่ attachment factory (หรือ action ที่มี update) รับการเปลี่ยนแปลงภายหลังได้",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/review-checklist" questions={quizReviewChecklist} />
+
+<ProgressTracker client:visible id="reading-checklist" />

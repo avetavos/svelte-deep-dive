@@ -1,0 +1,343 @@
+---
+title: Verification tools
+description: 'What svelte-check, eslint-plugin-svelte''s svelte/valid-compile (and why recommended alone misses it), svelte/compiler''s compile()/$inspect.trace, vitest + @testing-library/svelte, the in-browser SveltePlayground, svelte-migrate, and this course''s own verify-snippets.mjs each actually catch — with real output.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
+
+This course has an in-browser playground for Svelte itself (below), but the only way to prove a claim about a *project's* generated code — a real build failure, a real lint config's actual coverage, a real test — is a real SvelteKit probe, a real `svelte-check`/`eslint` run, or a real `vitest` run. Every output below is real, captured against Svelte 5.57.1 and SvelteKit 2.70.3 in this course's own probe. None of these tools overlap perfectly, and none is close to complete on its own — the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**'s "Caught by" line for each of its 28 entries names exactly which one (if any) of the tools below would have caught it.
+
+## `svelte-check` — the fast, first pass
+
+`svelte-check` runs the compiler's own type-checking and diagnostics against every `.svelte`/`.ts`/`.js` file in a project. It catches every **hard compile error** in this module's catalog immediately — a missing `$bindable()`, `export let`/`$:` mixed with a rune, a scoped `$store` subscription, a number-input value treated as a string, a missing `experimental.async` flag — but it has no way to see *behavioral* bugs (a stale effect mirror, a keyless `{#each}`, a swallowed `redirect()`) at all, since those are runtime facts, not type or syntax facts.
+
+```bash
+npx svelte-check --tsconfig ./tsconfig.json
+```
+
+```text
+src/lib/TogglePanel.svelte:5:8
+Cannot use 'bind:' with this property. It is declared as non-bindable inside
+the component.
+To mark a property as bindable: 'let { open = $bindable() } = $props()'
+
+src/lib/NumberBug.svelte:7:16
+Property 'trim' does not exist on type 'number'.
+```
+
+Both are real, current errors under Svelte 5.57.1/TypeScript — not style nitpicks. See the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**, entries 15 and 18.
+
+## `eslint-plugin-svelte` — real coverage, and a real gap in `recommended`
+
+`eslint-plugin-svelte`'s parser (`svelte-eslint-parser`) understands Svelte syntax, but by itself it does **not** surface the compiler's own deprecation/error diagnostics as lint findings — that specific job belongs to one rule, `svelte/valid-compile`, which is **not** included in the `recommended` config at all:
+
+```js
+// eslint.config.js
+import js from '@eslint/js';
+import svelte from 'eslint-plugin-svelte';
+
+export default [
+  js.configs.recommended,
+  ...svelte.configs.recommended,
+];
+```
+
+```bash
+npx eslint src/lib/OnColon.svelte   # <button on:click={...}> — a real deprecation
+```
+
+```text
+(no output — exit code 0)
+```
+
+Verified directly against the installed `eslint-plugin-svelte@3.23.0`: `recommended`'s rule set has no entry for `svelte/valid-compile` at all — only the `all` config includes it, at severity `error`. Adding it explicitly is a one-line change:
+
+```js
+// eslint.config.js
+import js from '@eslint/js';
+import svelte from 'eslint-plugin-svelte';
+
+export default [
+  js.configs.recommended,
+  ...svelte.configs.recommended,
+  { rules: { 'svelte/valid-compile': 'error' } },
+];
+```
+
+```bash
+npx eslint src/lib/OnColon.svelte
+```
+
+```text
+4:9  error  Using `on:click` to listen to the click event is deprecated. Use the event attribute `onclick` instead
+https://svelte.dev/e/event_directive_deprecated(event_directive_deprecated)  svelte/valid-compile
+```
+
+The same rule, on a file mixing `export let` with a rune (the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**'s entry 2):
+
+```text
+2:3  error  Cannot use `export let` in runes mode — use `$props()` instead
+https://svelte.dev/e/legacy_export_invalid(legacy_export_invalid)  svelte/valid-compile
+```
+
+`svelte/valid-compile` is quite literally the compiler's own diagnostics, surfaced as ESLint findings at edit time — but only once it's actually enabled. A project that installs `eslint-plugin-svelte` and stops at `recommended` has not turned this on, verified above with a real zero-finding run.
+
+## `svelte/compiler`'s `compile()`, `$inspect`, and `$inspect.trace`
+
+The exact same function that powers `svelte-check` is a plain, callable API — `compile(source, options)` — usable directly in a script or a test, which is how several entries in the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)** (2, 3, 16) capture their errors/warnings without needing a full project on disk:
+
+```ts
+// src/lib/compile-direct.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+test('compile() throws the exact same error svelte-check reports, callable directly', () => {
+  const source = `<script>
+  let count = $state(0);
+  export let label;
+</script>
+<p>{label}: {count}</p>`;
+  expect(() => compile(source, { filename: 'Bad.svelte' })).toThrowError(
+    /Cannot use `export let` in runes mode/,
+  );
+});
+```
+
+```text
+✓ compile() throws the exact same error svelte-check reports, callable directly
+```
+
+For debugging a specific component's reactivity *while it runs* rather than checking its source statically, `$inspect(value)` re-logs on every change (dev-only, a no-op in production), and `$inspect.trace(label?)` — placed as the first statement in an effect or derived — prints exactly which dependency caused that specific run, proven directly in **[Advanced Runes](/svelte/en/reactivity/advanced-runes/)**:
+
+```text
+✓ $inspect.trace() prints which dependency caused a derived/effect to re-run
+```
+
+## Vitest + `@testing-library/svelte`: a real, running proof
+
+A rendered, interacted-with component is the most direct proof this course has for "does this actually work" — nearly every entry in the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)** is proven this way, not asserted from memory:
+
+```svelte
+<!-- src/lib/SmokeCounter.svelte -->
+<script lang="ts">
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>count: {count}</button>
+```
+
+```ts
+// src/lib/smoke-counter.test.ts
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import SmokeCounter from './SmokeCounter.svelte';
+
+test('a real smoke test: click, then assert on what the user sees', async () => {
+  render(SmokeCounter);
+  await fireEvent.click(screen.getByRole('button', { name: /count: 0/i }));
+  expect(screen.getByRole('button', { name: /count: 1/i })).toBeInTheDocument();
+});
+```
+
+```bash
+node tools/verify-snippets.mjs --test reading-svelte/verification-tools
+```
+
+```text
+✓ a real smoke test: click, then assert on what the user sees
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+See **[Testing](/svelte/en/tooling-and-production/testing/)** for the full RTL-for-Svelte discipline this course follows — queries, `fireEvent`/`userEvent`, and testing effects/async state.
+
+## The in-browser playground: compile it and read the output
+
+Compile the exact `await` example from the **[Async Svelte](/svelte/en/reactivity/async-svelte/)** lesson yourself, right here — no `experimental.async` flag is set for this embed, so the real compile error should appear in the output panel the moment you click Compile:
+
+export const asyncNoFlagCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let a = $state(1);
+  let b = $state(2);
+
+  async function add(x, y) {
+    await new Promise((r) => setTimeout(r, 300));
+    return x + y;
+  }
+</script>
+
+<p>{a} + {b} = {await add(a, b)}</p>
+`;
+
+<SveltePlayground code={asyncNoFlagCode} id="verification-tools-playground" />
+
+This is the same `compiler.compile()` call `svelte-check` and the Vitest test above both go through, running live in your own browser — the error panel's message, line/column, and source frame are the actual compiler output, not a canned screenshot. Toggling **Dev mode**/**Server target** and recompiling shows how the same source produces different generated JS (or the same error, since a missing compiler flag isn't affected by either toggle).
+
+## `svelte-migrate`: what it actually rewrites, verified
+
+`svelte-migrate` (the `svelte-5` migration inside `npx sv migrate`) doesn't just flag legacy patterns — it rewrites them, using the exact same `migrate()` function `svelte/compiler` exports. Run directly against a genuinely Svelte-4-style file (`export let`, a top-level `$:`, `on:click`):
+
+```svelte
+<!-- src/lib/Legacy.svelte — input to svelte-migrate -->
+<script>
+  export let initialCount = 0;
+  let count = initialCount;
+  $: doubled = count * 2;
+</script>
+
+<button on:click={() => count++}>{count} (doubled: {doubled})</button>
+```
+
+```text
+$ node -e "
+import('svelte/compiler').then(m => {
+  const fs = require('fs');
+  const src = fs.readFileSync('src/lib/Legacy.svelte', 'utf8');
+  console.log(m.migrate(src, { filename: 'Legacy.svelte' }).code);
+});
+"
+```
+
+```text
+<script>
+  /**
+   * @typedef {Object} Props
+   * @property {number} [initialCount]
+   */
+
+  /** @type {Props} */
+  let { initialCount = 0 } = $props();
+  let count = $state(initialCount);
+  let doubled = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{count} (doubled: {doubled})</button>
+```
+
+`export let` became a destructured `$props()` (with a generated JSDoc `Props` type for plain-JS files), the plain `let count = initialCount` became `$state(initialCount)`, `$: doubled = ...` became `let doubled = $derived(...)`, and `on:click` became `onclick` — all four of the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**'s first group's patterns, rewritten automatically in one pass. The CLI itself (`npx sv migrate`, or the standalone `svelte-migrate` package, version `1.10.3` verified) offers several distinct migrations, not just this one:
+
+```text
+$ npx svelte-migrate
+◆  Which migration would you like to run?
+│  ● app-state
+│  ○ package
+│  ○ routes
+│  ○ self-closing-tags
+│  ○ svelte-5
+│  ○ sveltekit-2
+```
+
+`app-state` is the one named directly in **[Runes vs Stores](/svelte/en/state-and-stores/runes-vs-stores/)** for automating the `$app/stores`-to-`$app/state` rewrite (the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**'s entry 21). Like any codemod, treat its output as a draft to review, not a merge-blindly patch — it gets the mechanical rewrite right, but it can't know whether the surrounding code's *behavior* still needs the deeper fixes this module's catalog covers (a migrated `export let` that should also gain a `$bindable()`, for instance).
+
+## This course's own harness: compile every snippet
+
+Every code fence in this course tagged with a bare path-comment first line (`<!-- src/lib/X.svelte -->` for `svelte` fences, `// src/lib/x.ts` for `ts`/`js`) is a real file, collected by `tools/verify-snippets.mjs` into a namespaced directory per lesson and type-checked in one `svelte-check` pass across the whole course:
+
+```bash
+node tools/verify-snippets.mjs
+```
+
+```text
+no type errors.
+
+Per-module fence summary (collected / skipped-no-path / expect-error / tests):
+  reading-svelte: ... (see this module's own gate run)
+  ...
+```
+
+A fence deliberately showing broken or misbehaving code (nearly every "code AI typically writes" example in the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**) starts with `<!-- @expect-error <reason> -->`/`// @expect-error <reason>` so the harness skips collecting it — the lesson prose carries the real, separately-captured `svelte-check`/compiler/console output instead of asking the harness to reproduce a deliberate failure on every run. `--test [module/lesson]` runs just the `*.test.ts` fences through Vitest, `--refresh` rescaffolds the probe from scratch, and `--self-test` is the harness's own regression check. See the project README's "Harness" section for the full fence convention and probe layout.
+
+## Mental Model
+
+<Mermaid title="Static tools prove things from source alone; dynamic tools need a real render, build, or browser" code={verificationToolsDiagram} />
+
+export const verificationToolsDiagram = `flowchart TD
+  subgraph Static["Static (source/compiler only)"]
+    Check["svelte-check<br/>real errors: $bindable(), export let/$: in runes mode, number-input types"]
+    Eslint["eslint-plugin-svelte<br/>svelte/valid-compile surfaces compiler diagnostics — NOT in recommended alone"]
+    Compiler["svelte/compiler compile()/migrate()<br/>the same function svelte-check and svelte-migrate both call"]
+    Verify["tools/verify-snippets.mjs<br/>compiles every tagged fence in the course"]
+  end
+  subgraph Runtime["Runtime (needs a real render or commit)"]
+    Vitest["Vitest + @testing-library/svelte<br/>click, then assert on what a user sees"]
+    Playground["SveltePlayground<br/>real compile() output, live in your browser"]
+    Inspect["$inspect / $inspect.trace<br/>dev-only, real dependency tracing"]
+  end
+  subgraph Build["Needs a real production build or server"]
+    EnvBuild["vite build<br/>catches a server-only env import in a universal load"]
+    Curl["curl against a running app<br/>redirect()/error() swallowed by try/catch, streaming timing"]
+  end
+`;
+
+<Callout title="The one-line takeaway">
+Every tool on this page is a filter, not a verdict — even run together, they leave most of the AI Bug Catalog's 28 patterns (including the highest-stakes ones, like a swallowed `redirect()` or a keyless `{#each}` state swap) completely uncaught, because those are runtime/behavioral facts, not syntax facts. `eslint-plugin-svelte`'s `recommended` config specifically does **not** include `svelte/valid-compile` — verify your own project's config actually enables it before trusting a clean lint run. Run every tool here, then still work through the <a href="/svelte/en/reading-svelte/review-checklist/">Review Checklist</a> by eye.
+</Callout>
+
+export const quizVerificationTools = [
+  {
+    q: "```text\n(no output — exit code 0)\n```\nThis is `eslint src/lib/OnColon.svelte` (a file using `on:click`) under `eslint-plugin-svelte`'s `recommended` config. Why zero findings?",
+    options: [
+      "on:click is not actually deprecated",
+      "recommended does not include svelte/valid-compile — the rule that surfaces the compiler's own deprecation/error diagnostics as lint findings — verified directly against eslint-plugin-svelte@3.23.0",
+      "The file has a syntax error the linter cannot parse",
+      "eslint-plugin-svelte only checks TypeScript files",
+    ],
+    answer: 1,
+    explain: "Verified directly: svelte.configs.recommended's rule set has no entry for svelte/valid-compile at all — only svelte.configs.all includes it. Adding { rules: { 'svelte/valid-compile': 'error' } } explicitly is what surfaces the deprecation as a real lint error.",
+  },
+  {
+    q: "```js\nexport let initialCount = 0;\n```\nWhat does `svelte/compiler`'s `migrate()` function do to this exact line, in a plain (non-TypeScript) file?",
+    options: [
+      "Nothing — migrate() only works on TypeScript files",
+      "Rewrites it to a destructured $props() call, generating a JSDoc @typedef Props comment above it since the file has no TypeScript syntax to annotate the type directly",
+      "Deletes the prop entirely",
+      "Converts it to a store",
+    ],
+    answer: 1,
+    explain: "Proven with a real migrate() call in this lesson: the plain-JS output gained a /** @typedef {Object} Props */ block and a /** @type {Props} */ annotation, then the destructured let { initialCount = 0 } = $props() itself — the mechanical equivalent of what a hand-typed .ts version would express directly.",
+  },
+  {
+    q: "Why can this course's SveltePlayground embed show a REAL experimental_async compile error for the async-await example, rather than a canned/pretend one?",
+    options: [
+      "It cannot — the playground only shows successful compiles",
+      "The playground lazily loads the real svelte/compiler package and calls the actual compile() function in the browser — the same function svelte-check and the migrate() CLI both call — so a missing compiler option produces the identical real error",
+      "The error is hand-written into the playground component itself",
+      "The playground runs on a remote server, not in the browser",
+    ],
+    answer: 1,
+    explain: "The README documents (and this lesson repeats) that SveltePlayground lazily imports svelte/compiler from esm.sh and calls compile() directly in the browser — there is no separate, faked error path; whatever the real compiler returns is what the panel shows.",
+  },
+  {
+    q: "What is the single biggest limitation of every tool covered in this lesson, taken together?",
+    options: [
+      "They are all too slow to run in CI",
+      "None of them can see behavioral/runtime facts from source alone — a swallowed redirect(), a keyless {#each} state swap, or a stale $effect mirror all compile and type-check clean, and need a real running test or build to surface at all",
+      "They only work with SvelteKit, never plain Svelte",
+      "They require a paid license",
+    ],
+    answer: 1,
+    explain: "Repeated throughout the AI Bug Catalog's 'Caught by' lines: entries like the effect-mirror lag, the keyless-each swap, and the swallowed redirect() all produce zero signal from any static tool — only a running Vitest test or a real curl/build reveals them.",
+  },
+  {
+    q: "Why does this lesson's `svelte-migrate` example describe the tool's output as 'a draft to review, not a merge-blindly patch'?",
+    options: [
+      "Because the migration frequently produces code that doesn't even compile",
+      "Because a codemod performs the mechanical syntax rewrite correctly, but cannot know whether the surrounding code's BEHAVIOR still needs a deeper fix this module's catalog covers — e.g. a migrated prop that should also gain $bindable()",
+      "Because svelte-migrate is unmaintained and often wrong",
+      "Because it only works on components with no props at all",
+    ],
+    answer: 1,
+    explain: "Proven above: migrate() correctly rewrote export let/$:/on:click — a real, verified mechanical transform — but nothing about that transform can know, for example, that a prop the migrated file exposes should also become bindable, which is a design decision, not a syntax fact.",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/verification-tools" questions={quizVerificationTools} />
+
+<ProgressTracker client:visible id="reading-tools" />

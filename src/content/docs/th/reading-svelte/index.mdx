@@ -1,0 +1,173 @@
+---
+title: How to read Svelte you did not write
+description: 'ลำดับการอ่านโค้ด Svelte ที่ AI เขียน — ไฟล์นี้อยู่ compiler mode ไหนกันแน่ ตามด้วย state ownership, สัญญาของ props/bindings/snippets, event กับ DOM, ขอบเขตฝั่งเซิร์ฟเวอร์ของ SvelteKit และ keys/transitions/boundaries'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+ทุกโมดูลก่อนหน้านี้สอนให้คุณ *เขียน* Svelte โมดูลนี้สอนอีกครึ่งหนึ่ง: การ**อ่าน** Svelte ที่คนอื่น — หรือ AI — เขียนไว้ แล้วตัดสินว่ามันถูกต้องหรือไม่ ผู้ช่วย AI ยื่นคอมโพเนนต์ที่ compile ผ่าน, `svelte-check` ยอมรับ, และหน้าตาเหมือนตัวอย่างที่คุณเพิ่งเรียนมาทุกประการ สิ่งเหล่านั้นไม่ได้พิสูจน์ว่ามันถูกต้องเลย compiler ของ Svelte เก่งมากในการจับ error เชิง *syntax* แต่เงียบผิดปกติกับ error เชิง *พฤติกรรม*: `$effect` ที่ mirror state ช้าไปหนึ่งจังหวะ, `{#each}` ที่สลับ state ภายในของสองแถวโดยไม่มีใครรู้, form action ที่คืนรูปร่างถูกต้องแต่ HTTP status ผิด หกขั้นตอนด้านล่างคือลำดับที่เผยความผิดพลาดเหล่านี้ออกมาจริง ๆ และทุกบทถัดไปในโมดูลนี้จะเจาะลึกส่วนหนึ่งของมัน
+
+<Mermaid title="ลำดับการอ่านไฟล์ Svelte ที่คุณไม่ได้เขียน" code={readingOrderDiagram} />
+
+export const readingOrderDiagram = `flowchart TD
+  A["1. Runes vs legacy mode<br/>which mode is this file even in?"] --> B["2. State ownership<br/>$state vs $derived vs $effect, module state"]
+  B --> C["3. Props, bindings, snippets<br/>$bindable, {@render}"]
+  C --> D["4. Events and DOM<br/>onclick, delegation, attachments vs actions"]
+  D --> E["5. The SvelteKit boundary<br/>server vs universal load, actions, hooks, env"]
+  E --> F["6. Keys, transitions, boundaries"]
+`;
+
+## 1. Runes vs legacy mode: ไฟล์นี้อยู่ mode ไหนกันแน่
+
+ก่อนจะเชื่ออะไรอื่นในไฟล์ `.svelte` ต้องหาก่อนว่าไฟล์นี้เขียนด้วยระบบ reactivity ไหนใน 2 ระบบที่เข้ากันไม่ได้ของ Svelte compiler ตัดสินแบบ **ต่อไฟล์** โดยอัตโนมัติ จากเนื้อหาของไฟล์นั้นเอง: ทันทีที่มี rune ใดก็ตาม (`$state`, `$derived`, `$effect`, `$props`, …) ปรากฏที่ไหนก็ตามในไฟล์ ไฟล์ทั้งไฟล์จะเข้าสู่ **runes mode** และกลไก reactivity ของ Svelte 4 (`export let`, `$:` แบบ top-level) จะกลายเป็น compile error จริง ไม่ใช่แค่ทำงานต่างออกไป ผู้ช่วย AI ที่ฝึกจากตัวอย่างผสมทั้ง Svelte 4 และ Svelte 5 มักผลิตไฟล์ที่เริ่ม migrate เป็น runes mode แล้วหยุดกลางทาง — เป็นรูปแบบบั๊กที่พบบ่อยที่สุดของ Svelte ที่ AI เขียน
+
+- **ต้องมองหาอะไร:** ไฟล์นี้ผสม rune เข้ากับ `export let`, `$:` แบบ top-level, `<slot>`, event directive แบบ `on:click`, หรือ `createEventDispatcher` หรือไม่? สองอย่างแรกเป็น **compile error จริง** ทันทีที่มี rune อยู่ในไฟล์; สองอย่างกลางเป็น deprecation warning จริงแต่เบากว่า; อย่างสุดท้าย compile ผ่านโดยไม่มีสัญญาณใด ๆ เลย การรู้ว่ารูปแบบเก่าแบบไหนอยู่กลุ่มไหน เปลี่ยนความเร่งด่วนในการแก้ไข
+- **คำถามที่ต้องถาม:** ถ้า compile ไฟล์นี้ตอนนี้เลย กลไก *reactivity* (`export let`, `$:`) จะยังถูกกฎหมายในไฟล์นี้หรือไม่ — และแยกกัน *syntax* (`<slot>`, `on:click`) แค่ล้าสมัย หรือ *สำนวน* (`createEventDispatcher`) แค่ไม่ทันสมัยเท่านั้น?
+- **บทไหนอธิบายเรื่องนี้:** **[Why Svelte, the Compiler](/svelte/th/foundations/why-svelte-the-compiler/)** พิสูจน์การตรวจจับ mode ต่อไฟล์ตรง ๆ ด้วย `metadata.runes` ของ `compile()`; **[Events & Attributes](/svelte/th/foundations/events-and-attributes/)** มีตารางจดจำโค้ด legacy ครบทั้ง 4 รูปแบบพร้อมข้อความ error/warning จริง; **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** กลุ่มแรกไล่ทั้ง 4 แบบเทียบกัน
+
+## 2. ใครเป็นเจ้าของ state แต่ละชิ้น
+
+การประกาศ `$state` ทุกครั้งคือคำกล่าวอ้างเรื่องความเป็นเจ้าของ: นี่คือแหล่งความจริงหนึ่งเดียวของค่านี้ คำนวณครั้งเดียวและอ่านได้ทุกที่ที่ต้องใช้ โค้ดที่ AI เขียนมักสร้างความเป็นเจ้าของซ้ำซ้อนโดยไม่ตั้งใจ — mirror prop เข้า `$state` แล้ว sync ด้วย `$effect` แทนที่จะ derive, เขียนค่าที่คำนวณได้ไว้ใน `$effect` แทนที่จะเป็น `$derived`, หรือ export `$state` ระดับโมดูลที่ถูกแชร์เงียบ ๆ โดยทุกคำขอบนเซิร์ฟเวอร์
+
+- **ต้องมองหาอะไร:** `$effect` ที่ทำแค่ assign ค่าให้ตัวแปร `$state` อีกตัว (เกือบทุกครั้งควรเป็น `$derived`); ค่าที่อ่านภายใน `setTimeout`/`await`/callback ใด ๆ ที่รันหลังจาก `$effect` หรือ `$derived` ที่ล้อมรอบมันจบรอบ synchronous ไปแล้ว (ไม่ใช่ dependency ที่ถูก track ไม่ว่าจะดู reactive แค่ไหน); `$state.raw` ที่ mutate ตรง ๆ แทนที่จะ reassign; โมดูล `.svelte.ts`/`.svelte.js` ที่ export `$state` ซึ่งถูกเขียนทับภายใน `load` function หรือ request handler
+- **คำถามที่ต้องถาม:** ค่านี้เป็น `$derived` จากสิ่งที่มันพึ่งพาอยู่แล้วได้หรือไม่ — และถ้า module-level state ของไฟล์นี้ถูก mutate บนเซิร์ฟเวอร์ มันปลอดภัยสำหรับ**ทุกคำขอที่เกิดพร้อมกัน**หรือไม่ หรือมันรั่วข้อมูลของผู้ใช้คนหนึ่งไปให้อีกคน?
+- **บทไหนอธิบายเรื่องนี้:** **[The `$effect` Rune](/svelte/th/reactivity/effect-rune/)** พิสูจน์ความล่าช้าของ effect-mirror ด้วยเทสต์จริง; **[The `$derived` Rune](/svelte/th/reactivity/derived-rune/)** พิสูจน์ push-pull laziness และเหตุผลที่ `$derived` ต้องปราศจาก side effect; **[The `$state` Rune](/svelte/th/reactivity/state-rune/)** พิสูจน์กับดักการ mutate เงียบ ๆ ของ `$state.raw` และการรั่วของ module-state ตอน SSR โดยตรง
+
+## 3. Props, bindings และสัญญาของ snippet
+
+`$props()`, `$bindable()`, และ `{#snippet}`/`{@render}` แต่ละอันมีสัญญาที่ผิดครึ่งเดียวได้ง่าย: prop ไหลทางเดียวเว้นแต่ child จะเลือกเปิด two-way binding เอง และ snippet เป็นค่าที่ต้องถูก *render* ไม่ใช่เรียกเหมือนฟังก์ชัน โค้ดที่ AI เขียนมักสมมติสัญญานี้โดยไม่ตรวจสอบ — bind ไปยัง prop ที่ child ไม่เคยประกาศ bindable หรือเขียนชื่อ snippet เป็นการเรียกเปล่า ๆ
+
+- **ต้องมองหาอะไร:** parent ทำ `<Child bind:value={x} />` ทั้งที่ `Child` ไม่เคยเขียน `let { value = $bindable() } = $props()`; snippet ที่ถูกอ้างเป็น `{name(args)}` แทนที่จะเป็น `{@render name(args)}`; `{#snippet}` ที่ประกาศไว้แต่ไม่เคยถูก render ที่ไหนเลย; `use:` action ที่ argument เปลี่ยนหลัง mount โดยไม่มี method `update` มาสังเกตการเปลี่ยนนั้น
+- **คำถามที่ต้องถาม:** child component เปิดพื้นผิว two-way ที่ `bind:` นี้สมมติไว้จริงหรือไม่ — และทุกที่ที่ชื่อ snippet ปรากฏ มันอยู่หลัง `{@render}` หรือเปล่า?
+- **บทไหนอธิบายเรื่องนี้:** **[Bindings](/svelte/th/bindings-actions-transitions/bindings/)** พิสูจน์ error ของ `svelte-check` ตรง ๆ เมื่อขาด `$bindable()`; **[Snippets & Render](/svelte/th/components/snippets-and-render/)** พิสูจน์ runtime error `invalid_snippet_arguments` เมื่อเรียก snippet เปล่า ๆ; **[Actions](/svelte/th/bindings-actions-transitions/actions/)** พิสูจน์ว่า attachment รันซ้ำเมื่อ argument เปลี่ยน ในขณะที่ `use:` action ไม่ทำแบบนั้นเงียบ ๆ
+
+## 4. Event และ DOM
+
+Event handler ของ Svelte 5 เป็นแค่ property ธรรมดา (`onclick` ไม่ใช่ `on:click`) และส่วนใหญ่ถูก delegate ไปยัง root listener เดียวแทนที่จะผูกทีละ element ทั้งสองรายละเอียดสำคัญมากตอนอ่านโค้ดที่ AI เขียนซึ่งไปแตะ DOM ตรง ๆ — `stopPropagation()` บน vanilla listener ระหว่าง root กับ Svelte handler จะทำลาย handler นั้นเงียบ ๆ และโค้ดที่สมมติว่า `use:` action "ทำงานเองอัตโนมัติ" เหมือน reactive prop พลาดจุดที่ว่ามีแค่ method `update` ที่เขียนไว้ชัดเจน (หรือในโค้ดใหม่ ใช้ attachment) เท่านั้นที่ทำให้เป็นจริง
+
+- **ต้องมองหาอะไร:** `addEventListener` ที่ผูกมือระหว่าง DOM root กับ `onclick` ของ Svelte โดยเฉพาะตัวที่เรียก `stopPropagation()`; `use:` action ที่ parameter เปลี่ยนหลัง mount โดยไม่มี method `update`; โค้ดที่ควรเป็น attachment ระดับ component แทน เพราะ `use:` ใช้ได้กับ element เท่านั้น
+- **คำถามที่ต้องถาม:** ถ้ามีอะไรบางอย่างระหว่าง root กับ element นี้หยุดการ bubble ของ native event, delegated handler ยังทำงานอยู่หรือไม่ — และโค้ด DOM เชิง imperative นี้รันซ้ำจริงเมื่อ input ของมันเปลี่ยนหรือรันแค่ครั้งเดียวตอน mount?
+- **บทไหนอธิบายเรื่องนี้:** **[Events & Attributes](/svelte/th/foundations/events-and-attributes/)** พิสูจน์ event delegation และช่องโหว่ `stopPropagation()` ตรง ๆ ด้วย ancestor listener จริง; **[Actions](/svelte/th/bindings-actions-transitions/actions/)** พิสูจน์ความต่างของการรันซ้ำระหว่าง attachment กับ `use:` ด้วยเทสต์นับจำนวนครั้ง
+
+## 5. ขอบเขตฝั่งเซิร์ฟเวอร์ของ SvelteKit
+
+โค้ดที่รันบนเซิร์ฟเวอร์มีมุมคมที่ไม่โผล่มาตอน review เฉพาะ component: `redirect()`/`error()` ทำงานด้วยการ throw ซึ่ง `try/catch` ที่เขียนกว้างเกินไปสามารถกลืนมันไปเงียบ ๆ; universal `+page.js` load รันในเบราว์เซอร์ด้วย จึงห้าม import server-only env หรือแตะฐานข้อมูลเด็ดขาด; และ form action ที่คืนค่า object เปล่าแทน `fail()` ดูถูกต้องใน UI แต่พก HTTP status ผิดอยู่ข้างใต้
+
+- **ต้องมองหาอะไร:** `try/catch` รอบโค้ดที่เรียก `redirect()`/`error()` โดยไม่ตรวจ `isRedirect`/`isHttpError` ก่อนถือว่า catch คือความล้มเหลวจริง; `$env/static/private` (หรือ server-only import ใด ๆ) ถูกอ้างจาก `+page.js` แทนที่จะเป็น `+page.server.js`; form action ที่คืน `{ error: '...' }` แทน `fail(status, { error: '...' })`; `load` ที่ `await` ข้อมูลที่การวาดครั้งแรกไม่ต้องใช้ แทนที่จะคืน promise ที่ยังไม่ await ให้ `{#await}` stream; `import { page } from '$app/stores'` แทน `$app/state`
+- **คำถามที่ต้องถาม:** ถ้า code path นี้ throw `redirect()`/`error()` จริง มีอะไรระหว่าง throw กับ handler ของ SvelteKit เองที่จะจับมันไปโดยไม่ตั้งใจหรือไม่ — และ server-only import ทุกตัวในไฟล์นี้อยู่ในไฟล์ที่ไม่มีวันถูกส่งไปเบราว์เซอร์จริงหรือไม่?
+- **บทไหนอธิบายเรื่องนี้:** **[Server & API](/svelte/th/sveltekit/server-and-api/)** พิสูจน์บั๊ก `redirect()` ถูก `try/catch` กลืนด้วย curl จริง พร้อมพื้นผิว hooks เต็มรูปแบบ; **[Forms & Actions](/svelte/th/sveltekit/forms-and-actions/)** พิสูจน์ช่องว่างของ HTTP status ระหว่าง `fail()` กับ object เปล่า; **[Loading Data](/svelte/th/sveltekit/loading-data/)** พิสูจน์ streaming และการเลิกใช้ `$app/stores` แทนที่ด้วย `$app/state`
+
+## 6. Keys, transitions และ boundaries
+
+`{#each}` ที่ไม่มี key ไม่ throw — มันแค่ใช้ component instance เดิมซ้ำตาม *ตำแหน่ง* เงียบ ๆ ทำให้การลบรายการกลางลิสต์อาจเหลือแถวที่ไม่เกี่ยวข้องกันเลยถือ state ภายในผิดตัว `<svelte:boundary>` กับ async Svelte เพิ่มอีกชั้น: snippet `pending` ครอบคลุมแค่การวาดครั้งแรกของ boundary เท่านั้น และ `await` ในเทมเพลตเป็น compile error จริงถ้าไม่เปิด flag experimental ที่โค้ดที่ AI สร้างส่วนใหญ่ไม่เคยพูดถึง
+
+- **ต้องมองหาอะไร:** `{#each items as item}` ที่ไม่มี key `(item.id)` โดยเฉพาะเมื่อแต่ละแถวมี local state เป็นของตัวเอง (ปุ่ม expand/collapse, ฟอร์มร่าง); `reset()` ที่ถูกเรียกแบบ synchronous ภายใน callback `<svelte:boundary onerror>`; `await` ที่ใช้ตรง ๆ ในเทมเพลตหรือ `$derived` โดยไม่มี `compilerOptions.experimental.async: true` อยู่ที่ไหนเลยในโปรเจกต์
+- **คำถามที่ต้องถาม:** ถ้าลิสต์นี้เรียงลำดับใหม่หรือย่อลง state ภายในของแต่ละแถวติดตามข้อมูลของมันไปด้วยหรือไม่ หรือมันติดอยู่กับตำแหน่งในลิสต์เงียบ ๆ — และถ้า component นี้ throw กลางการ render มี boundary ล้อมมันอยู่หรือเปล่า?
+- **บทไหนอธิบายเรื่องนี้:** **[Async Svelte](/svelte/th/reactivity/async-svelte/)** พิสูจน์ compile error `experimental_async` และการแยกระหว่าง boundary กับ `$effect.pending()`; **[Lifecycle](/svelte/th/components/lifecycle/)** พิสูจน์ error จับเวลา `svelte_boundary_reset_onerror`; **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** กลุ่มสุดท้ายพิสูจน์บั๊กการสลับ state ของ `{#each}` ที่ไม่มี key แบบครบวงจร
+
+โมดูลนี้ตามด้วย **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** (28 รูปแบบ จัดกลุ่มตามลำดับนี้เป๊ะ), เช็คลิสต์หน้าเดียว **[Review Checklist](/svelte/th/reading-svelte/review-checklist/)**, **[Verification Tools](/svelte/th/reading-svelte/verification-tools/)**, และการ review แอป Svelte ที่ AI เขียนแบบเต็มรูปแบบสามครั้ง: **[Worked Review 1](/svelte/th/reading-svelte/worked-review-1/)**, **[Worked Review 2](/svelte/th/reading-svelte/worked-review-2/)**, และ **[Worked Review 3](/svelte/th/reading-svelte/worked-review-3/)**
+
+## Mental Model
+
+```text
+Reading order for a Svelte file you did not write:
+
+1. Runes vs legacy mode  -> is every reactivity primitive even legal in this file?
+2. State ownership       -> does $state/$derived/$effect each do the job it is for?
+3. Props/bindings/snippets -> does bind: have the $bindable() it assumes, is {@render} used?
+4. Events and DOM        -> does a stopPropagation() or a missing update() break this silently?
+5. SvelteKit boundary    -> does a try/catch swallow a throw, does server-only code leak client-side?
+6. Keys, transitions, boundaries -> does list state follow the right row, is there a boundary at all?
+
+Skipping straight to "does it pass svelte-check" answers almost none of these — most of this
+module's catalog compiles clean, and several entries produce no warning of any kind.
+```
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ถ้า `svelte-check` ผ่าน แปลว่าโค้ดถูกต้อง"** entry ส่วนใหญ่ในแคตาล็อกของโมดูลนี้ compile และ type-check ผ่านสะอาด `svelte-check` พิสูจน์แค่ว่ารูปร่างถูกต้องและกฎแข็งของ compiler ถูกปฏิบัติตาม — ไม่เคยพิสูจน์ว่าพฤติกรรมตอนรันจริงตรงกับที่โค้ดรอบข้างสมมติไว้
+- **"ไฟล์หนึ่งเป็นได้แค่ 'Svelte เก่า' หรือ 'Svelte ใหม่' อย่างสม่ำเสมอตลอดทั้งไฟล์"** พิสูจน์แล้วว่าผิดซ้ำแล้วซ้ำเล่าในโมดูลนี้: ไฟล์เดียวผสม compile error แข็ง (`export let` คู่กับ rune) กับ warning เบา (`on:click`) กับรูปแบบที่ compile ผ่านเงียบ ๆ (`createEventDispatcher`) — การรู้ว่ารูปแบบเก่าแต่ละแบบอยู่กลุ่มไหนสำคัญกว่าการตัดสิน "เก่าหรือไม่" แบบเดียว
+- **"Svelte ที่ AI เขียนต้องการความละเอียดมากกว่า Svelte ที่คนเขียน"** ทุกรูปแบบในแคตาล็อกของโมดูลนี้ก็ปรากฏในโค้ดที่คนเขียนเช่นกัน — ผู้ช่วย AI แค่ผลิตมันซ้ำด้วยความมั่นใจสูงกว่า และกระจายไปหลายไฟล์กว่าที่คนมักทำ
+- **"ถ้า component แสดงผลถูกต้องครั้งเดียว การจัดการ state ของมันก็ถูกต้อง"** บั๊กหลายตัวในโมดูลนี้ (การสลับ state ของ `{#each}` ที่ไม่มี key, ความล่าช้าของ effect-mirror, การรั่วของ module-state ตอน SSR) โผล่มาแค่ตอน interaction *ครั้งที่สอง*, การเรียงลำดับใหม่, หรือคำขอที่เกิดพร้อมกันเท่านั้น — การ render ครั้งเดียวแทบไม่พิสูจน์อะไรเรื่องความเป็นเจ้าของเลย
+
+<Callout title="สรุปหนึ่งบรรทัด">
+อ่านไฟล์ Svelte ตามลำดับนี้ — ไฟล์นี้อยู่ compiler mode ไหน, ใครเป็นเจ้าของ state แต่ละชิ้น, สัญญาของ props/bindings/snippets, event กับ DOM, ขอบเขตฝั่งเซิร์ฟเวอร์ของ SvelteKit, แล้วจึง keys/transitions/boundaries — เพราะแต่ละขั้นตอนเปลี่ยนความหมายของขั้นตอนถัดไป และเพราะ `svelte-check` ผ่านบอกแค่ว่าโค้ด compile ได้ ไม่เคยบอกว่ามันถูกต้อง
+</Callout>
+
+export const quizReadingSvelteIndex = [
+  {
+    q: "ทำไมโมดูลนี้จึงตรวจ compiler mode ของไฟล์ก่อนตรวจเรื่อง state ownership หรือ event?",
+    options: [
+      "เพราะการตรวจ mode เร็วที่สุดเสมอ",
+      "เพราะการที่ reactivity primitive หนึ่งจะถูกกฎหมายในไฟล์หรือไม่ เปลี่ยนสิ่งที่ขั้นตอนถัดไปทั้งหมดจะสมมติเกี่ยวกับมันได้",
+      "เพราะ legacy mode ถูกลบออกไปแล้วใน Svelte 5",
+      "ลำดับไม่สำคัญ",
+    ],
+    answer: 1,
+    explain: "ไฟล์ที่ mode คลุมเครือ (ผสม export let กับ $state ครึ่ง ๆ กลาง ๆ) มี reactivity primitive ที่อาจจะ compile ไม่ผ่านด้วยซ้ำ — นั่นเป็นปัญหาพื้นฐานกว่าอะไรที่ขั้นตอนถัดไป (state ownership, event) ถูกออกแบบมาเพื่อจับ",
+  },
+  {
+    q: "```svelte\n<script>\n  export let count = 0;\n  let doubled = $state(count * 2);\n</script>\n<p>{doubled}</p>\n```\nเกิดอะไรขึ้นเมื่อ compile โค้ดนี้?",
+    options: [
+      "compile ผ่านสบาย ๆ — export let กับ $state อยู่ร่วมกันได้",
+      "compile error จริง: `export let` ใช้ไม่ได้ทันทีที่มี rune ใดก็ตาม (ในที่นี้คือ $state) ทำให้ไฟล์เข้า runes mode",
+      "แค่ deprecation warning",
+      "เพิกเฉยต่อ export let เงียบ ๆ",
+    ],
+    answer: 1,
+    explain: "พิสูจน์แล้วในบท Events & Attributes: ทันทีที่มี rune ปรากฏ ไฟล์ทั้งไฟล์จะเข้า runes mode และ export let (reactivity primitive แบบเก่า) กลายเป็น compile error จริง คือ legacy_export_invalid ไม่ใช่แค่ warning เบา ๆ",
+  },
+  {
+    q: "ทำไม `$effect` ที่ mirror ค่าที่คำนวณได้ลงในตัวแปร `$state` แยกต่างหาก จึงนับเป็นบั๊กเรื่อง state ownership ไม่ใช่แค่รสนิยมการเขียนโค้ด?",
+    options: [
+      "เป็นแค่รสนิยมล้วน ๆ ไม่มีผลต่อพฤติกรรมเลย",
+      "ค่าที่ mirror ไว้ล้าสมัยแบบวัดได้จริงในช่วงเวลาหนึ่งระหว่างการเขียน state กับ flush ครั้งถัดไป — เป็นบั๊กจริงสำหรับโค้ดใด ๆ ที่อ่านมันแบบ synchronous ในช่วงนั้น",
+      "$effect อ่าน $state ไม่ได้เลย",
+      "$state.raw เป็นสาเหตุนี้เสมอ",
+    ],
+    answer: 1,
+    explain: "พิสูจน์ด้วยเทสต์จริงในบท The $effect Rune: การอ่านค่าที่ mirror ผ่าน effect ทันทีหลังการเขียนที่ควรกระตุ้นมันคืนค่า *เก่า* ในขณะที่ $derived เทียบเท่าถูกต้องทันทีที่อ่าน ไม่มีความล่าช้าเลย",
+  },
+  {
+    q: "```svelte\n<!-- Child.svelte -->\n<script>\n  let { value } = $props();\n</script>\n\n<!-- Parent.svelte -->\n<Child bind:value={x} />\n```\nเกิดอะไรขึ้นเมื่อ compile โค้ดนี้ สมมติว่า Child ไม่เคยเขียน `$bindable()`?",
+    options: [
+      "compile ผ่านและทำงานได้ดี sync กันทั้งสองทางเงียบ ๆ",
+      "svelte-check จับ error จริงพร้อมระบุวิธีแก้ตรง ๆ — bind: ถูกปฏิเสธบน prop ที่ไม่ bindable",
+      "ทำงานได้ แต่เฉพาะกับ string เท่านั้น",
+      "binding เป็น no-op เงียบ ๆ ตอนรัน",
+    ],
+    answer: 1,
+    explain: "พิสูจน์แล้วในบท Bindings: svelte-check ปฏิเสธ bind: ไปยัง prop ธรรมดาที่ไม่ใช่ $bindable() พร้อมข้อความที่ระบุวิธีแก้ตรง ๆ — เป็น compile error ที่จับได้ ไม่ใช่ no-op เงียบ ๆ",
+  },
+  {
+    q: "ขั้นตอนไหนในลำดับการอ่านนี้ที่ครอบคลุมเรื่อง `try/catch` อาจกลืน `redirect()` ที่ถูก throw โดยไม่ตั้งใจ?",
+    options: [
+      "Keys, transitions, และ boundaries",
+      "ขอบเขตฝั่งเซิร์ฟเวอร์ของ SvelteKit",
+      "Event และ DOM",
+      "Props, bindings, และ snippets",
+    ],
+    answer: 1,
+    explain: "redirect()/error() ทำงานด้วยการ throw ค่าที่ request handling ของ SvelteKit เองเฝ้าดูอยู่โดยเฉพาะ — try/catch ที่เขียนไว้สำหรับความล้มเหลวแบบอื่นสามารถจับมันไปด้วยได้ ซึ่งตรงกับสิ่งที่ขั้นตอนขอบเขตฝั่งเซิร์ฟเวอร์ของ SvelteKit ดูแลพอดี",
+  },
+  {
+    q: "```svelte\n{#each rows as row}\n  <Row {...row} />\n{/each}\n```\nแต่ละ `Row` มี local `expanded` toggle เป็นของตัวเอง ความเสี่ยงของ `{#each}` ที่ไม่มี key `(row.id)` คืออะไร?",
+    options: [
+      "ไม่มีอะไรเลย — key เป็นแค่คำแนะนำด้าน performance",
+      "การลบหรือเรียงลำดับรายการใหม่อาจทำให้ instance ของ Row ที่ไม่เกี่ยวข้อง — และ state ที่ expanded ของมัน — ติดอยู่กับข้อมูลแถวที่ผิด",
+      "เป็น compile error",
+      "key จำเป็นแค่กับ text node เท่านั้น ไม่ใช่กับ component",
+    ],
+    answer: 1,
+    explain: "พิสูจน์แล้วในกลุ่มสุดท้ายของ AI Bug Catalog: โดยไม่มี key Svelte ใช้ component instance เดิมของแต่ละตำแหน่งในลิสต์ซ้ำ (พร้อม local state ที่มันถืออยู่) ตามตำแหน่ง ไม่ใช่ตามตัวตนของข้อมูล — เป็นบั๊กการสลับ state ที่พิสูจน์ได้จริง ไม่ใช่แค่เรื่อง performance",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/index" questions={quizReadingSvelteIndex} />
+
+<ProgressTracker client:visible id="reading-index" />

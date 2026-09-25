@@ -1,0 +1,173 @@
+---
+title: How to read Svelte you did not write
+description: 'A reading order for AI-generated Svelte — which compiler mode a file is even in, then state ownership, the props/bindings/snippets contract, events and DOM, the SvelteKit server boundary, and keys/transitions/boundaries.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+Every earlier module in this course taught you to *write* Svelte. This module teaches the other half: reading Svelte someone — or something — else wrote, and deciding whether it is correct. An AI assistant hands you a component that compiles, that `svelte-check` accepts, and that looks exactly like the examples you have been studying. None of that proves it is correct. Svelte's own compiler is unusually good at catching *syntax* mistakes and unusually quiet about *behavioral* ones: a `$effect` that mirrors state a beat too late, a `{#each}` block that silently swaps two rows' internal state, a form action that returns the right shape with the wrong HTTP status. The six steps below are the order that actually surfaces these failures, and every later lesson in this module drills one part of it.
+
+<Mermaid title="Reading order for a Svelte file you did not write" code={readingOrderDiagram} />
+
+export const readingOrderDiagram = `flowchart TD
+  A["1. Runes vs legacy mode<br/>which mode is this file even in?"] --> B["2. State ownership<br/>$state vs $derived vs $effect, module state"]
+  B --> C["3. Props, bindings, snippets<br/>$bindable, {@render}"]
+  C --> D["4. Events and DOM<br/>onclick, delegation, attachments vs actions"]
+  D --> E["5. The SvelteKit boundary<br/>server vs universal load, actions, hooks, env"]
+  E --> F["6. Keys, transitions, boundaries"]
+`;
+
+## 1. Runes vs legacy mode: which mode is this file even in?
+
+Before you trust anything else about a `.svelte` file, work out which of Svelte's two incompatible reactivity systems it is written in. The compiler decides **per file**, automatically, from that file's own contents: the moment any rune (`$state`, `$derived`, `$effect`, `$props`, …) appears anywhere in the file, the whole file is in **runes mode**, and Svelte 4's reactivity primitives (`export let`, a top-level reactive `$:`) become hard compile errors rather than working differently. An AI assistant trained on a mix of Svelte 4 and Svelte 5 examples routinely produces a file that starts a rune-mode rewrite and stops halfway — the single most common shape of AI-generated Svelte bug.
+
+- **What to look for:** does the file mix a rune with `export let`, a top-level reactive `$:` statement, `<slot>`, `on:click`-style event directives, or `createEventDispatcher`? The first two are **hard compile errors** the instant any rune is present; the middle two are real, but softer, deprecation warnings; the last one compiles with no signal at all. Knowing which bucket a given legacy pattern falls into changes how urgently it needs fixing.
+- **The question to ask:** if I compiled this file right now, would the *reactivity* primitives (`export let`, `$:`) even be legal here — and separately, is the *syntax* (`<slot>`, `on:click`) merely outdated, or the *idiom* (`createEventDispatcher`) merely unfashionable?
+- **Which lesson explains it:** **[Why Svelte, the Compiler](/svelte/en/foundations/why-svelte-the-compiler/)** proves per-file mode detection directly with `compile()`'s `metadata.runes`; **[Events & Attributes](/svelte/en/foundations/events-and-attributes/)** has the full four-pattern legacy-recognition table with every real error/warning text; the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**'s first group works through all four side by side.
+
+## 2. Who owns each piece of state
+
+Every `$state` declaration is a claim about ownership: this is the one source of truth for this value, computed once and read wherever it's needed. AI-generated code frequently duplicates ownership anyway — mirroring a prop into `$state` and syncing it with `$effect` instead of deriving it, writing a computed value inside `$effect` instead of `$derived`, or exporting module-level `$state` that is silently shared by every request on a server.
+
+- **What to look for:** an `$effect` that only assigns to another `$state` variable (should almost always be `$derived`); a value read inside `setTimeout`/`await`/any callback that runs *after* the surrounding `$effect` or `$derived` has already finished its synchronous pass (not a tracked dependency, no matter how reactive it looks); `$state.raw` mutated in place instead of reassigned; a `.svelte.ts`/`.svelte.js` module exporting `$state` that gets written to inside a `load` function or a request handler.
+- **The question to ask:** could this value just be `$derived` from what it already depends on — and if this file's module-level state is mutated on the server, is that safe for *every concurrent request*, or does it leak one user's data into the next?
+- **Which lesson explains it:** **[The `$effect` Rune](/svelte/en/reactivity/effect-rune/)** proves the effect-mirror lag with a running test; **[The `$derived` Rune](/svelte/en/reactivity/derived-rune/)** proves push-pull laziness and why a `$derived` must stay free of side effects; **[The `$state` Rune](/svelte/en/reactivity/state-rune/)** proves `$state.raw`'s silent-mutation trap and the module-state SSR leak directly.
+
+## 3. Props, bindings, and the snippet contract
+
+`$props()`, `$bindable()`, and `{#snippet}`/`{@render}` each carry a contract that is easy to get half-right: a prop flows one way unless the child explicitly opts into two-way binding, and a snippet is a value that must be *rendered*, not called like a function. AI-generated code regularly assumes the contract without checking it — binding to a prop the child never marked bindable, or writing a snippet's name as a bare call.
+
+- **What to look for:** a parent doing `<Child bind:value={x} />` when `Child` never wrote `let { value = $bindable() } = $props()`; a snippet referenced as `{name(args)}` instead of `{@render name(args)}`; a `{#snippet}` defined and never rendered anywhere at all; a `use:` action whose argument changes after mount with no `update` method to notice.
+- **The question to ask:** does the child component actually grant the two-way surface this `bind:` assumes — and everywhere a snippet's name appears, is it behind `{@render}`?
+- **Which lesson explains it:** **[Bindings](/svelte/en/bindings-actions-transitions/bindings/)** proves the exact `svelte-check` error for a missing `$bindable()`; **[Snippets & Render](/svelte/en/components/snippets-and-render/)** proves the runtime `invalid_snippet_arguments` error for a bare snippet call; **[Actions](/svelte/en/bindings-actions-transitions/actions/)** proves attachments re-run on argument change where `use:` actions silently don't.
+
+## 4. Events and the DOM
+
+Svelte 5 event handlers are plain properties (`onclick`, not `on:click`), and most of them are delegated to a single root listener rather than attached per element. Both details matter for reading generated code that pokes at the DOM directly — a `stopPropagation()` on a vanilla listener between the root and a Svelte handler silently defeats it, and code assuming `use:` actions "just work" like reactive props misses that only an explicit `update` method (or, in new code, an attachment) makes that true.
+
+- **What to look for:** a manually-attached `addEventListener` between the DOM root and a Svelte `onclick`, especially one calling `stopPropagation()`; a `use:` action whose parameter changes after mount, with no `update` method; code that could be a component-level attachment instead, since `use:` only works on elements.
+- **The question to ask:** if something between the root and this element stops native event bubbling, does the delegated handler still fire — and does this piece of imperative DOM code actually re-run when its inputs change, or only once, at mount?
+- **Which lesson explains it:** **[Events & Attributes](/svelte/en/foundations/events-and-attributes/)** proves event delegation and the `stopPropagation()` gap directly with a real ancestor listener; **[Actions](/svelte/en/bindings-actions-transitions/actions/)** proves the attachment-vs-`use:` re-run difference with a counting test.
+
+## 5. The SvelteKit server boundary
+
+Code that runs on the server has sharp edges that don't show up in a component-only review: `redirect()`/`error()` work by throwing, which a generically-written `try/catch` can silently swallow; a universal `+page.js` load runs in the browser too, so it can never import server-only env or touch a database; and a form action that returns a plain object instead of `fail()` looks correct in the UI while carrying the wrong HTTP status underneath.
+
+- **What to look for:** a `try/catch` around code that calls `redirect()`/`error()`, with no `isRedirect`/`isHttpError` check before treating the catch as a real failure; `$env/static/private` (or any server-only import) referenced from a `+page.js` instead of `+page.server.js`; a form action returning `{ error: '...' }` instead of `fail(status, { error: '...' })`; a `load` that `await`s data the first paint doesn't need, instead of returning an unawaited promise for `{#await}` to stream; `import { page } from '$app/stores'` instead of `$app/state`.
+- **The question to ask:** if this exact code path threw a real `redirect()`/`error()`, would anything between the throw and SvelteKit's own handler catch it by accident — and does every server-only import in this file actually live in a file that never ships to the browser?
+- **Which lesson explains it:** **[Server & API](/svelte/en/sveltekit/server-and-api/)** proves the `redirect()`-swallowed-by-`try/catch` bug with real `curl` output, plus the full hooks surface; **[Forms & Actions](/svelte/en/sveltekit/forms-and-actions/)** proves the `fail()`-vs-plain-object HTTP-status gap; **[Loading Data](/svelte/en/sveltekit/loading-data/)** proves streaming and the `$app/state`-vs-`$app/stores` deprecation.
+
+## 6. Keys, transitions, and boundaries
+
+A `{#each}` block without a key doesn't throw — it silently keeps reusing component instances by *position*, so removing an item from the middle of a list can leave a completely unrelated row holding the wrong internal state. `<svelte:boundary>` and async Svelte add one more layer: a `pending` snippet only ever covers a boundary's first render, and `await` in a template is a real compile error without an experimental flag most generated code never mentions.
+
+- **What to look for:** `{#each items as item}` with no `(item.id)` key, especially when each row has its own local state (an expanded/collapsed toggle, a form draft); `reset()` called synchronously inside a `<svelte:boundary onerror>` callback; `await` used directly in a template or `$derived` with no `compilerOptions.experimental.async: true` anywhere in the project.
+- **The question to ask:** if this list reorders or shrinks, does each row's own internal state follow its data, or does it silently stay pinned to a list position — and if this component throws mid-render, is there a boundary around it at all?
+- **Which lesson explains it:** **[Async Svelte](/svelte/en/reactivity/async-svelte/)** proves the `experimental_async` compile error and the boundary/`$effect.pending()` split; **[Lifecycle](/svelte/en/components/lifecycle/)** proves the `svelte_boundary_reset_onerror` timing error; the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)**'s final group proves the keyless-`{#each}` state-swap bug end to end.
+
+This module continues with the **[AI Bug Catalog](/svelte/en/reading-svelte/ai-bug-catalog/)** (28 patterns, grouped in this exact order), a one-page **[Review Checklist](/svelte/en/reading-svelte/review-checklist/)**, **[Verification Tools](/svelte/en/reading-svelte/verification-tools/)**, and three fully worked reviews of AI-generated Svelte apps: **[Worked Review 1](/svelte/en/reading-svelte/worked-review-1/)**, **[Worked Review 2](/svelte/en/reading-svelte/worked-review-2/)**, and **[Worked Review 3](/svelte/en/reading-svelte/worked-review-3/)**.
+
+## Mental Model
+
+```text
+Reading order for a Svelte file you did not write:
+
+1. Runes vs legacy mode  -> is every reactivity primitive even legal in this file?
+2. State ownership       -> does $state/$derived/$effect each do the job it is for?
+3. Props/bindings/snippets -> does bind: have the $bindable() it assumes, is {@render} used?
+4. Events and DOM        -> does a stopPropagation() or a missing update() break this silently?
+5. SvelteKit boundary    -> does a try/catch swallow a throw, does server-only code leak client-side?
+6. Keys, transitions, boundaries -> does list state follow the right row, is there a boundary at all?
+
+Skipping straight to "does it pass svelte-check" answers almost none of these — most of this
+module's catalog compiles clean, and several entries produce no warning of any kind.
+```
+
+## Common Misconceptions
+
+- **"If `svelte-check` passes, the code is correct."** Most entries in this module's catalog compile and type-check cleanly. `svelte-check` proves the shapes are valid and the compiler's own hard rules are followed — never that the runtime behavior matches what the surrounding code assumes.
+- **"A file is either 'old Svelte' or 'new Svelte', consistently throughout."** Proven false, repeatedly, in this module: a single file can mix a hard compile error (`export let` beside a rune) with a soft warning (`on:click`) with a pattern that compiles silently (`createEventDispatcher`) — recognizing which bucket each legacy pattern falls into matters more than a single "is this old" judgment.
+- **"AI-generated Svelte needs more scrutiny than human-written Svelte."** Every pattern in this module's catalog also appears in human-written code — an AI assistant just reproduces it with more confidence, and across more files, than a person usually does.
+- **"If a component renders the right thing once, its state management is correct."** Several of this module's bugs (the keyless-`{#each}` swap, the effect-mirror lag, the module-state SSR leak) only show up on the *second* interaction, reorder, or concurrent request — a single render proves almost nothing about ownership.
+
+<Callout title="The one-line takeaway">
+Read a Svelte file in this order — which compiler mode it is even in, who owns each piece of state, the props/bindings/snippets contract, events and the DOM, the SvelteKit server boundary, then keys/transitions/boundaries — because each step changes what the next one means, and because `svelte-check` passing tells you the code compiles, never that it is correct.
+</Callout>
+
+export const quizReadingSvelteIndex = [
+  {
+    q: "Why does this module check which compiler mode a file is in before checking anything about state ownership or events?",
+    options: [
+      "Because mode detection is always the fastest thing to check",
+      "Because whether a reactivity primitive is even legal in a file changes what every later step is allowed to assume about it",
+      "Because legacy mode was removed in Svelte 5",
+      "The order does not matter",
+    ],
+    answer: 1,
+    explain: "A file whose mode is ambiguous (a half-migrated mix of export let and $state) has reactivity primitives that may not even compile — that is a more foundational problem than anything the later steps (state ownership, events) are built to catch.",
+  },
+  {
+    q: "```svelte\n<script>\n  export let count = 0;\n  let doubled = $state(count * 2);\n</script>\n<p>{doubled}</p>\n```\nWhat happens when this compiles?",
+    options: [
+      "It compiles fine — export let and $state can coexist",
+      "A real compile error: `export let` is not allowed once any rune (here, $state) puts the file in runes mode",
+      "A deprecation warning only",
+      "It silently ignores the export let",
+    ],
+    answer: 1,
+    explain: "Proven in the Events & Attributes lesson: the moment any rune appears, the whole file is in runes mode, and export let (a legacy reactivity primitive) becomes a hard compile error — legacy_export_invalid — not a softer warning.",
+  },
+  {
+    q: "Why does an `$effect` that mirrors a computed value into a separate `$state` variable count as a state-ownership bug, not just a style preference?",
+    options: [
+      "It is purely a style preference with no behavioral difference",
+      "The mirrored value is measurably stale for a window between the state write and the next flush — a real bug for any code that reads it synchronously in that window",
+      "$effect cannot read $state at all",
+      "$state.raw always causes this",
+    ],
+    answer: 1,
+    explain: "Proven with a running test in the $effect Rune lesson: reading the effect-mirrored value immediately after the triggering write returns the OLD value, while the equivalent $derived is correct the instant it is read, with no lag.",
+  },
+  {
+    q: "```svelte\n<!-- Child.svelte -->\n<script>\n  let { value } = $props();\n</script>\n\n<!-- Parent.svelte -->\n<Child bind:value={x} />\n```\nWhat happens when this compiles, assuming Child never wrote `$bindable()`?",
+    options: [
+      "It compiles and works fine, silently syncing both ways",
+      "A real, caught svelte-check error naming the exact fix — bind: is rejected on a non-bindable prop",
+      "It works, but only for strings",
+      "The binding is silently a no-op at runtime",
+    ],
+    answer: 1,
+    explain: "Proven in the Bindings lesson: svelte-check rejects bind: to a plain, non-$bindable() prop with a message that names the exact fix — a caught compile-time error, not a silent no-op.",
+  },
+  {
+    q: "Which step in this reading order specifically covers whether a `try/catch` might accidentally swallow a thrown `redirect()`?",
+    options: [
+      "Keys, transitions, and boundaries",
+      "The SvelteKit server boundary",
+      "Events and the DOM",
+      "Props, bindings, and snippets",
+    ],
+    answer: 1,
+    explain: "redirect()/error() work by throwing a value SvelteKit's own request handling specifically watches for — a try/catch written for a different failure can catch it too, which is exactly the SvelteKit-server-boundary step's concern.",
+  },
+  {
+    q: "```svelte\n{#each rows as row}\n  <Row {...row} />\n{/each}\n```\nEach `Row` has its own local `expanded` toggle. What is the risk of this `{#each}` block having no `(row.id)` key?",
+    options: [
+      "Nothing — keys are only a performance hint",
+      "Removing or reordering an item can leave an unrelated Row's component instance — and its expanded state — attached to the wrong row of data",
+      "It is a compile error",
+      "Keys are only needed for text nodes, never for components",
+    ],
+    answer: 1,
+    explain: "Proven in the AI Bug Catalog's final group: without a key, Svelte reuses each list position's existing component instance (and whatever local state it holds) by position, not by the data's identity — a real, provable state-swap bug, not just a performance concern.",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/index" questions={quizReadingSvelteIndex} />
+
+<ProgressTracker client:visible id="reading-index" />

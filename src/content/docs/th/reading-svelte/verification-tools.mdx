@@ -1,0 +1,343 @@
+---
+title: Verification tools
+description: 'svelte-check, svelte/valid-compile ของ eslint-plugin-svelte (และทำไม recommended เพียงอย่างเดียวจึงพลาดมัน), compile()/$inspect.trace ของ svelte/compiler, vitest + @testing-library/svelte, SveltePlayground ในเบราว์เซอร์, svelte-migrate, และ verify-snippets.mjs ของคอร์สเองแต่ละตัวจับอะไรได้จริง — พร้อม output จริง'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
+
+คอร์สนี้มี playground ในเบราว์เซอร์สำหรับตัว Svelte เอง (ด้านล่าง) แต่วิธีเดียวที่จะพิสูจน์คำกล่าวอ้างเกี่ยวกับโค้ดที่ generate มาของ*โปรเจกต์*จริง — build ที่ล้มเหลวจริง, coverage จริงของ lint config, เทสต์จริง — คือ probe แบบ SvelteKit จริง, การรัน `svelte-check`/`eslint` จริง, หรือการรัน `vitest` จริง output ทุกอันด้านล่างเป็นของจริง คัดลอกมาจาก probe ของคอร์สนี้เองที่รันกับ Svelte 5.57.1 และ SvelteKit 2.70.3 ไม่มีเครื่องมือไหนซ้อนทับกันสมบูรณ์ และไม่มีตัวไหนใกล้เคียงความสมบูรณ์ด้วยตัวเอง — บรรทัด "จับได้โดย" ของแต่ละ 28 entry ใน **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** ระบุตรง ๆ ว่าเครื่องมือไหนด้านล่าง (ถ้ามี) ที่จะจับมันได้
+
+## `svelte-check` — ด่านแรกที่เร็ว
+
+`svelte-check` รัน type-checking และ diagnostic ของ compiler เองกับทุกไฟล์ `.svelte`/`.ts`/`.js` ในโปรเจกต์ มันจับ **compile error แข็ง** ทุกตัวในแคตาล็อกของโมดูลนี้ทันที — `$bindable()` ที่ขาดหาย, `export let`/`$:` ผสมกับ rune, `$store` subscription ที่ scope ผิด, ค่าของ number input ที่ถูกปฏิบัติเหมือน string, flag `experimental.async` ที่ขาดหาย — แต่มันไม่มีทางเห็นบั๊กเชิง*พฤติกรรม*เลย (effect mirror ที่เก่า, `{#each}` ที่ไม่มี key, `redirect()` ที่ถูกกลืน) เพราะสิ่งเหล่านั้นเป็นข้อเท็จจริงตอนรันจริง ไม่ใช่ข้อเท็จจริงเชิง type หรือ syntax
+
+```bash
+npx svelte-check --tsconfig ./tsconfig.json
+```
+
+```text
+src/lib/TogglePanel.svelte:5:8
+Cannot use 'bind:' with this property. It is declared as non-bindable inside
+the component.
+To mark a property as bindable: 'let { open = $bindable() } = $props()'
+
+src/lib/NumberBug.svelte:7:16
+Property 'trim' does not exist on type 'number'.
+```
+
+ทั้งคู่เป็น error จริงปัจจุบันภายใต้ Svelte 5.57.1/TypeScript — ไม่ใช่ style nitpick ดู **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** entry 15 และ 18
+
+## `eslint-plugin-svelte` — coverage จริง และช่องว่างจริงใน `recommended`
+
+parser ของ `eslint-plugin-svelte` (`svelte-eslint-parser`) เข้าใจ syntax ของ Svelte แต่ด้วยตัวเองมัน **ไม่** ทำให้ diagnostic เรื่อง deprecation/error ของ compiler เองกลายเป็น lint finding เลย — งานนั้นเป็นหน้าที่ของ rule เดียวคือ `svelte/valid-compile` ซึ่ง**ไม่**รวมอยู่ใน config `recommended` เลย:
+
+```js
+// eslint.config.js
+import js from '@eslint/js';
+import svelte from 'eslint-plugin-svelte';
+
+export default [
+  js.configs.recommended,
+  ...svelte.configs.recommended,
+];
+```
+
+```bash
+npx eslint src/lib/OnColon.svelte   # <button on:click={...}> — a real deprecation
+```
+
+```text
+(no output — exit code 0)
+```
+
+ยืนยันโดยตรงกับ `eslint-plugin-svelte@3.23.0` ที่ติดตั้งอยู่: ชุด rule ของ `recommended` ไม่มี entry สำหรับ `svelte/valid-compile` เลย — มีแค่ config `all` เท่านั้นที่รวมมันไว้ ที่ severity `error` การเพิ่มมันชัดเจนคือการเปลี่ยนแค่บรรทัดเดียว:
+
+```js
+// eslint.config.js
+import js from '@eslint/js';
+import svelte from 'eslint-plugin-svelte';
+
+export default [
+  js.configs.recommended,
+  ...svelte.configs.recommended,
+  { rules: { 'svelte/valid-compile': 'error' } },
+];
+```
+
+```bash
+npx eslint src/lib/OnColon.svelte
+```
+
+```text
+4:9  error  Using `on:click` to listen to the click event is deprecated. Use the event attribute `onclick` instead
+https://svelte.dev/e/event_directive_deprecated(event_directive_deprecated)  svelte/valid-compile
+```
+
+rule เดียวกันนี้ บนไฟล์ที่ผสม `export let` กับ rune (entry 2 ของ **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)**):
+
+```text
+2:3  error  Cannot use `export let` in runes mode — use `$props()` instead
+https://svelte.dev/e/legacy_export_invalid(legacy_export_invalid)  svelte/valid-compile
+```
+
+`svelte/valid-compile` คือ diagnostic ของ compiler เองตรง ๆ ที่ถูกทำให้เป็น ESLint finding ตอนแก้ไข — แต่จะเกิดขึ้นก็ต่อเมื่อเปิดใช้จริงเท่านั้น โปรเจกต์ที่ติดตั้ง `eslint-plugin-svelte` แล้วหยุดแค่ `recommended` ยังไม่ได้เปิดสิ่งนี้เลย ยืนยันแล้วข้างบนด้วยการรันจริงที่ได้ผลลัพธ์เป็นศูนย์
+
+## `compile()`, `$inspect`, และ `$inspect.trace` ของ `svelte/compiler`
+
+ฟังก์ชันเดียวกันเป๊ะที่ขับเคลื่อน `svelte-check` เป็น API ธรรมดาที่เรียกได้ — `compile(source, options)` — ใช้ได้ตรง ๆ ใน script หรือเทสต์ ซึ่งเป็นวิธีที่หลาย entry ใน **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** (2, 3, 16) จับ error/warning ของตัวเองโดยไม่ต้องมีทั้งโปรเจกต์บนดิสก์:
+
+```ts
+// src/lib/compile-direct.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+test('compile() throws the exact same error svelte-check reports, callable directly', () => {
+  const source = `<script>
+  let count = $state(0);
+  export let label;
+</script>
+<p>{label}: {count}</p>`;
+  expect(() => compile(source, { filename: 'Bad.svelte' })).toThrowError(
+    /Cannot use `export let` in runes mode/,
+  );
+});
+```
+
+```text
+✓ compile() throws the exact same error svelte-check reports, callable directly
+```
+
+สำหรับการ debug reactivity ของ component เฉพาะเจาะจง*ขณะที่มันรันอยู่* แทนที่จะตรวจ source แบบ static `$inspect(value)` จะ log ซ้ำทุกครั้งที่เปลี่ยน (dev-only เป็น no-op ใน production) และ `$inspect.trace(label?)` — วางเป็น statement แรกใน effect หรือ derived — จะพิมพ์ว่า dependency ไหนกันแน่ที่ทำให้รอบนั้นทำงาน พิสูจน์แล้วตรง ๆ ใน **[Advanced Runes](/svelte/th/reactivity/advanced-runes/)**:
+
+```text
+✓ $inspect.trace() prints which dependency caused a derived/effect to re-run
+```
+
+## Vitest + `@testing-library/svelte`: หลักฐานที่รันจริง
+
+component ที่ render แล้วโต้ตอบด้วยจริงคือหลักฐานที่ตรงที่สุดที่คอร์สนี้มีสำหรับ "สิ่งนี้ทำงานจริงหรือไม่" — เกือบทุก entry ใน **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** พิสูจน์ด้วยวิธีนี้ ไม่ใช่กล่าวอ้างจากความจำ:
+
+```svelte
+<!-- src/lib/SmokeCounter.svelte -->
+<script lang="ts">
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>count: {count}</button>
+```
+
+```ts
+// src/lib/smoke-counter.test.ts
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import SmokeCounter from './SmokeCounter.svelte';
+
+test('a real smoke test: click, then assert on what the user sees', async () => {
+  render(SmokeCounter);
+  await fireEvent.click(screen.getByRole('button', { name: /count: 0/i }));
+  expect(screen.getByRole('button', { name: /count: 1/i })).toBeInTheDocument();
+});
+```
+
+```bash
+node tools/verify-snippets.mjs --test reading-svelte/verification-tools
+```
+
+```text
+✓ a real smoke test: click, then assert on what the user sees
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+ดู **[Testing](/svelte/th/tooling-and-production/testing/)** สำหรับวินัยการทำ RTL สำหรับ Svelte แบบเต็มรูปแบบที่คอร์สนี้ยึดถือ — query, `fireEvent`/`userEvent`, และการเทสต์ effect/async state
+
+## Playground ในเบราว์เซอร์: compile แล้วอ่าน output
+
+ลอง compile ตัวอย่าง `await` ตัวเดียวกับใน **[Async Svelte](/svelte/th/reactivity/async-svelte/)** ด้วยตัวเองตรงนี้เลย — embed นี้ไม่ได้ตั้ง flag `experimental.async` ไว้ ดังนั้น compile error จริงควรปรากฏใน panel ผลลัพธ์ทันทีที่คุณกด Compile:
+
+export const asyncNoFlagCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let a = $state(1);
+  let b = $state(2);
+
+  async function add(x, y) {
+    await new Promise((r) => setTimeout(r, 300));
+    return x + y;
+  }
+</script>
+
+<p>{a} + {b} = {await add(a, b)}</p>
+`;
+
+<SveltePlayground code={asyncNoFlagCode} id="verification-tools-playground" />
+
+นี่คือการเรียก `compiler.compile()` ตัวเดียวกันเป๊ะกับที่ `svelte-check` และเทสต์ Vitest ด้านบนใช้ รันสดในเบราว์เซอร์ของคุณเอง — ข้อความ error, บรรทัด/คอลัมน์, และ source frame ใน panel คือ output จริงของ compiler ไม่ใช่ screenshot ที่เตรียมไว้ ลองสลับ **Dev mode**/**Server target** แล้ว compile ใหม่ จะเห็นว่า source เดียวกันสร้าง JS ที่ generate ต่างกันอย่างไร (หรือ error เดิม เพราะ compiler flag ที่ขาดหายไม่ได้รับผลจากทั้งสอง toggle นี้)
+
+## `svelte-migrate`: มันเขียนโค้ดใหม่อะไรบ้างจริง ๆ ยืนยันแล้ว
+
+`svelte-migrate` (การ migrate `svelte-5` ภายใน `npx sv migrate`) ไม่ได้แค่ตั้งค่าสถานะรูปแบบ legacy — มันเขียนโค้ดใหม่จริง โดยใช้ฟังก์ชัน `migrate()` ตัวเดียวกันเป๊ะที่ `svelte/compiler` export ไว้ รันตรง ๆ กับไฟล์สไตล์ Svelte 4 จริง (`export let`, `$:` แบบ top-level, `on:click`):
+
+```svelte
+<!-- src/lib/Legacy.svelte — input to svelte-migrate -->
+<script>
+  export let initialCount = 0;
+  let count = initialCount;
+  $: doubled = count * 2;
+</script>
+
+<button on:click={() => count++}>{count} (doubled: {doubled})</button>
+```
+
+```text
+$ node -e "
+import('svelte/compiler').then(m => {
+  const fs = require('fs');
+  const src = fs.readFileSync('src/lib/Legacy.svelte', 'utf8');
+  console.log(m.migrate(src, { filename: 'Legacy.svelte' }).code);
+});
+"
+```
+
+```text
+<script>
+  /**
+   * @typedef {Object} Props
+   * @property {number} [initialCount]
+   */
+
+  /** @type {Props} */
+  let { initialCount = 0 } = $props();
+  let count = $state(initialCount);
+  let doubled = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{count} (doubled: {doubled})</button>
+```
+
+`export let` กลายเป็น `$props()` แบบ destructure (พร้อม JSDoc type `Props` ที่ generate ให้สำหรับไฟล์ plain-JS), `let count = initialCount` ธรรมดากลายเป็น `$state(initialCount)`, `$: doubled = ...` กลายเป็น `let doubled = $derived(...)`, และ `on:click` กลายเป็น `onclick` — ทั้ง 4 รูปแบบในกลุ่มแรกของ **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)** ถูกเขียนใหม่อัตโนมัติในรอบเดียว ตัว CLI เอง (`npx sv migrate` หรือ package `svelte-migrate` แบบ standalone เวอร์ชัน `1.10.3` ที่ยืนยันแล้ว) มีการ migrate หลายแบบแยกจากกัน ไม่ใช่แค่ตัวนี้:
+
+```text
+$ npx svelte-migrate
+◆  Which migration would you like to run?
+│  ● app-state
+│  ○ package
+│  ○ routes
+│  ○ self-closing-tags
+│  ○ svelte-5
+│  ○ sveltekit-2
+```
+
+`app-state` คือตัวที่ถูกระบุตรง ๆ ใน **[Runes vs Stores](/svelte/th/state-and-stores/runes-vs-stores/)** สำหรับทำการเขียนใหม่จาก `$app/stores` เป็น `$app/state` อัตโนมัติ (entry 21 ของ **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)**) เหมือน codemod ทั่วไป ให้ปฏิบัติกับ output ของมันเป็นร่างที่ต้อง review ไม่ใช่ patch ที่ merge ได้เลยแบบไม่ดู — มันเขียน syntax ใหม่เชิงกลไกได้ถูกต้อง แต่ไม่มีทางรู้ว่าโค้ดรอบข้าง*พฤติกรรม*ยังต้องการการแก้ที่ลึกกว่าซึ่งแคตาล็อกของโมดูลนี้ครอบคลุมอยู่หรือไม่ — เช่น `export let` ที่ migrate แล้วซึ่งควรได้ `$bindable()` ด้วย
+
+## harness ของคอร์สนี้เอง: compile ทุก snippet
+
+ทุก code fence ในคอร์สนี้ที่ทำเครื่องหมายด้วย path-comment เปล่า ๆ บรรทัดแรก (`<!-- src/lib/X.svelte -->` สำหรับ fence `svelte`, `// src/lib/x.ts` สำหรับ `ts`/`js`) เป็นไฟล์จริง ถูกเก็บโดย `tools/verify-snippets.mjs` เข้าไดเรกทอรีที่แบ่ง namespace ต่อบท แล้ว type-check ใน `svelte-check` รอบเดียวทั้งคอร์ส:
+
+```bash
+node tools/verify-snippets.mjs
+```
+
+```text
+no type errors.
+
+Per-module fence summary (collected / skipped-no-path / expect-error / tests):
+  reading-svelte: ... (see this module's own gate run)
+  ...
+```
+
+fence ที่จงใจโชว์โค้ดที่พังหรือทำงานผิด (เกือบทุกตัวอย่าง "โค้ดที่ AI มักเขียน" ใน **[AI Bug Catalog](/svelte/th/reading-svelte/ai-bug-catalog/)**) ขึ้นต้นด้วย `<!-- @expect-error <เหตุผล> -->`/`// @expect-error <เหตุผล>` เพื่อให้ harness ข้ามการเก็บมัน — เนื้อความของบทพก output จริงของ `svelte-check`/compiler/console ที่จับแยกต่างหากไว้แล้ว แทนที่จะให้ harness ต้องสร้างความล้มเหลวที่จงใจซ้ำทุกครั้งที่รัน `--test [module/lesson]` รัน fence `*.test.ts` เฉพาะผ่าน Vitest, `--refresh` สร้าง probe ใหม่ทั้งหมด, และ `--self-test` คือการตรวจ regression ของ harness เอง ดูส่วน "Harness" ของ README โปรเจกต์สำหรับ fence convention และผัง probe เต็มรูปแบบ
+
+## Mental Model
+
+<Mermaid title="เครื่องมือ static พิสูจน์จาก source อย่างเดียว เครื่องมือ dynamic ต้องการ render, build, หรือเบราว์เซอร์จริง" code={verificationToolsDiagram} />
+
+export const verificationToolsDiagram = `flowchart TD
+  subgraph Static["Static (source/compiler only)"]
+    Check["svelte-check<br/>real errors: $bindable(), export let/$: in runes mode, number-input types"]
+    Eslint["eslint-plugin-svelte<br/>svelte/valid-compile surfaces compiler diagnostics — NOT in recommended alone"]
+    Compiler["svelte/compiler compile()/migrate()<br/>the same function svelte-check and svelte-migrate both call"]
+    Verify["tools/verify-snippets.mjs<br/>compiles every tagged fence in the course"]
+  end
+  subgraph Runtime["Runtime (needs a real render or commit)"]
+    Vitest["Vitest + @testing-library/svelte<br/>click, then assert on what a user sees"]
+    Playground["SveltePlayground<br/>real compile() output, live in your browser"]
+    Inspect["$inspect / $inspect.trace<br/>dev-only, real dependency tracing"]
+  end
+  subgraph Build["Needs a real production build or server"]
+    EnvBuild["vite build<br/>catches a server-only env import in a universal load"]
+    Curl["curl against a running app<br/>redirect()/error() swallowed by try/catch, streaming timing"]
+  end
+`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+ทุกเครื่องมือในหน้านี้เป็นตัวกรอง ไม่ใช่คำตัดสิน — แม้จะรันร่วมกันทั้งหมด มันยังปล่อยให้ 28 รูปแบบส่วนใหญ่ใน AI Bug Catalog ไม่ถูกจับเลย (รวมถึงตัวที่เดิมพันสูงสุดอย่าง `redirect()` ที่ถูกกลืน หรือการสลับ state ของ `{#each}` ที่ไม่มี key) เพราะมันเป็นข้อเท็จจริงเชิงพฤติกรรม/รันจริง ไม่ใช่ข้อเท็จจริงเชิง syntax config `recommended` ของ `eslint-plugin-svelte` **ไม่** รวม `svelte/valid-compile` ไว้โดยเฉพาะ — ตรวจสอบว่า config ของโปรเจกต์คุณเองเปิดมันจริงก่อนจะเชื่อการรัน lint ที่สะอาด รันทุกเครื่องมือในหน้านี้ แล้วยังต้องไล่ <a href="/svelte/th/reading-svelte/review-checklist/">Review Checklist</a> ด้วยตาอยู่ดี
+</Callout>
+
+export const quizVerificationTools = [
+  {
+    q: "```text\n(no output — exit code 0)\n```\nนี่คือผลของ `eslint src/lib/OnColon.svelte` (ไฟล์ที่ใช้ `on:click`) ภายใต้ config `recommended` ของ `eslint-plugin-svelte` ทำไมจึงไม่มีอะไรถูกจับเลย?",
+    options: [
+      "on:click ไม่ได้ deprecated จริง ๆ",
+      "recommended ไม่รวม svelte/valid-compile — rule ที่ทำให้ diagnostic เรื่อง deprecation/error ของ compiler เองกลายเป็น lint finding — ยืนยันโดยตรงกับ eslint-plugin-svelte@3.23.0",
+      "ไฟล์นี้มี syntax error ที่ linter parse ไม่ได้",
+      "eslint-plugin-svelte ตรวจแค่ไฟล์ TypeScript เท่านั้น",
+    ],
+    answer: 1,
+    explain: "ยืนยันโดยตรง: ชุด rule ของ svelte.configs.recommended ไม่มี entry สำหรับ svelte/valid-compile เลย — มีแค่ svelte.configs.all เท่านั้นที่รวมมันไว้ การเพิ่ม { rules: { 'svelte/valid-compile': 'error' } } อย่างชัดเจนต่างหากที่ทำให้ deprecation กลายเป็น lint error จริง",
+  },
+  {
+    q: "```js\nexport let initialCount = 0;\n```\nฟังก์ชัน `migrate()` ของ `svelte/compiler` ทำอะไรกับบรรทัดนี้เป๊ะ ๆ ในไฟล์ plain (ไม่ใช่ TypeScript)?",
+    options: [
+      "ไม่ทำอะไรเลย — migrate() ทำงานแค่กับไฟล์ TypeScript เท่านั้น",
+      "เขียนใหม่เป็นการเรียก $props() แบบ destructure พร้อม generate comment JSDoc @typedef Props ไว้ข้างบน เพราะไฟล์นี้ไม่มี syntax TypeScript ให้ระบุ type ตรง ๆ",
+      "ลบ prop นั้นทิ้งไปเลย",
+      "แปลงเป็น store",
+    ],
+    answer: 1,
+    explain: "พิสูจน์แล้วด้วยการเรียก migrate() จริงในบทนี้: output ของ plain-JS ได้รับ block /** @typedef {Object} Props */ และ annotation /** @type {Props} */ แล้วตามด้วย let { initialCount = 0 } = $props() แบบ destructure เอง — เทียบเท่าเชิงกลไกกับสิ่งที่เวอร์ชัน .ts ที่พิมพ์เองจะแสดงตรง ๆ",
+  },
+  {
+    q: "ทำไม embed SveltePlayground ของคอร์สนี้จึงแสดง compile error จริงของ experimental_async สำหรับตัวอย่าง async-await ได้ แทนที่จะเป็นแบบเตรียมไว้/ปลอม?",
+    options: [
+      "ทำไม่ได้ — playground แสดงแค่การ compile ที่สำเร็จเท่านั้น",
+      "playground โหลด package svelte/compiler จริงแบบ lazy แล้วเรียกฟังก์ชัน compile() จริงในเบราว์เซอร์ — ฟังก์ชันเดียวกับที่ svelte-check และ CLI migrate() เรียก — ดังนั้น compiler option ที่ขาดหายจึงสร้าง error จริงเหมือนกันเป๊ะ",
+      "error ถูกเขียนไว้เองในตัว component ของ playground",
+      "playground รันบนเซิร์ฟเวอร์ระยะไกล ไม่ใช่ในเบราว์เซอร์",
+    ],
+    answer: 1,
+    explain: "README บันทึกไว้ (และบทนี้พูดซ้ำ) ว่า SveltePlayground import svelte/compiler จาก esm.sh แบบ lazy แล้วเรียก compile() ตรง ๆ ในเบราว์เซอร์ — ไม่มีเส้นทาง error ปลอมแยกต่างหากเลย ไม่ว่า compiler จริงจะคืนอะไรมา panel ก็แสดงสิ่งนั้น",
+  },
+  {
+    q: "ข้อจำกัดที่ใหญ่ที่สุดของทุกเครื่องมือในบทนี้รวมกันคืออะไร?",
+    options: [
+      "ทุกตัวช้าเกินไปที่จะรันใน CI",
+      "ไม่มีตัวไหนเห็นข้อเท็จจริงเชิงพฤติกรรม/รันจริงจาก source อย่างเดียวได้เลย — redirect() ที่ถูกกลืน, การสลับ state ของ {#each} ที่ไม่มี key, หรือ $effect mirror ที่เก่า ล้วน compile และ type-check ผ่านสะอาด ต้องมีเทสต์ที่รันจริงหรือ build จริงเท่านั้นถึงจะเผยออกมา",
+      "ทำงานได้แค่กับ SvelteKit เท่านั้น ไม่ใช่กับ Svelte ธรรมดา",
+      "ต้องมี license แบบเสียเงิน",
+    ],
+    answer: 1,
+    explain: "ย้ำซ้ำตลอดบรรทัด 'จับได้โดย' ของ AI Bug Catalog: entry อย่างความล่าช้าของ effect-mirror, การสลับของ each ที่ไม่มี key, และ redirect() ที่ถูกกลืน ล้วนไม่มีสัญญาณจากเครื่องมือ static ใด ๆ เลย — มีแค่เทสต์ Vitest ที่รันจริงหรือ curl/build จริงเท่านั้นที่เผยมันออกมา",
+  },
+  {
+    q: "ทำไมตัวอย่าง `svelte-migrate` ของบทนี้จึงบรรยาย output ของเครื่องมือว่าเป็น 'ร่างที่ต้อง review ไม่ใช่ patch ที่ merge ได้เลยแบบไม่ดู'?",
+    options: [
+      "เพราะการ migrate มักสร้างโค้ดที่ compile ไม่ผ่านด้วยซ้ำ",
+      "เพราะ codemod เขียน syntax ใหม่เชิงกลไกได้ถูกต้อง แต่ไม่มีทางรู้ว่าพฤติกรรมของโค้ดรอบข้างยังต้องการการแก้ที่ลึกกว่าซึ่งแคตาล็อกของโมดูลนี้ครอบคลุมหรือไม่ — เช่น prop ที่ migrate แล้วซึ่งควรได้ $bindable() ด้วย",
+      "เพราะ svelte-migrate ไม่มีคนดูแลแล้วและผิดบ่อย",
+      "เพราะมันทำงานได้แค่กับ component ที่ไม่มี prop เลยเท่านั้น",
+    ],
+    answer: 1,
+    explain: "พิสูจน์ข้างบน: migrate() เขียน export let/$:/on:click ใหม่ได้ถูกต้อง — เป็น transform เชิงกลไกที่ยืนยันแล้วจริง — แต่ไม่มีอะไรใน transform นั้นรู้ได้เลยว่า เช่น prop ที่ไฟล์ที่ migrate แล้วเปิดออกมาควรกลายเป็น bindable ด้วยหรือไม่ ซึ่งเป็นการตัดสินใจเชิงออกแบบ ไม่ใช่ข้อเท็จจริงเชิง syntax",
+  },
+];
+
+<Quiz client:visible id="reading-svelte/verification-tools" questions={quizVerificationTools} />
+
+<ProgressTracker client:visible id="reading-tools" />
