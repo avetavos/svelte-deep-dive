@@ -151,3 +151,4 @@ html.read-mode .readmode-toggle {
 
 /* ---- Paper read mode: keep content clear of the sticky header ---- */
 html.read-mode .main-frame { padding-top: var(--sl-nav-height, 3.5rem) !important; }
+.quiz__explain { margin:.4rem .25rem .5rem; padding-left:.6rem; border-left:3px solid var(--sl-color-gray-5); font-size:.9em; color:var(--sl-color-gray-2); }

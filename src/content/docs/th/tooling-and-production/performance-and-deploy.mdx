@@ -66,7 +66,7 @@ export const deployDiagram = `flowchart LR
 
 ตั้ง `export const prerender = true` บน route ที่เป็น static ได้ แล้วปล่อยที่เหลือให้ render on demand — วิธี hybrid เดียวกันที่ทำให้เว็บส่วนใหญ่ cache ได้ ส่วนอีกไม่กี่ route ยังคง dynamic
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 compiler ของ Svelte ทำให้ output **เล็กและเร็วโดย default** แต่ให้วัดด้วย `vite build` (และ bundle visualizer) — น้ำหนักมักมาจาก dependency ภายนอก ไม่ใช่ Svelte deploy แอป SvelteKit ผ่าน **adapter**: `adapter-auto` (zero-config), `adapter-node`, `adapter-cloudflare` หรือ `adapter-static` เลือก **static** (prerender ไป CDN ไม่ต้องมี server) สำหรับ content ร่วม และ **server** adapter สำหรับ data ตอน request-time — และผสมกันต่อ route ด้วย `export const prerender`
 </Callout>
 

@@ -36,7 +36,7 @@ export const toolDiagram = `flowchart LR
 
 แกนหลัก: Svelte compile ออกมาเป็น output ที่เล็กโดย default และเครื่องมือรอบ ๆ (Vite, `svelte-check`, Vitest, adapter) ก็คือ JavaScript toolchain สมัยใหม่แบบเดียวกับที่คุณใช้ที่อื่น ๆ ส่วนใหญ่จึงย้ายมาจาก framework อื่นได้ตรง ๆ
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 โมดูลนี้คือ **workflow รอบ ๆ Svelte**: scaffold ด้วย **`sv` CLI**, develop และ build บน **Vite**, รักษา type ให้ตรงด้วย **`svelte-check`**, พิสูจน์ behaviour ด้วย **Vitest + Testing Library + Playwright** และ deploy ผ่าน **SvelteKit adapter** ตัว compiler ให้ output ที่เล็กและเร็วมาอยู่แล้ว — toolchain ที่เหลือคือเครื่องมือ JavaScript สมัยใหม่มาตรฐาน บวกชิ้นส่วนที่รู้จัก Svelte ไม่กี่ตัว
 </Callout>
 

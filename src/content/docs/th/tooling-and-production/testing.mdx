@@ -82,7 +82,7 @@ test('user can sign in', async ({ page }) => {
 
 เก็บ test พวกนี้ให้น้อยและมีคุณค่าสูง — test พวกนี้ช้ากว่า unit และ component test แต่เป็นชั้นเดียวที่พิสูจน์ว่าทุกอย่างทำงานร่วมกันได้
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 test เป็นสามชั้น: **Vitest** สำหรับ logic ล้วนและ runed `.svelte.js` module; **`@testing-library/svelte`** (+ Vitest) สำหรับ component ที่ render ใน jsdom query ด้วย role/text เพื่อ test **behaviour ไม่ใช่ internals**; และ **Playwright** สำหรับ end-to-end flow ที่มีคุณค่าสูงไม่กี่อัน ใน browser จริง (ชั้นที่ verify load function และ form action ของ SvelteKit) unit test เยอะ, component test พอประมาณ, e2e น้อย
 </Callout>
 

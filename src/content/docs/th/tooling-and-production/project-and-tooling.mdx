@@ -64,7 +64,7 @@ npm run check      # runs svelte-check across the project
 
 เพราะ `svelte-check` เข้าใจไฟล์ `.svelte` แบบครบวงจร จึงจับ error ที่ `tsc` ธรรมดามองไม่เห็น — prop type ที่ส่งผิดใน markup, typo ใน template expression, CSS selector ที่ไม่ได้ใช้ Prettier และ ESLint (พร้อม plugin ของ Svelte ที่ `sv create` เสนอให้) เติมเรื่อง formatting และ linting ให้ครบ
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 scaffold ด้วย **`npx sv create`** (CLI ปัจจุบัน แทน `npm create svelte`) — คำสั่งนี้ตั้งค่าแอป **SvelteKit** บน **Vite** พร้อม TypeScript/Prettier/ESLint/testing แบบเลือกได้ Vite ให้ **HMR** ตอน dev และ **`vite build`** ที่ optimize แล้วสำหรับ production รักษาคุณภาพด้วย **Svelte editor extension** และ **`svelte-check`** ที่ type-check ไฟล์ `.svelte` รวม markup — จับ error ที่ `tsc` ธรรมดาทำไม่ได้
 </Callout>
 

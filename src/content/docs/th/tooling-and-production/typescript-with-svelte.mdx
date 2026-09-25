@@ -92,7 +92,7 @@ export const typeDiagram = `flowchart LR
   gen["generics attribute (T)"] --> dollar
   dollar --> check["svelte-check verifies usage + markup"]`;
 
-<Callout title="The one-line takeaway">
+<Callout title="สรุปหนึ่งบรรทัด">
 เพิ่ม **`lang="ts"`** แล้ว rune เป็น generic — `$state<T>(...)` type ให้ state type props ด้วย **`interface Props`** ที่ annotate การ destructure `$props()` (ตัวแทน `export let` ที่ type แล้วของ Svelte 5) type markup ที่ส่งเข้ามาด้วย type **`Snippet`** (`Snippet<[Arg]>` สำหรับ parameter) และทำ component ให้ generic ด้วย attribute **`generics`** เพื่อให้ type ของผู้ใช้ไหลผ่าน `svelte-check` verify ทั้งหมด รวม markup ด้วย
 </Callout>
 
