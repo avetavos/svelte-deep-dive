@@ -1,6 +1,6 @@
 ---
 title: 'Actions'
-description: 'use: directive — ผูก behavior แบบ imperative เข้ากับ element ตอน mount, action lifecycle และการ integrate library ที่ไม่ใช่ Svelte'
+description: 'attachment (@attach) วิธีสมัยใหม่ในการรัน imperative code บน element หรือ component, attachment factory ที่ re-run แบบ reactive, สะพาน fromAction() และ use: action เป็นฟอร์มเดิมสำหรับ library'
 sidebar:
   order: 3
 ---
@@ -9,57 +9,212 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## action คือฟังก์ชันที่ run บน element
+## attachment คือฟังก์ชันที่ run บน element
 
-บางครั้งคุณต้องการเข้าถึง DOM node แบบ imperative — เพื่อ init charting library, trap focus, ตั้ง tooltip หรือ detect click นอก element **action** ห่อ logic นั้นเป็นฟังก์ชันที่ reuse ได้ ผูกด้วย `use:` directive
-
-action คือฟังก์ชันที่รับ DOM `node` (และพารามิเตอร์ optional) ตอน element mount และอาจ return object ที่มี method `update` และ `destroy`:
+บางครั้งคุณต้องการเข้าถึง DOM node แบบ imperative — เพื่อ init charting library, trap focus, ตั้ง tooltip หรือ detect click นอก element ตั้งแต่ **Svelte 5.29** เครื่องมือสำหรับสิ่งนี้คือ **attachment**: ฟังก์ชันที่ส่งด้วย syntax `{@attach ...}` ซึ่งรับ element และอาจ return cleanup function
 
 ```svelte
-<script>
-  // An action: (node, params?) => { update?, destroy? }
-  function tooltip(node, text) {
-    const el = document.createElement('div');
-    el.className = 'tooltip';
-    el.textContent = text;
-
-    function show() { document.body.appendChild(el); }
-    function hide() { el.remove(); }
-    node.addEventListener('mouseenter', show);
-    node.addEventListener('mouseleave', hide);
-
-    return {
-      update(newText) { el.textContent = newText; },   // params changed
-      destroy() {                                       // element unmounting
-        node.removeEventListener('mouseenter', show);
-        node.removeEventListener('mouseleave', hide);
-        el.remove();
-      },
+<!-- src/lib/LogAttachment.svelte -->
+<script lang="ts">
+  /** @type {import('svelte/attachments').Attachment} */
+  function logMount(element: Element) {
+    console.log(element.nodeName); // 'DIV'
+    return () => {
+      console.log('cleaning up');
     };
   }
 </script>
 
-<button use:tooltip={'Save your work'}>Save</button>
+<div {@attach logMount}>...</div>
 ```
 
-<Mermaid title="วงจรชีวิตของ action" code={actionDiagram} />
+attachment run ตอน element mount; ถ้ามัน return function, function นั้นจะ run ตอน element unmount (หรือก่อนที่ attachment จะ re-run — ดูด้านล่าง) นั่นคือรูปร่างทั้งหมด: `(element) => cleanup?`
 
-export const actionDiagram = `flowchart LR
-  mount["element mount"] --> run["action(node, params) run"]
-  run --> update["params เปลี่ยน → update(newParams)"]
-  update --> update
-  update --> destroy["element unmount → destroy()"]`;
+## attachment factory re-run แบบ reactive — action ไม่ทำแบบนั้น
 
-## ตัวอย่างในทางปฏิบัติ: click-outside
-
-action เด่นมากสำหรับ behavior DOM ที่ cross-cutting action `clickOutside` dispatch เมื่อ click ลงนอก node — เหมาะสำหรับปิด dropdown และ modal:
+ส่วนที่น่าสนใจคือสิ่งที่เกิดขึ้นเมื่อ attachment อ่าน reactive state `{@attach expr}` run `expr` ข้างใน effect ดังนั้น **attachment factory** — ฟังก์ชันที่รับ argument แล้ว *return* attachment — จะถูก destroy แล้วสร้างใหม่อัตโนมัติทุกครั้งที่ค่าที่มันอ่านเปลี่ยน:
 
 ```svelte
-<script>
-  function clickOutside(node, callback) {
-    function handle(e) {
-      if (!node.contains(e.target)) callback();
+<!-- src/lib/AttachTooltip.svelte -->
+<script lang="ts">
+  let { text, onRun }: { text: string; onRun: (n: number) => void } = $props();
+  let runs = 0;
+
+  // An attachment factory: (text) => (node) => cleanup?
+  function tooltip(t: string) {
+    return (node: HTMLElement) => {
+      runs += 1;
+      onRun(runs);
+      node.title = t;
+    };
+  }
+</script>
+
+<div {@attach tooltip(text)}>hover</div>
+```
+
+เทียบกับตัวเดียวกันที่เขียนเป็น legacy `use:` action โดยไม่มี method `update`:
+
+```svelte
+<!-- src/lib/UseTooltip.svelte -->
+<script lang="ts">
+  let { text, onRun }: { text: string; onRun: (n: number) => void } = $props();
+  let runs = 0;
+
+  // A use: action — runs ONCE per mount. Without an `update` method,
+  // a changed `text` argument is silently ignored.
+  function tooltip(node: HTMLElement, t: string) {
+    runs += 1;
+    onRun(runs);
+    node.title = t;
+  }
+</script>
+
+<div use:tooltip={text}>hover</div>
+```
+
+ทั้งสองดูเหมือนกันเกือบทุกอย่าง แต่ behave ต่างกันทันทีที่ `text` เปลี่ยนหลัง mount:
+
+```ts
+// src/lib/attach-vs-use.test.ts
+import { render } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import AttachTooltip from './AttachTooltip.svelte';
+import UseTooltip from './UseTooltip.svelte';
+
+test('an attachment factory re-runs when its argument changes; a use: action does not', async () => {
+  const attachRuns: number[] = [];
+  const { rerender } = render(AttachTooltip, {
+    props: { text: 'a', onRun: (n: number) => attachRuns.push(n) },
+  });
+  await rerender({ text: 'b', onRun: (n: number) => attachRuns.push(n) });
+  expect(attachRuns).toEqual([1, 2]); // ran again when `text` changed
+
+  const actionRuns: number[] = [];
+  const { rerender: rerenderAction } = render(UseTooltip, {
+    props: { text: 'a', onRun: (n: number) => actionRuns.push(n) },
+  });
+  await rerenderAction({ text: 'b', onRun: (n: number) => actionRuns.push(n) });
+  expect(actionRuns).toEqual([1]); // never ran again — text change was ignored
+});
+```
+
+```text
+✓ an attachment factory re-runs when its argument changes; a use: action does not
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+นั่นคือ trade-off หลัก: attachment factory เป็น **reactive โดย default** — มัน re-run ทุกครั้งที่สิ่งที่มันอ่านเปลี่ยน โดย destroy attachment เก่า (run cleanup ของมัน) ก่อน ส่วน `use:` action จะ re-run แค่ method `update` ของมันเท่านั้น และก็ต่อเมื่อคุณเขียนมันไว้; ถ้าไม่มี parameter ที่เปลี่ยนจะถูกเมินเฉย ๆ — bug เงียบ ๆ ที่พบบ่อยเมื่อโค้ดที่ AI generate สมมติว่า `use:tooltip={text}` "ทำงานได้เอง" เหมือน prop
+
+ถ้า setup เองมี cost สูงและคุณต้องการให้แค่ *ส่วนหนึ่ง* ของ attachment reactive ให้อ่าน reactive value ข้างใน `$effect` ที่ nest เข้าไปแทนที่จะอ่านตอนต้นของ factory:
+
+```svelte
+<!-- src/lib/OptimizedAttach.svelte -->
+<script lang="ts">
+  let { text }: { text: string } = $props();
+
+  function tooltip(getText: () => string) {
+    return (node: HTMLElement) => {
+      veryExpensiveSetupWork(node);
+      $effect(() => {
+        node.title = getText(); // only this part re-runs when `text` changes
+      });
+    };
+  }
+
+  function veryExpensiveSetupWork(_node: HTMLElement) {}
+</script>
+
+<div {@attach tooltip(() => text)}>hover</div>
+```
+
+## attachment ใช้กับ component ได้ด้วย
+
+attachment บน component จะกลายเป็น prop ที่มี key เป็น `Symbol`; ถ้า component spread props ที่เหลือลงบน element, element นั้นจะได้รับ attachment ไปด้วย นี่ทำให้สร้าง **wrapper component** ที่เสริม element ที่มัน render ได้ โดย wrapper ไม่ต้องรู้จัก attachment เลยแม้แต่น้อย:
+
+```svelte
+<!-- src/lib/Button.svelte -->
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  let { children, ...props }: { children?: Snippet } & Record<string, unknown> = $props();
+</script>
+
+<!-- `props` includes any attachment the caller passed -->
+<button {...props}>{@render children?.()}</button>
+```
+
+```svelte
+<!-- src/lib/ButtonWithAttachment.svelte -->
+<script lang="ts">
+  import Button from './Button.svelte';
+
+  function logAttach(): import('svelte/attachments').Attachment {
+    return (element) => {
+      element.setAttribute('data-attached', 'true');
+    };
+  }
+</script>
+
+<Button {@attach logAttach()}>Click</Button>
+```
+
+`use:` ใช้กับ component ไม่ได้เลย — ใช้ได้แค่กับ DOM element เท่านั้น ส่วน attachment ใช้ได้กับทั้ง element และ component ซึ่งเป็นหนึ่งในเหตุผลที่ docs อธิบาย attachment ว่า "ยืดหยุ่นและ composable กว่า"
+
+สำหรับกรณีที่ต้องประกอบ attachment หลายตัวแบบ programmatic (เช่น จาก loop หรือรวมจากหลายแหล่ง) แทนที่จะเขียนมันตรง ๆ ใน markup `createAttachmentKey` จะสร้าง key แบบ symbol เดียวกัน ทำให้ spread ลงบน object ที่เป็น `$state` ได้:
+
+```svelte
+<!-- src/lib/SpreadAttachment.svelte -->
+<script lang="ts">
+  import { createAttachmentKey } from 'svelte/attachments';
+
+  let stuff = $state({
+    [createAttachmentKey()]: (node: HTMLElement) => console.log(node.nodeName),
+  });
+</script>
+
+<div {...stuff}>spread</div>
+```
+
+## เชื่อม library action เดิมด้วย fromAction
+
+library หลายตัวยังคง ship **action** แบบ Svelte ปกติ (รูปร่าง `(node, params?) => { update?, destroy? }`) แทนที่จะเป็น attachment `fromAction` แปลง action เป็น attachment โดยพฤติกรรมเหมือนเดิมทุกประการ ทำให้ใช้กับ component หรือควบคู่กับ attachment อื่นได้:
+
+```svelte
+<!-- src/lib/FromActionBridge.svelte -->
+<script lang="ts">
+  import { fromAction } from 'svelte/attachments';
+
+  // A library-style action — untouched, still the classic (node, params) shape.
+  function legacyTooltip(node: HTMLElement, text: string) {
+    node.title = text;
+    return {
+      update(t: string) { node.title = t; },
+    };
+  }
+
+  let text = $state('hi');
+</script>
+
+<!-- Note the second argument is a FUNCTION that returns the action's
+     argument, not the argument itself — fromAction re-reads it reactively. -->
+<div {@attach fromAction(legacyTooltip, () => text)}>hover</div>
+```
+
+## use: คือฟอร์มเดิม ยังอยู่สำหรับโค้ดของ library
+
+ก่อนที่ attachment จะมีอยู่ วิธีเดียวที่ทำแบบนี้ได้คือ `use:` directive action คือฟังก์ชันที่รับ DOM `node` (และพารามิเตอร์ optional) ตอน element mount และอาจ return object ที่มี method `update` และ `destroy`:
+
+```svelte
+<!-- src/lib/ClickOutsideDemo.svelte -->
+<script lang="ts">
+  // A use: action: (node, params?) => { update?, destroy? }
+  function clickOutside(node: HTMLElement, callback: () => void) {
+    function handle(e: MouseEvent) {
+      if (!node.contains(e.target as Node)) callback();
     }
     document.addEventListener('click', handle, true);
     return {
@@ -71,58 +226,168 @@ action เด่นมากสำหรับ behavior DOM ที่ cross-cutt
 </script>
 
 {#if open}
-  <div class="menu" use:clickOutside={() => (open = false)}>…</div>
+  <div class="menu" use:clickOutside={() => (open = false)}>menu</div>
 {/if}
 ```
 
-## ทำไม action แทน effect
+`update` ถูกเรียกด้วย argument ใหม่ทุกครั้งที่มันเปลี่ยน (ทันทีหลังจาก Svelte apply การอัปเดต markup รอบข้าง); `destroy` ถูกเรียกตอน element unmount คุณจะยังเจอและเขียน `use:` เมื่อ **library** ส่ง action มาให้ตรง ๆ (library แบบ pre-attachment หลายตัวทำแบบนี้) หรือตอน maintain โค้ดเก่า — แต่สำหรับโค้ดใหม่ ให้ใช้ attachment แทน docs ของ Svelte พูดตรง ๆ เรื่องนี้:
 
-คุณ *อาจ* ทำบางส่วนนี้ด้วย `bind:this` บวก `$effect` action ดีกว่าเมื่อ behavior นั้น **reuse ได้ข้าม element** และ **self-contained** (setup + teardown ในที่เดียว): method `destroy` การันตี cleanup และการส่งพารามิเตอร์ด้วย `use:action={params}` ทำให้ declarative ที่จุดเรียก หยิบ action มาใช้เมื่อคุณอยากบอกว่า "element นี้ behave เหมือน *X*" และ reuse *X* ได้ทุกที่
+> In Svelte 5.29 and newer, consider using [attachments](https://svelte.dev/docs/svelte/@attach) instead, as they are more flexible and composable.
+> — [svelte.dev/docs/svelte/use](https://svelte.dev/docs/svelte/use)
+
+<Mermaid title="Attachment เทียบกับ use: action" code={actionDiagram} />
+
+export const actionDiagram = `flowchart TB
+  subgraph attach["{@attach factory(arg)} — Svelte 5.29+"]
+    a1["arg changes"] --> a2["old attachment's cleanup runs"]
+    a2 --> a3["factory(arg) called again"]
+    a3 --> a4["new attachment runs"]
+  end
+  subgraph use["use:action={arg} — legacy"]
+    u1["arg changes"] --> u2{"did the action\\nreturn update()?"}
+    u2 -->|"yes"| u3["update(newArg) runs"]
+    u2 -->|"no — common bug"| u4["nothing happens, silently"]
+  end
+  unmount["element unmounts"] --> cleanup["attachment cleanup / action destroy()"]`;
+
+## ทำไมใช้ attachment (หรือ action) แทน effect
+
+คุณ *อาจ* ทำบางส่วนนี้ด้วย `bind:this` บวก `$effect` attachment และ action ดีกว่าเมื่อ behavior นั้น **reuse ได้ข้าม element** และ **self-contained** (setup + teardown ในที่เดียว): cleanup ที่ return การันตี teardown และการส่ง argument ทำให้ declarative ที่จุดเรียก หยิบมาใช้เมื่อคุณอยากบอกว่า "element นี้ behave เหมือน *X*" และ reuse *X* ได้ทุกที่ — tooltip, click-outside, focus trap, จุด mount ของ chart library
+
+## Mental Model
+
+attachment คือ "ฟังก์ชันที่ run ตอน element นี้มีอยู่ และ cleanup ตอนมันหายไป" — escape hatch เดียวกับที่ action เคยเป็นมาตลอด แค่ต่อสายผ่าน effect system ของ Svelte เองแทนที่จะเป็น action lifecycle เฉพาะทาง นี่คือเหตุผลที่ attachment factory re-run ได้เอง: การอ่าน reactive state ข้างใน effect ทำให้ effect นั้น re-run เหมือน `$derived` หรือ `$effect` ธรรมดา method `update` ของ action มีอยู่เพราะ action เกิดก่อน `$effect` ทั้งหมด (มันเก่ากว่า rune) — มันคือกลไก reactivity แบบขนาน ที่เขียนเองด้วยมือ ซึ่งจะทำงานก็ต่อเมื่อคุณจำได้ว่าต้องเขียนมัน attachment เลิกใช้ส่วนที่เขียนเองด้วยมือนั้น โดยขี่บน reactivity system ที่มีอยู่แล้ว
+
+## ข้อแลกเปลี่ยน
+
+| ทางเลือก | ข้อดี | ต้นทุน |
+| --- | --- | --- |
+| `{@attach factory(arg)}` | reactive โดย default (ไม่มี `update` ให้ลืม), ใช้ได้ทั้ง element **และ** component, composable ผ่าน `fromAction`/spread | ต้องการ Svelte 5.29+; factory ใหญ่ที่อ่านหลายค่าจะ re-run ทั้งหมด เว้นแต่ดันการอ่านเข้า `$effect` ที่ nest |
+| `use:action={arg}` | คุ้นเคย ยังเป็นรูปร่างที่ library action ของบุคคลที่สามส่วนใหญ่ ship มา | `update` เป็น opt-in และลืมง่าย; ใช้กับ component ไม่ได้เลย |
+| `fromAction(action, () => arg)` | reuse action ของ library เดิมโดยไม่แก้ไข แต่ทำให้มันทำงานบน component ได้ | มี layer indirection เพิ่มอีกชั้นเทียบกับเขียน attachment แบบ native |
+| attachment factory ที่อ่าน state ตรง ๆ (ไม่มี `$effect` ที่ nest) | โค้ดง่ายสุด | re-run (และทำ setup ที่แพงซ้ำ) ทุกครั้งที่ dependency เปลี่ยน ไม่ใช่แค่ตัวที่สำคัญ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`use:action={value}` อัปเดตอัตโนมัติเมื่อ `value` เปลี่ยน เหมือน prop"** ไม่จริง — มีแค่ method `update` ของ action เท่านั้นที่ run ตอนพารามิเตอร์เปลี่ยน และก็ต่อเมื่อคุณเขียนมันไว้ พิสูจน์ด้านบน: `onRun` ของฝั่ง `use:` ไม่เคย run รอบสองเลย
+- **"attachment เป็นแค่ชื่อใหม่ของ action"** มันเป็นกลไกคนละอย่าง (effect ไม่ใช่ lifecycle เฉพาะทาง), ใช้กับ component ได้ (action ทำไม่ได้), และ reactivity ของมันอัตโนมัติแทนที่จะเขียนเองผ่าน `update`
+- **"ต้อง rewrite `use:` action ทุกตัวให้เป็น attachment"** ไม่ต้อง — `fromAction` เชื่อม action ที่มีอยู่แล้วให้เป็น attachment ที่ behavior เหมือนเดิมทุกประการ ไม่ต้องแตะ action ของ library ที่ทำงานอยู่แล้วเพื่อใช้กับ component
+- **"argument ตัวที่สองของ attachment factory จะอ่าน live state เสมอตราบใดที่ส่ง expression"** มีแค่การเรียกชั้นนอก (`tooltip(text)`) เท่านั้นที่ reactive เพราะมัน run ข้างใน effect; ค่าที่ถูก capture ครั้งเดียวข้างใน closure ที่ nest แล้วไม่เคยถูกอ่านซ้ำจะไม่อัปเดต — กติกาเดียวกับ reactivity อื่น ๆ ของ Svelte
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ component ที่ generate มาใช้ `use:` หรือ `{@attach}` ให้ตรวจสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- ที่ `use:action={value}` สมมติว่า `value` อัปเดต DOM อัตโนมัติ โดยไม่มี method `update` ที่ define ไว้บน action หรือเปล่า?
+- `use:` ถูกผูกกับ **component** (`<MyComponent use:foo />`) หรือเปล่า — แบบนั้นใช้ไม่ได้ attachment เท่านั้นที่ใช้กับ component ได้
+- attachment factory ทำ setup work ที่แพง ซึ่งควรแยกเข้า `$effect` ที่ nest เพื่อให้แค่ส่วนที่ถูกกว่า re-run หรือเปล่า?
+- `action` ที่พร้อมใช้ของ library ถูก rewrite เป็น attachment ด้วยมือ ทั้งที่ `fromAction(action, () => arg)` จะทำให้มันทำงานได้โดยไม่ต้องแก้หรือเปล่า?
+- action/attachment return cleanup จริงหรือเปล่า (`destroy` หรือ function ที่ return) — หรือมันรั่ว listener/subscription ตอน unmount?
+
+<SpotTheBug code={`<script>
+  function tooltip(node, text) {
+    node.title = text;
+  }
+  let label = $state('Save your work');
+</script>
+
+<button use:tooltip={label}>Save</button>
+<button onclick={() => (label = 'Saved!')}>Mark saved</button>`}>
+ดูสมเหตุสมผลดี — ส่ง label เข้า action `tooltip` แล้วคาดว่าข้อความ tooltip จะอัปเดตเป็น `"Saved!"` หลังกดปุ่ม แต่จะไม่เป็นแบบนั้น `tooltip` เป็น `use:` action ที่ไม่มี method `update` ดังนั้น Svelte เรียกมันแค่ครั้งเดียว ตอน mount ด้วยค่า *เริ่มต้น* ของ `label` การเปลี่ยนแปลงของ `label` ทุกครั้งหลังจากนั้นถูกเมินเฉย ๆ — พิสูจน์ด้านบนด้วย `attach-vs-use.test.ts`: run-counter ของฝั่ง `use:` ค้างที่ `1` ไม่ว่า argument ของมันจะเปลี่ยนกี่ครั้ง ในขณะที่ attachment factory ที่เทียบเท่ากัน counter ของมันเพิ่มขึ้นทุกครั้ง
+
+วิธีแก้คือแบบใดแบบหนึ่งนี้:
+
+```svelte
+<script>
+  function tooltip(node, text) {
+    node.title = text;
+    return { update(newText) { node.title = newText; } };
+  }
+</script>
+```
+
+หรือ ที่ดีกว่าสำหรับโค้ดใหม่ สลับไปใช้ attachment factory ซึ่งได้พฤติกรรมนี้มาฟรี:
+
+```svelte
+<script>
+  function tooltip(text) {
+    return (node) => { node.title = text; };
+  }
+</script>
+<button {@attach tooltip(label)}>Save</button>
+```
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**action** คือฟังก์ชันที่ reuse ได้ ผูกด้วย **`use:action`** ซึ่งรับ DOM `node` (บวกพารามิเตอร์ optional) ตอน element mount และ return method **`update`** (params เปลี่ยน) กับ **`destroy`** (element unmount) แบบ optional action คือ escape hatch ที่สะอาดสำหรับ behavior DOM แบบ imperative ที่ self-contained — library ภายนอก, focus management, click-outside — พร้อม teardown ที่การันตี reuse ได้ดีกว่าคู่ `bind:this` + `$effect`
+ตั้งแต่ **Svelte 5.29** ให้เลือกใช้ **attachment** (`{@attach fn}`) แทน `use:` action: attachment factory re-run อัตโนมัติเมื่อ reactive state ที่มันอ่านเปลี่ยน (method `update` ของ action เป็น opt-in และลืมง่าย), attachment ใช้กับ **component** ได้เหมือนกับ element และ `fromAction()` เชื่อม action ของ library ที่มีอยู่แล้วให้ใช้ได้โดยไม่ต้องแก้ `use:` ยังเป็นฟอร์มเดิม — ยังถูกต้องสำหรับโค้ดของ library ที่ส่ง action มาให้ตรง ๆ ด้วยรูปร่างเดิม `(node, params?) => { update?, destroy? }`
 </Callout>
 
 export const quizActions = [
   {
-    q: 'ฟังก์ชัน action รับอะไรตอน element mount?',
+    q: 'อะไรคือความต่างของพฤติกรรมหลักระหว่าง `{@attach tooltip(text)}` กับ `use:tooltip={text}` เมื่อ `text` เปลี่ยนหลัง mount?',
     options: [
-      'component instance',
-      'DOM `node` (และพารามิเตอร์ optional)',
-      'store value',
-      'ไม่รับอะไร',
+      'ไม่มีความต่าง',
+      'attachment factory re-run อัตโนมัติ; action จะ re-run ก็ต่อเมื่อมัน return method `update`',
+      'action re-run อัตโนมัติ; attachment ไม่',
+      'ทั้งคู่ต้องมี method `update` ด้วยมือ',
     ],
     answer: 1,
+    explain: 'พิสูจน์ใน attach-vs-use.test.ts: run-counter ของ attachment factory เพิ่มขึ้นทุกครั้งที่ text เปลี่ยน ([1, 2]); ของ action ค้างที่ [1] เพราะไม่มี update()',
   },
   {
-    q: 'method `destroy` ของ action ทำอะไร?',
+    q: '`use:someAction` ผูกกับ component ได้ไหม (`<MyComponent use:someAction />`)?',
     options: [
-      'ลบ component',
-      'run cleanup ตอน element unmount (remove listener, teardown library)',
-      'reset state',
-      're-render element',
+      'ได้ เหมือน element เป๊ะ',
+      'ไม่ได้ — `use:` ใช้ได้แค่กับ DOM element; attachment ใช้ได้ทั้ง element และ component',
+      'ได้ถ้า component เรียก $host()',
+      'ได้เฉพาะ legacy mode',
     ],
     answer: 1,
+    explain: 'หนึ่งในเหตุผลที่ docs อธิบาย attachment ว่า "ยืดหยุ่นและ composable กว่า" — use: ใช้ได้แค่กับ element',
   },
   {
-    q: 'เมื่อไร action เหมาะกว่า `bind:this` + `$effect`?',
+    q: '`fromAction(action, () => arg)` ทำอะไร?',
     options: [
-      'ไม่มีวัน',
-      'เมื่อ behavior reuse ได้ข้าม element และ self-contained (setup + teardown ที่การันตีในที่เดียว)',
-      'เมื่อต้องการ styling',
-      'เมื่อต้องการ route',
+      'ลบ action',
+      'แปลง action แบบ use: เดิมให้เป็น attachment ที่ behavior เหมือนเดิมทุกประการ ทำให้ใช้กับ component ได้ด้วย',
+      'run action ครั้งเดียวแล้ว cache ผลตลอดไป',
+      'แปลง attachment ให้เป็น use: action',
     ],
     answer: 1,
+    explain: 'fromAction คือสะพานสำหรับ library ที่ ship แค่ action — argument ตัวที่สองต้องเป็น function ที่ return argument เพื่อให้ยัง reactive อยู่',
   },
   {
-    q: 'ผูก action พร้อมพารามิเตอร์เข้ากับ element ยังไง?',
+    q: '```svelte\n<script>\n  function tooltip(node, text) {\n    node.title = text;\n  }\n  let label = $state(\'Save\');\n</script>\n<button use:tooltip={label}>Save</button>\n```\nหลัง `label` เปลี่ยน tooltip ของปุ่มจะแสดงอะไร?',
     options: [
-      '`action:use={params}`',
-      '`use:action={params}`',
-      '`bind:action={params}`',
-      '`on:action={params}`',
+      'label ใหม่ อัปเดตอัตโนมัติ',
+      'label เดิมตอน mount — action ไม่มี method `update` การเปลี่ยนแปลงจึงถูกเมินเฉย ๆ',
+      'string ว่างเปล่า',
+      'compile error',
     ],
     answer: 1,
+    explain: 'bug เดียวกับ SpotTheBug ด้านบน: use: action ที่ไม่มี update() จะเห็นแค่ค่าตอน mount ของ argument เท่านั้น',
+  },
+  {
+    q: '```svelte\n<script>\n  import { createAttachmentKey } from \'svelte/attachments\';\n  let stuff = $state({ [createAttachmentKey()]: (node) => console.log(node.nodeName) });\n</script>\n<div {...stuff}>spread</div>\n```\n`createAttachmentKey` ในนี้มีไว้ทำอะไร?',
+    options: [
+      'ไม่มีผลอะไร',
+      'สร้าง key แบบ Symbol เพื่อให้เพิ่ม attachment ลงใน plain object แล้ว apply กับ element ผ่าน spread ได้',
+      'แปลง div ให้เป็น component',
+      'ต้องใช้ก่อน `{@attach}` ทุกครั้ง',
+    ],
+    answer: 1,
+    explain: 'createAttachmentKey มีไว้สำหรับสร้าง attachment แบบ programmatic (เช่น ใน loop) แทนที่จะเขียน {@attach fn} ตรง ๆ ใน markup',
+  },
+  {
+    q: 'ทำไมถึงอ่าน reactive value ข้างใน `$effect` ที่ nest แทนที่จะอ่านตรง ๆ ใน body ของ attachment factory?',
+    options: [
+      'เป็น syntax ที่บังคับ',
+      'เพื่อให้ setup work ที่แพงใน factory run แค่ครั้งเดียว และให้แค่ส่วนที่ reactive และถูกกว่า re-run เมื่อค่าเปลี่ยน',
+      'เพื่อปิด reactivity ทั้งหมด',
+      'ไม่มีผลต่อพฤติกรรมเลย',
+    ],
+    answer: 1,
+    explain: 'การเรียก factory ทั้งหมด re-run (destroy แล้วสร้าง attachment ใหม่) ทุกครั้งที่สิ่งที่มันอ่านเปลี่ยน; การแยกส่วนที่แพงออกไปนอก $effect ที่ nest ช่วยเลี่ยงการทำซ้ำโดยไม่จำเป็น',
   },
 ];
 

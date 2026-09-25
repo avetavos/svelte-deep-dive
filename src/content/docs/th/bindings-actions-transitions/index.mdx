@@ -1,6 +1,6 @@
 ---
 title: 'Bindings, Actions & Transitions'
-description: 'two-way binding, use: action สำหรับงาน DOM แบบ imperative, transitions และ animations และการจัดการ form ในทางปฏิบัติ — เครื่องมือที่เชื่อม Svelte เข้ากับ DOM และ motion'
+description: 'two-way binding, attachment (`@attach`) และ `use:` action แบบเดิมสำหรับงาน DOM แบบ imperative, transitions และ animations และการจัดการ form ในทางปฏิบัติ — เครื่องมือที่เชื่อม Svelte เข้ากับ DOM และ motion'
 sidebar:
   order: 1
 ---
@@ -15,7 +15,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 runes ให้ reactive state; โมดูลนี้ครอบคลุม directive ที่เชื่อม state นั้นเข้ากับ DOM element จริงและกับ motion:
 
 - **Bindings** (`bind:`) สร้าง link สองทางระหว่าง state กับ DOM property — input update state และ state update input
-- **Actions** (`use:`) run โค้ด setup แบบ imperative บน element ตอน mount — escape hatch สำหรับ library ที่ไม่ใช่ Svelte, focus, tooltip และ click-outside
+- **Attachments และ actions** — `{@attach}` (Svelte 5.29+) run โค้ด setup แบบ imperative บน element หรือ component และ run ใหม่เมื่อ input เปลี่ยน ส่วน `use:` action คือรูปแบบเดิมสำหรับ library ที่ยังส่ง action มาให้ — escape hatch สำหรับ library ที่ไม่ใช่ Svelte, focus, tooltip และ click-outside
 - **Transitions & animations** (`transition:`, `animate:`) animate element แบบ declarative ตอนเข้า ออก และเรียงใหม่
 
 ## โมดูลนี้ครอบคลุมอะไรบ้าง
@@ -23,7 +23,7 @@ runes ให้ reactive state; โมดูลนี้ครอบคลุม
 | บทเรียน | สิ่งที่จะได้เรียน |
 |--------|-------------------|
 | Bindings | `bind:value`, `bind:this`, `bind:group` และ component binding |
-| Actions | `use:` directive และ action lifecycle |
+| Actions | attachment (`{@attach}`) ก่อน แล้วค่อย `use:` directive แบบเดิมและ `fromAction` |
 | Transitions & animations | `transition:`/`in:`/`out:` และ `animate:flip` |
 | Forms & inputs | controlled input, validation และการจัดการ submit |
 

@@ -1,6 +1,6 @@
 ---
 title: 'Bindings, Actions & Transitions'
-description: 'Two-way bindings, use: actions for imperative DOM work, transitions and animations, and practical form handling — the tools that connect Svelte to the DOM and to motion.'
+description: 'Two-way bindings, attachments (`@attach`) and legacy `use:` actions for imperative DOM work, transitions and animations, and practical form handling — the tools that connect Svelte to the DOM and to motion.'
 sidebar:
   order: 1
 ---
@@ -15,7 +15,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 Runes give you reactive state; this module covers the directives that connect that state to real DOM elements and to visual motion:
 
 - **Bindings** (`bind:`) create a two-way link between state and a DOM property — the input updates the state, and the state updates the input.
-- **Actions** (`use:`) run imperative setup code on an element when it mounts — the escape hatch for third-party libraries, focus, tooltips, and click-outside.
+- **Attachments and actions** — `{@attach}` (Svelte 5.29+) runs imperative setup on an element or component and re-runs when its inputs change; `use:` actions are the legacy form for libraries that still ship them. The escape hatch for third-party libraries, focus, tooltips, and click-outside.
 - **Transitions & animations** (`transition:`, `animate:`) declaratively animate elements as they enter, leave, and reorder.
 
 ## What this module covers
@@ -23,7 +23,7 @@ Runes give you reactive state; this module covers the directives that connect th
 | Lesson | What you'll learn |
 |--------|-------------------|
 | Bindings | `bind:value`, `bind:this`, `bind:group`, and component bindings |
-| Actions | The `use:` directive and the action lifecycle |
+| Actions | Attachments (`{@attach}`) first, then the legacy `use:` directive and `fromAction` |
 | Transitions & animations | `transition:`/`in:`/`out:` and `animate:flip` |
 | Forms & inputs | Controlled inputs, validation, and submit handling |
 

@@ -1,6 +1,6 @@
 ---
 title: 'Forms & Inputs'
-description: 'Practical form handling in Svelte — controlled inputs with bind:, validation with $derived, and submit handling with onsubmit.'
+description: 'Practical form handling in Svelte — bind:value coercion for number inputs, bind:checked/bind:files, controlled derived validation with $derived, and why onsubmit|preventDefault is a real compile error in runes mode.'
 sidebar:
   order: 5
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Controlled inputs with bind:
 
@@ -33,6 +34,81 @@ Forms bring bindings, runes, and events together. Each field binds to state; val
 ```
 
 The key idea: **validation is derived, not stored.** `emailValid` recomputes automatically whenever `email` changes — there's no "revalidate" step to forget. This is the "derive, don't sync" principle from the effects lesson, applied to forms.
+
+## bind:value coerces number and range inputs
+
+For `type="number"` and `type="range"` inputs, `bind:value` doesn't hand you a string — Svelte coerces it to a `number` for you:
+
+```svelte
+<!-- src/lib/NumericBinding.svelte -->
+<script lang="ts">
+  let age: number = $state(0);
+</script>
+<input type="number" bind:value={age} min="0" max="120" />
+<p data-testid="age">{age}</p>
+```
+
+```ts
+// src/lib/numeric-binding.test.ts
+import { render, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import NumericBinding from './NumericBinding.svelte';
+
+test('a number input coerces the bound value to a number, not a string', async () => {
+  const { getByRole, getByTestId } = render(NumericBinding);
+  const input = getByRole('spinbutton') as HTMLInputElement;
+  await fireEvent.input(input, { target: { value: '42' } });
+  expect(getByTestId('age').textContent).toBe('42');
+});
+```
+
+```text
+✓ a number input coerces the bound value to a number, not a string
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+That matters for anything downstream that expects a real number (arithmetic, comparisons) — no manual `Number(e.currentTarget.value)` needed, unlike a hand-written `oninput` handler on a text input.
+
+## bind:checked and bind:files
+
+Checkboxes bind their boolean checked state with **`bind:checked`**; file inputs expose their selected `FileList` with **`bind:files`**:
+
+```svelte
+<!-- src/lib/CheckedAndFiles.svelte -->
+<script lang="ts">
+  let accepted = $state(false);
+  let files: FileList | undefined = $state();
+</script>
+<input type="checkbox" bind:checked={accepted} data-testid="accept" />
+<p data-testid="accepted-value">{accepted}</p>
+<input type="file" bind:files data-testid="upload" />
+<p data-testid="file-count">{files?.length ?? 0}</p>
+```
+
+```ts
+// src/lib/checked-binding.test.ts
+import { render, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import CheckedAndFiles from './CheckedAndFiles.svelte';
+
+test('bind:checked syncs the checkbox to state', async () => {
+  const { getByTestId } = render(CheckedAndFiles);
+  const checkbox = getByTestId('accept') as HTMLInputElement;
+  await fireEvent.click(checkbox);
+  expect(getByTestId('accepted-value').textContent).toBe('true');
+});
+```
+
+```text
+✓ bind:checked syncs the checkbox to state
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`bind:files` is read-only in one important sense: you can read the `FileList` the user picked, but you can't assign an arbitrary array to it — the docs are explicit that "programmatic updates require a `DataTransfer` object" (`files = new DataTransfer().files` is how you *clear* a file input; `null`/`undefined` do not work), because a `FileList` can only ever hold real, user-provided (or `DataTransfer`-constructed) `File` objects.
 
 ## Handling submit
 
@@ -61,6 +137,46 @@ Attach `onsubmit` to the `<form>` and call `e.preventDefault()` to stop the brow
 
 Note the disabled button derives from `formValid` and `submitting` — the UI stays correct without any manual toggling.
 
+## No event modifiers in runes mode — onsubmit|preventDefault is a real error
+
+Svelte 4's `on:submit|preventDefault` modifier syntax is specific to the legacy `on:` directive; it doesn't exist for the modern `onsubmit` attribute. Writing it that way isn't a silent no-op — it's a caught compile error, because `onsubmit|preventDefault` parses as one, invalid attribute name:
+
+```svelte
+<!-- @expect-error 'onsubmit|preventDefault' is not a valid attribute name -->
+<!-- src/lib/BadSubmitModifier.svelte -->
+<script lang="ts">
+  function handleSubmit(e: SubmitEvent) {
+    console.log(e);
+  }
+</script>
+
+<form onsubmit|preventDefault={handleSubmit}>
+  <button type="submit">Go</button>
+</form>
+```
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+'onsubmit|preventDefault' is not a valid attribute name
+https://svelte.dev/e/attribute_invalid_name
+```
+
+The fix is what the rest of this lesson already does: call `e.preventDefault()` as the first line inside the handler instead of reaching for a modifier that no longer exists:
+
+```svelte
+<!-- src/lib/GoodSubmit.svelte -->
+<script lang="ts">
+  function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    console.log('submitted');
+  }
+</script>
+
+<form onsubmit={handleSubmit}>
+  <button type="submit">Go</button>
+</form>
+```
+
 <Mermaid title="A form: bind, derive, submit" code={formDiagram} />
 
 export const formDiagram = `flowchart LR
@@ -73,8 +189,76 @@ export const formDiagram = `flowchart LR
 
 This lesson handles forms entirely on the client — fine for local state and simple cases. But real apps need the data on a **server**: persistence, auth, validation you can trust. That's what **SvelteKit form actions** (a later module) provide — progressive-enhancement forms that work with and without JavaScript, validated on the server. Client-side `bind:` + `$derived` gives you responsive UX; SvelteKit gives you the full-stack pipeline.
 
+## Mental Model
+
+A form is a pipeline, not a bag of independent inputs: `bind:` gets raw DOM state into Svelte's reactive state (with the right type — a number for a number input, a boolean for a checkbox, a `FileList` for a file input); `$derived` turns that raw state into judgments about it (valid/invalid, can-submit); `onsubmit` is the one place side effects happen, and it runs *after* everything upstream has already recomputed. Reading the pipeline this way explains why "derived, not stored" matters: if `emailValid` were itself `$state` and manually updated, it could disagree with the `email` it's supposed to describe, the same class of bug the effects lesson describes for state mirrored via `$effect` instead of computed via `$derived`.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| `bind:value` coercion (number/range) | No manual `Number(...)` conversion; downstream code gets a real number | Only applies to `number`/`range` inputs — text inputs always give you a string |
+| Derived validation (`$derived`) | Can never drift out of sync with the fields it describes | Recomputes on every relevant keystroke — fine for simple predicates, less so for an expensive async check (debounce that separately) |
+| `e.preventDefault()` inside the handler | Works identically for every event type, with no separate modifier syntax to learn | One more line at the top of every handler that needs it, versus a declarative modifier |
+| All-client-side form (this lesson) | Fast feedback, no round trip for validation UX | Not trustworthy for persistence or security — a client can always be bypassed; needs a server-validated path (SvelteKit form actions) for anything that matters |
+
+## Common Misconceptions
+
+- **"`on:submit|preventDefault` still works in Svelte 5, just not recommended."** It doesn't compile at all on the modern `onsubmit` attribute — proven above: `svelte-check` reports `'onsubmit|preventDefault' is not a valid attribute name`. The `|modifier` syntax only ever existed for the legacy `on:` directive.
+- **"A number input's bound value is a string, like any other input."** Only for `type="number"`/`type="range"` — Svelte coerces those specifically; proven above with a real coercion test. Text/email/password inputs still give you a string.
+- **"Storing `emailValid` in its own `$state` and updating it in an `oninput` handler is basically the same as deriving it."** It isn't — a stored, manually-updated copy can be forgotten in one code path and silently go stale, where a `$derived` value physically cannot disagree with its inputs.
+- **"You need a separate `use:` action or library to validate forms in Svelte."** For synchronous, field-level validation, plain `$derived` is usually enough — reach for more machinery only when you need cross-field async validation (e.g. "is this email already taken?") that a plain derived expression can't express.
+
+## Reading AI-generated code
+
+When a generated form uses `bind:`/`onsubmit`, check for these before trusting it:
+
+- Does `onsubmit={handler}` (or any other modern event attribute) have a `|modifier` suffix copied from Svelte 4 habits — a real, caught compile error, not a warning?
+- Is validation state stored in its own `$state` and manually kept in sync with the fields, instead of computed with `$derived`?
+- Does a number/range input's bound value get run through `Number(...)`/`parseInt` again, assuming it's still a string?
+- Is client-side validation treated as the only validation — with no server-side re-check for anything that touches persistence, auth, or money?
+- Does the submit handler forget `e.preventDefault()` entirely, relying on an old `on:submit|preventDefault` habit that no longer applies?
+
+<SpotTheBug code={`<script>
+  let email = $state('');
+  let password = $state('');
+  let emailValid = $derived(/^[^@]+@[^@]+\\.[^@]+$/.test(email));
+  let passwordValid = $derived(password.length >= 8);
+
+  function handleSubmit(e) {
+    if (!emailValid || !passwordValid) return;
+    createAccount({ email, password });
+  }
+</script>
+
+<form onsubmit|preventDefault={handleSubmit}>
+  <input type="email" bind:value={email} />
+  <input type="password" bind:value={password} />
+  <button type="submit">Sign up</button>
+</form>`}>
+This is Svelte 4 muscle memory: `on:submit|preventDefault` used to be how you stopped the browser's native form navigation. In Svelte 5's runes mode, `onsubmit` is a plain attribute, not the `on:` directive — modifiers don't exist for it, and `onsubmit|preventDefault` isn't silently ignored, it's a caught error:
+
+```text
+'onsubmit|preventDefault' is not a valid attribute name
+https://svelte.dev/e/attribute_invalid_name
+```
+
+The fix is to call `e.preventDefault()` as a normal line inside the handler, which also means the handler now needs the event parameter:
+
+```svelte
+<script>
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!emailValid || !passwordValid) return;
+    createAccount({ email, password });
+  }
+</script>
+<form onsubmit={handleSubmit}>
+```
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Build forms by **binding** each field to state (`bind:value`), **deriving** validation with `$derived` (never storing validity separately — it recomputes automatically), and handling **submit** with `onsubmit` + `e.preventDefault()` (Svelte 5 dropped event modifiers). Derive the submit button's `disabled` from validity and a `submitting` flag. For real persistence and server-trusted validation, reach for SvelteKit form actions.
+Build forms by **binding** each field to state (`bind:value` coerces to a real `number` for number/range inputs; `bind:checked`/`bind:files` cover checkboxes and file pickers), **deriving** validation with `$derived` (never storing validity separately — it recomputes automatically), and handling **submit** with `onsubmit` + `e.preventDefault()` inside the handler. There is no `|preventDefault` modifier for modern event attributes in runes mode — `onsubmit|preventDefault` is a real, caught `attribute_invalid_name` error, not Svelte-4-style sugar. For real persistence and server-trusted validation, reach for SvelteKit form actions.
 </Callout>
 
 export const quizForms = [
@@ -87,36 +271,62 @@ export const quizForms = [
       'In a store',
     ],
     answer: 1,
+    explain: 'A derived value physically cannot disagree with the fields it reads — a manually-synced copy can silently go stale in a forgotten code path.',
   },
   {
-    q: 'How do you prevent the browser navigating on form submit in Svelte 5?',
+    q: '```svelte\n<form onsubmit|preventDefault={handleSubmit}>\n  <button type="submit">Go</button>\n</form>\n```\nWhat happens when this is compiled in Svelte 5 runes mode?',
     options: [
-      'Use `on:submit|preventDefault`',
-      'Call `e.preventDefault()` inside the `onsubmit` handler (modifiers are gone in Svelte 5)',
-      'Return false',
-      'It is automatic',
+      'It works exactly like Svelte 4',
+      'A caught compile error: \'onsubmit|preventDefault\' is not a valid attribute name',
+      'It compiles but the modifier is silently ignored',
+      'It only fails at runtime, on the first submit',
     ],
     answer: 1,
+    explain: 'Proven with svelte-check: the |modifier syntax only exists for the legacy on: directive — onsubmit|preventDefault parses as one invalid attribute name and is a real, caught error.',
   },
   {
-    q: 'Why derive the submit button\'s `disabled` value?',
+    q: 'What type is `age` after `<input type="number" bind:value={age} />` and the user types "42"?',
+    options: [
+      'The string "42"',
+      'The number 42 — Svelte coerces number/range input bindings',
+      'undefined until submit',
+      'A BigInt',
+    ],
+    answer: 1,
+    explain: 'Proven in numeric-binding.test.ts: bind:value on a number/range input coerces to a real number, unlike text inputs which always give a string.',
+  },
+  {
+    q: 'How do you correctly stop the browser\'s native navigation on form submit in Svelte 5?',
+    options: [
+      'Use `on:submit|preventDefault`',
+      'Call `e.preventDefault()` inside the `onsubmit` handler (modifiers are gone for modern event attributes in runes mode)',
+      'Return false from the handler',
+      'It is automatic in runes mode',
+    ],
+    answer: 1,
+    explain: 'Modifiers like |preventDefault only ever existed for the legacy on: directive; the modern onsubmit attribute has no modifier syntax at all.',
+  },
+  {
+    q: 'How do you clear a file input\'s selected files programmatically?',
+    options: [
+      'Set `files = null`',
+      'Set `files = new DataTransfer().files` — a FileList can only be built from a real DataTransfer',
+      'Set `files = []`',
+      'Call `files.clear()`',
+    ],
+    answer: 1,
+    explain: 'Per the docs: a FileList can only ever hold real, user-provided or DataTransfer-constructed File objects — null/undefined do not work to clear it.',
+  },
+  {
+    q: 'Why derive the submit button\'s `disabled` value from `formValid` and `submitting` instead of toggling it manually?',
     options: [
       'To make the code longer',
-      'So the button state stays correct automatically as validity and a submitting flag change — no manual toggling',
+      'So the button state stays correct automatically as validity and the submitting flag change — no manual toggling to forget',
       'It is required syntax',
       'To avoid using bind:',
     ],
     answer: 1,
-  },
-  {
-    q: 'What does client-side form handling NOT give you?',
-    options: [
-      'Responsive UX',
-      'Server persistence and trusted server-side validation (that is what SvelteKit form actions add)',
-      'Two-way binding',
-      'Derived validation',
-    ],
-    answer: 1,
+    explain: 'Same "derive, don\'t sync" principle applied one level up: a manually-toggled disabled flag can drift from the state it\'s meant to reflect.',
   },
 ];
 

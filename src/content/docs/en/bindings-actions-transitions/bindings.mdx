@@ -1,6 +1,6 @@
 ---
 title: 'Bindings'
-description: 'Two-way bindings — bind:value, bind:checked, bind:group, bind:this, and binding to component props — and how they are sugar over a value plus an event.'
+description: 'Two-way bindings — $bindable() as the required opt-in before a parent can bind: to a prop, function bindings (bind:value={get, set}), bind:this, bind:group, and binding to components vs. elements.'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Two-way binding is sugar over value + event
 
@@ -64,66 +65,179 @@ To get a reference to the actual DOM node (or a component instance), use **`bind
 <canvas bind:this={canvas} width="200" height="200"></canvas>
 ```
 
-## Binding to component props
+## $bindable() is required before a parent can bind: to a prop
 
-A parent can bind to a child component's prop when the child declares that prop as `$bindable()` (from the reactivity module). This creates two-way data flow across the component boundary.
+A parent can only `bind:` to a child component's prop when the child opts that specific prop into it with **`$bindable()`** (available since the `$props()` rune itself). Without it, `bind:` on that prop is a real, caught error — not a silent no-op:
 
 ```svelte
-<!-- Child.svelte -->
-<script>
-  let { value = $bindable() } = $props();
+<!-- src/lib/BindableChild.svelte -->
+<script lang="ts">
+  let { value }: { value: string } = $props();
+</script>
+<input value={value} />
+```
+
+```svelte
+<!-- @expect-error bind: to a prop the child never declared $bindable() -->
+<!-- src/lib/BindableParent.svelte -->
+<script lang="ts">
+  import BindableChild from './BindableChild.svelte';
+  let text = $state('hi');
+</script>
+<BindableChild bind:value={text} />
+```
+
+`svelte-check` catches this at the type level, with a message that names the exact fix:
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+src/lib/BindableParent.svelte:4:15
+Cannot use 'bind:' with this property. It is declared as non-bindable inside
+the component.
+To mark a property as bindable: 'let { value = $bindable() } = $props()'
+```
+
+The fix is exactly what the message says — declare the prop with `$bindable()` on the child, then the same `bind:` on the parent compiles clean:
+
+```svelte
+<!-- src/lib/BindableChildFixed.svelte -->
+<script lang="ts">
+  let { value = $bindable() }: { value: string } = $props();
 </script>
 <input bind:value={value} />
 ```
 
 ```svelte
+<!-- src/lib/BindableParentFixed.svelte -->
+<script lang="ts">
+  import BindableChildFixed from './BindableChildFixed.svelte';
+  let text = $state('hi');
+</script>
+<BindableChildFixed bind:value={text} />
+```
+
+That two-way flow across the component boundary is powerful but can obscure data flow if overused — props-down/events-up is often clearer for anything beyond simple form controls, which is why `$bindable()` is opt-in per prop rather than the default.
+
+## Function bindings: `bind:value={get, set}`
+
+Since **Svelte 5.9**, a binding can take a `{get, set}` pair of functions instead of a plain identifier, letting you validate or transform the value on the way in:
+
+```svelte
+<!-- src/lib/FunctionBinding.svelte -->
+<script lang="ts">
+  let value = $state('');
+</script>
+<input bind:value={() => value, (v) => (value = v.toUpperCase())} />
+<p data-testid="value">{value}</p>
+```
+
+Typing into the field runs every keystroke through the `set` function before it lands in state — and because the DOM value is driven by the `get` function reading that same state, the input reflects the transformed value right back:
+
+```ts
+// src/lib/function-binding.test.ts
+import { render, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import FunctionBinding from './FunctionBinding.svelte';
+
+test('a function binding transforms the value on the way in, and the transformed value reflects back into the input', async () => {
+  const { getByRole, getByTestId } = render(FunctionBinding);
+  const input = getByRole('textbox') as HTMLInputElement;
+  await fireEvent.input(input, { target: { value: 'hello' } });
+  expect(getByTestId('value').textContent).toBe('HELLO');
+  expect(input.value).toBe('HELLO');
+});
+```
+
+```text
+✓ a function binding transforms the value on the way in, and the transformed value reflects back into the input
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+This is the same mechanism `$bindable()` itself is built on internally, and it's how the "derive, don't sync" idea from the reactivity module extends into bindings: instead of a plain two-way mirror, you get a controlled gate the value passes through in both directions.
+
+## bind: on components vs. elements
+
+On a plain DOM **element**, `bind:value` (and friends) are built into Svelte itself — every input-like element supports them without any setup. On a **component**, `bind:` only works for props the component explicitly marked `$bindable()`; there's no implicit binding surface the way there is for an `<input>`. That asymmetry is deliberate: a component's author decides which props are safe to let a caller mutate, the same way a library decides which fields of its public API are read-write versus read-only.
+
+<Mermaid title="Where a bind: target comes from" code={bindDiagram} />
+
+export const bindDiagram = `flowchart TB
+  el["DOM element (input, select, ...)"] --> builtin["bind:value/checked/group/this — built in, no opt-in needed"]
+  comp["Component"] --> check{"prop declared\\nwith $bindable()?"}
+  check -->|"yes"| ok["bind: works — two-way flow across the boundary"]
+  check -->|"no"| err["bind: fails svelte-check:\\nCannot use 'bind:' with this property"]`;
+
+## Mental Model
+
+A binding is a **contract with an opt-out clause, not a default**. On elements, the browser already exposes a two-way-capable surface (`value`, `checked`, the DOM node itself), so Svelte just wires it up. On components, there is no such surface until the author creates one — `$bindable()` is that creation, prop by prop. Treat every `$bindable()` as a small API decision: "callers may reach into my state here," which is why a plain, non-bindable prop staying one-way (props-down/events-up) is the sensible default, not an oversight.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| Plain one-way prop | Simple, predictable data flow — a parent's re-render is the only way the prop changes | Child must emit an event/callback to ever influence the parent |
+| `$bindable()` prop | Parent and child share one piece of state with no boilerplate event wiring | Any caller can mutate the parent's state through the child — harder to trace where a change came from |
+| `bind:value={get, set}` function binding | Validation/transformation lives at the binding site, not scattered across `oninput` handlers | More to read at the call site than a plain `bind:value={x}` |
+| `bind:this` | Direct, typed access to a DOM node or component instance | Only available after mount — reading it during render is a bug, same as any ref-like escape hatch |
+
+## Common Misconceptions
+
+- **"Every component prop can be `bind:`-ed, like an element's `value`."** No — only props the component itself opts in with `$bindable()`. Proven above: `svelte-check` rejects `bind:` to a plain prop with a message naming the exact fix.
+- **"A function binding's `set` only runs once, at the initial value."** It runs on every write — every keystroke, in the input example above — same as a plain `bind:value`'s implicit setter would.
+- **"`bind:this` is available immediately, since it's declared right next to the element."** It's `undefined`/empty until after mount; reading it during the component's initial render (not in an effect or handler) gets you nothing.
+- **"Component bindings and props-down/events-up are interchangeable — pick whichever is shorter to type."** They have different blast radii: a bindable prop lets the child mutate the parent's state directly, which is harder to trace than an explicit callback prop when something changes unexpectedly.
+
+## Reading AI-generated code
+
+When a generated component uses `bind:`, check for these before trusting it:
+
+- Does a component's template do `<Child bind:value={x} />` without the child ever declaring `value = $bindable()` in its own `$props()`?
+- Is a `bind:this` reference read during the render body (not inside `$effect`/an event handler), which would see it as still empty?
+- Could a function binding (`bind:value={get, set}`) replace a hand-rolled `bind:value` + a separate `$effect` that "corrects" the value after the fact?
+- Is a component prop marked `$bindable()` when the component never actually needs the parent to observe writes — an unnecessary two-way surface that widens the API more than needed?
+- For `bind:group`, are the radio/checkbox inputs actually inside the **same component instance** — `bind:group` does not work across component boundaries?
+
+<SpotTheBug code={`<!-- Child.svelte -->
+<script>
+  let { open } = $props();
+</script>
+<button onclick={() => (open = !open)}>{open ? 'Close' : 'Open'}</button>
+
 <!-- Parent.svelte -->
 <script>
   import Child from './Child.svelte';
-  let text = $state('hi');
+  let panelOpen = $state(false);
 </script>
-<Child bind:value={text} />   <!-- parent's text and child's value stay in sync -->
+<Child bind:open={panelOpen} />
+{#if panelOpen}<p>Panel content</p>{/if}`}>
+`Child` never declares `open` as `$bindable()` — it's a plain destructured prop. `svelte-check` catches this at the type level before it ever runs:
+
+```text
+Cannot use 'bind:' with this property. It is declared as non-bindable inside
+the component.
+To mark a property as bindable: 'let { open = $bindable() } = $props()'
 ```
 
-Use component bindings deliberately — they let a child mutate a parent's state, which is powerful but can obscure data flow if overused. Props-down/events-up is often clearer for anything beyond simple form controls.
+The fix is exactly what the message says:
+
+```svelte
+<script>
+  let { open = $bindable() } = $props();
+</script>
+```
+
+Until that's added, this is a compile-time-caught error, not a silent bug — but the reasoning matters for reading AI-generated code that mixes both patterns inconsistently across a codebase: `bind:` on a component is only ever valid for props the component's *own* author explicitly opted in, never something a caller can force from outside.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-A **`bind:`** directive adds the reverse data edge (DOM → state) on top of the normal state → DOM flow — `bind:value` is sugar for a value plus an `oninput` handler. Use **`bind:group`** for radio/checkbox sets sharing one variable, **`bind:this`** to capture a DOM node or component instance (available after mount, read it in an effect), and **`bind:`** to a child's **`$bindable()`** prop for two-way flow across components — sparingly.
+A **`bind:`** directive adds the reverse data edge (DOM → state) on top of the normal state → DOM flow. On **elements** it's built in (`bind:value`, `bind:checked`, `bind:group`, `bind:this`); on **components** it only works for props the child explicitly marks **`$bindable()`** — attempting `bind:` on a non-bindable prop is a real `svelte-check` error, not a silent failure. Since **Svelte 5.9**, `bind:value={get, set}` **function bindings** let you validate or transform a value at the binding site itself.
 </Callout>
 
 export const quizBindings = [
   {
-    q: 'What is `bind:value={name}` shorthand for?',
-    options: [
-      'A one-time assignment',
-      'Setting the input value from state AND updating that state on input — a two-way link',
-      'A CSS binding',
-      'A server call',
-    ],
-    answer: 1,
-  },
-  {
-    q: 'What do you use for a set of radio buttons sharing one selected value?',
-    options: [
-      'bind:value on each',
-      '`bind:group` bound to a single variable',
-      'bind:this',
-      'A separate store per radio',
-    ],
-    answer: 1,
-  },
-  {
-    q: 'When is a `bind:this` reference available?',
-    options: [
-      'During the initial render, before mount',
-      'After the element mounts — read it in an effect or event handler',
-      'Never',
-      'Only on the server',
-    ],
-    answer: 1,
-  },
-  {
-    q: 'What must a child declare to allow a parent to `bind:` to its prop?',
+    q: 'What must a child component declare before a parent can `bind:` to one of its props?',
     options: [
       'export let',
       'The prop as `$bindable()` inside `$props()`',
@@ -131,6 +245,62 @@ export const quizBindings = [
       'Nothing — all props are bindable',
     ],
     answer: 1,
+    explain: 'Without $bindable(), svelte-check rejects the parent\'s bind: with "Cannot use \'bind:\' with this property. It is declared as non-bindable inside the component."',
+  },
+  {
+    q: '```svelte\n<!-- Child.svelte -->\n<script>\n  let { count } = $props();\n</script>\n\n<!-- Parent.svelte -->\n<script>\n  import Child from \'./Child.svelte\';\n  let n = $state(0);\n</script>\n<Child bind:count={n} />\n```\nWhat happens when this is type-checked?',
+    options: [
+      'It compiles and works fine',
+      'svelte-check errors: `count` is not declared bindable — add `count = $bindable()` in Child',
+      'It works, but only for numbers',
+      'The binding silently does nothing at runtime',
+    ],
+    answer: 1,
+    explain: 'Proven with svelte-check: binding to a non-$bindable() prop is a caught type error naming the exact fix, not a silent no-op.',
+  },
+  {
+    q: 'Since which Svelte version can `bind:value` take a `{get, set}` function pair instead of a plain variable?',
+    options: [
+      'Svelte 3',
+      'Svelte 5.9',
+      'Svelte 5.29',
+      'It has always worked this way',
+    ],
+    answer: 1,
+    explain: 'Function bindings (bind:property={get, set}) were added in Svelte 5.9.0, per the official docs.',
+  },
+  {
+    q: 'What does the `set` function in `bind:value={() => value, (v) => value = v.toUpperCase()}` do?',
+    options: [
+      'Nothing — only get matters',
+      'Runs on every write to the input, letting you transform the value before it lands in state',
+      'Runs once, at mount, to set the initial value',
+      'Replaces the need for $state entirely',
+    ],
+    answer: 1,
+    explain: 'Proven in function-binding.test.ts: typing "hello" results in state (and the input\'s own displayed value) becoming "HELLO" — set ran on the actual keystroke, and get fed the transformed value back to the DOM.',
+  },
+  {
+    q: 'When is a `bind:this` reference safe to read?',
+    options: [
+      'During the initial render, before mount',
+      'After the element mounts — read it in an effect or event handler',
+      'Never',
+      'Only on the server',
+    ],
+    answer: 1,
+    explain: 'bind:this is set after mount; reading it during render (rather than in $effect or a handler) sees an empty/undefined value.',
+  },
+  {
+    q: 'Why is `bind:` on a plain DOM element (like `<input bind:value>`) available with no setup, while `bind:` on a component requires `$bindable()`?',
+    options: [
+      'There is no real difference',
+      'Elements already expose a two-way-capable DOM surface (value, checked, ...); a component has no such surface until its author explicitly creates one per prop',
+      'Component bindings are deprecated',
+      '$bindable() is required for all props, including on elements',
+    ],
+    answer: 1,
+    explain: 'A component author decides, prop by prop, which props are safe for a caller to mutate — that\'s what $bindable() opts into; there\'s no implicit equivalent the way an <input> already has one.',
   },
 ];
 

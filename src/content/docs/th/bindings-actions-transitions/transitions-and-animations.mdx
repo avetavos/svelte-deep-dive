@@ -1,6 +1,6 @@
 ---
 title: 'Transitions & Animations'
-description: 'transition:, in: และ out: สำหรับ motion ตอนเข้า/ออก, transition ที่มีมาให้ และ animate:flip สำหรับการเรียง list ใหม่อย่างลื่น'
+description: 'transition:, in: และ out: สำหรับ motion ตอนเข้า/ออก, local เทียบ |global transition, {#key} เพื่อ re-trigger, animate:flip สำหรับการเรียง list ใหม่, custom transition, prefers-reduced-motion และ transition ข้างใน <svelte:boundary>'
 sidebar:
   order: 4
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## transition animate element ตอนเข้าและออก
 
@@ -45,12 +46,128 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <p transition:fly={{ y: 50, duration: 400, delay: 100 }}>…</p>
 ```
 
-<Mermaid title="transition ตอนเข้าและออก" code={transDiagram} />
+## local โดย default — และ modifier |global
 
-export const transDiagram = `flowchart LR
-  add["element ถูกเพิ่มเข้า DOM"] --> intro["in: / transition: เล่น intro"]
-  remove["element ถูกลบ"] --> outro["out: / transition: เล่น outro"]
-  outro --> gone["element ออกไปหลัง animation"]`;
+transition เป็น **local** โดย default: มันเล่นแค่ตอน block ที่มันเป็นสมาชิกโดยตรงถูกสร้างหรือทำลาย *ไม่ใช่* ตอน block ที่อยู่สูงกว่าใน tree ถูกสร้าง/ทำลาย นี่กลายเป็น default ตั้งแต่ Svelte 4 (เพื่อไม่ให้ transition ที่ nest อยู่เล่นซ้ำตอน navigate หน้าที่ไม่เกี่ยวข้อง) และ Svelte 5 ยังคงกติกาเดิม เพิ่ม **`|global`** เพื่อให้ transition เล่นซ้ำทุกครั้งที่ ancestor block *ไหนก็ตาม* ถูกสร้างหรือทำลาย ไม่ใช่แค่ของตัวมันเอง:
+
+```svelte
+<!-- src/lib/LocalVsGlobal.svelte -->
+<script lang="ts">
+  import { fade } from 'svelte/transition';
+  let { outer, inner, onIntro }: { outer: boolean; inner: boolean; onIntro: (which: string) => void } = $props();
+</script>
+{#if outer}
+  {#if inner}
+    <p transition:fade onintrostart={() => onIntro('local')}>local</p>
+    <p transition:fade|global onintrostart={() => onIntro('global')}>global</p>
+  {/if}
+{/if}
+```
+
+การ toggle block **outer** ปิดแล้วเปิดใหม่ — โดยไม่แตะ `inner` เลย — จะเล่นซ้ำแค่ intro ของ paragraph ที่เป็น `|global` เท่านั้น ตัว local จะถูกข้าม เพราะ block ที่มันเป็นสมาชิกโดยตรง (inner `{#if}`) ไม่ใช่ตัวที่เปลี่ยน:
+
+```ts
+// src/lib/animate-polyfill.ts
+// jsdom has no Web Animations API; Svelte's transition engine creates a
+// zero-duration "dummy" animation via element.animate() and waits for its
+// onfinish before running the real one. This stub resolves on a microtask,
+// which is enough to drive the transition lifecycle (onintrostart etc.) in
+// a test without a real browser.
+if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
+  // @ts-ignore
+  Element.prototype.animate = function () {
+    const anim: any = { onfinish: null, oncancel: null, cancel() {}, finish() { anim.onfinish?.(); } };
+    queueMicrotask(() => anim.onfinish && anim.onfinish());
+    return anim;
+  };
+}
+```
+
+```ts
+// src/lib/local-vs-global.test.ts
+import './animate-polyfill';
+import { render } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { expect, test } from 'vitest';
+import LocalVsGlobal from './LocalVsGlobal.svelte';
+
+async function settle() {
+  await new Promise((r) => setTimeout(r, 0));
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await tick();
+}
+
+test('a local transition only replays when its OWN block is (re)created; |global also replays when an ancestor block is', async () => {
+  const seen: string[] = [];
+  const onIntro = (which: string) => seen.push(which);
+  const { rerender } = render(LocalVsGlobal, { props: { outer: true, inner: true, onIntro } });
+  await settle();
+  seen.length = 0; // discard the initial-mount intros
+
+  // Toggle the OUTER block off then on again WITHOUT touching `inner`.
+  await rerender({ outer: false, inner: true, onIntro });
+  await settle();
+  await rerender({ outer: true, inner: true, onIntro });
+  await settle();
+
+  expect(seen).toEqual(['global']); // local was skipped; only the |global one replayed
+});
+```
+
+```text
+✓ a local transition only replays when its OWN block is (re)created; |global also replays when an ancestor block is
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## `{#key}` เพื่อ re-trigger transition
+
+**`{#key}`** block ทำลายแล้วสร้างเนื้อหาข้างในใหม่ทุกครั้งที่ key expression เปลี่ยน — วิธีมาตรฐานในการเล่น transition ซ้ำตอนค่าเปลี่ยน ไม่ใช่แค่ตอน add/remove:
+
+```svelte
+<!-- src/lib/KeyReset.svelte -->
+<script lang="ts">
+  import { fade } from 'svelte/transition';
+  let { value, onIntro }: { value: number; onIntro: () => void } = $props();
+</script>
+{#key value}
+  <p transition:fade onintrostart={onIntro}>{value}</p>
+{/key}
+```
+
+```ts
+// src/lib/key-reset.test.ts
+import './animate-polyfill';
+import { render } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { expect, test } from 'vitest';
+import KeyReset from './KeyReset.svelte';
+
+async function settle() {
+  await new Promise((r) => setTimeout(r, 0));
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await tick();
+}
+
+test('{#key} re-triggers the intro transition only when the key expression actually changes', async () => {
+  const intros: number[] = [];
+  const { rerender } = render(KeyReset, { props: { value: 1, onIntro: () => intros.push(1) } });
+  await settle();
+  await rerender({ value: 1, onIntro: () => intros.push(1) }); // same value: no new block, no re-intro
+  await settle();
+  await rerender({ value: 2, onIntro: () => intros.push(1) }); // changed value: {#key} tears down + rebuilds
+  await settle();
+  expect(intros.length).toBe(1);
+});
+```
+
+```text
+✓ {#key} re-triggers the intro transition only when the key expression actually changes
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
 
 ## animate: สำหรับเรียง list ใหม่
 
@@ -70,10 +187,188 @@ transition จัดการ add/remove แต่ไม่จัดการ **
 {/each}
 ```
 
-`animate:` ต้องการ each block ที่ **keyed** — key `(item)` คือวิธีที่ Svelte รู้ว่า element ไหนย้ายไปไหน รวม `animate:flip` กับ `transition:` บน list เดียวกันเพื่อ animate การเพิ่ม ลบ และเรียงใหม่พร้อมกัน
+`animate:` ต้องการ each block ที่ **keyed** — key `(item)` คือวิธีที่ Svelte รู้ว่า element ไหนย้ายไปไหน ง่ายที่จะสมมติว่า `transition:` เพียงอย่างเดียวจะเลื่อน item ที่เรียงใหม่อย่างลื่น — มันไม่ทำแบบนั้น เพราะการเรียง keyed each block ใหม่ **reuse DOM node เดิม** แทนที่จะลบแล้วเพิ่มใหม่ ดังนั้นไม่มี intro/outro ใดถูก trigger สำหรับการย้ายนั้นเลย:
+
+```svelte
+<!-- src/lib/ReorderNoFlip.svelte -->
+<script lang="ts">
+  let { items }: { items: number[] } = $props();
+  function noop(_node: HTMLElement) {
+    return {};
+  }
+</script>
+<ul>
+  {#each items as item (item)}
+    <li data-item={item} transition:noop>{item}</li>
+  {/each}
+</ul>
+```
+
+```ts
+// src/lib/reorder.test.ts
+import { render } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+import ReorderNoFlip from './ReorderNoFlip.svelte';
+
+test('reordering a keyed each reuses the same DOM node — no add/remove happens, so transition: never fires for the move', () => {
+  const { container, rerender } = render(ReorderNoFlip, { props: { items: [1, 2, 3] } });
+  const nodeFor1 = container.querySelector('[data-item="1"]');
+  rerender({ items: [3, 2, 1] });
+  flushSync();
+  const nodeFor1After = container.querySelector('[data-item="1"]');
+  expect(nodeFor1After).toBe(nodeFor1); // same DOM node instance, just moved — proves no add/remove
+});
+```
+
+```text
+✓ reordering a keyed each reuses the same DOM node — no add/remove happens, so transition: never fires for the move
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+รวม `animate:flip` กับ `transition:` บน list เดียวกันเพื่อ animate การเพิ่ม ลบ *และ* เรียงใหม่พร้อมกัน — `animate:` คือส่วนที่ตกหล่นได้ง่าย เพราะทุกอย่างยัง compile และ "เกือบ" ทำงานถูก (add/remove ยัง animate) แม้ไม่มีมันก็ตาม
+
+## Custom transition: css และ tick
+
+custom transition function รับ node กับพารามิเตอร์ของมัน แล้ว return object ที่อธิบาย animation — ไม่ว่าจะเป็น function `css(t, u)` (Svelte แปลงมันเป็น Web Animation ทำให้รันนอก main thread ได้) หรือ function `tick(t, u)` (run ทุก frame สำหรับ effect ที่ `css` ทำไม่ได้):
+
+```svelte
+<!-- src/lib/CustomTransition.svelte -->
+<script lang="ts">
+  import { elasticOut } from 'svelte/easing';
+  let visible = $state(true);
+
+  function whoosh(node: HTMLElement, params: { delay?: number; duration?: number } = {}) {
+    const existingTransform = getComputedStyle(node).transform.replace('none', '');
+    return {
+      delay: params.delay ?? 0,
+      duration: params.duration ?? 400,
+      easing: elasticOut,
+      css: (t: number, u: number) => `transform: ${existingTransform} scale(${t})`,
+    };
+  }
+</script>
+{#if visible}
+  <div in:whoosh>whooshes in</div>
+{/if}
+```
+
+`t` ไล่จาก `0` ไป `1` ตอน intro (`1` ไป `0` ตอน outro); `u` คือ `1 - t` เลือกใช้ `css` เมื่อไหร่ที่ effect นั้นเขียนเป็น CSS ได้ — มันคือสิ่งที่ทำให้ Svelte ส่ง animation ให้ compositor ของเบราว์เซอร์แทนที่จะรัน function ของคุณทุก frame
+
+## เคารพ prefers-reduced-motion
+
+transition รันผ่าน Web Animations API ไม่ใช่ CSS — ดังนั้น rule `@media (prefers-reduced-motion: reduce)` ที่ครอบทั้งหน้าซึ่ง zero `animation-duration` **ไม่มีผล** กับมันเลย ทางแก้ของ Svelte เองคือ `prefersReducedMotion` (จาก `svelte/motion` เพิ่มใน **Svelte 5.7**): ค่า reactive ที่ผูกกับ media query ทำให้คุณอ่าน `.current` แล้วปรับ transition เองได้:
+
+```svelte
+<!-- src/lib/ReducedMotion.svelte -->
+<script lang="ts">
+  import { prefersReducedMotion } from 'svelte/motion';
+  import { fly } from 'svelte/transition';
+  let visible = $state(true);
+</script>
+{#if visible}
+  <p transition:fly={{ y: prefersReducedMotion.current ? 0 : 200 }}>hi</p>
+{/if}
+```
+
+ด้วย `y: 0` "fly" จะกลายเป็น transition ที่แทบจะทันที แทนที่จะเป็น motion ใหญ่ — เคารพ preference ระดับระบบของ user โดยไม่ต้องปิดกลไก transition ไปเลยทั้งหมด
+
+## transition ข้างใน pending boundary
+
+`<svelte:boundary>` ที่มี `pending` snippet จะโชว์เนื้อหา placeholder ระหว่างที่ `await` expression ข้างในกำลัง resolve แล้วสลับไปเนื้อหาจริงเมื่อเสร็จ (อธิบายเต็มในบท [Async Svelte](/svelte/th/reactivity/async-svelte) ซึ่งยัง experimental อยู่หลัง `compilerOptions.experimental.async`) การสลับนั้นคือการ add DOM ธรรมดา — `transition:` บนเนื้อหาที่เพิ่งเผยออกมาจะเล่นเหมือนที่มันเล่นหลัง `{#if}` ทั่วไปทุกประการ:
+
+```svelte
+<!-- src/lib/BoundaryTransition.svelte -->
+<script lang="ts">
+  import { fade } from 'svelte/transition';
+  async function loadMessage() {
+    await new Promise((r) => setTimeout(r, 10));
+    return 'loaded!';
+  }
+</script>
+<svelte:boundary>
+  <p transition:fade>{await loadMessage()}</p>
+  {#snippet pending()}
+    <p>loading…</p>
+  {/snippet}
+</svelte:boundary>
+```
+
+<Mermaid title="transition ตอนเข้าและออก" code={transDiagram} />
+
+export const transDiagram = `flowchart LR
+  add["element added to DOM"] --> intro["in: / transition: plays the intro"]
+  remove["element removed"] --> outro["out: / transition: plays the outro"]
+  outro --> gone["element leaves after the animation"]
+  reorder["keyed each reorders (same node, no add/remove)"] --> flip["only animate:flip moves it smoothly"]`;
+
+## Mental Model
+
+transition ถูก trigger ด้วยการ **add หรือ remove DOM** เท่านั้น จบ — ไม่ใช่ด้วย "ค่าเปลี่ยน" หรือ "ลำดับ list เปลี่ยน" `{#if}`/`{#each}`/`{#await}`/`{#key}` คือสิ่งเดียวที่ add และ remove node ดังนั้นมันคือที่เดียวที่ `transition:`/`in:`/`out:` จะ fire ได้ `animate:` มีอยู่เพราะการเรียง keyed each block ใหม่คือกรณีทั่วไปกรณีเดียวที่ Svelte ตั้งใจ reuse node เดิมแทนที่จะทำลายแล้วสร้างใหม่ (เพื่อ performance และรักษา focus/scroll/input state) มันเลยต้องมีกลไก animation ของตัวเองแยกต่างหาก พอเห็นว่า "transition = add/remove, animate = เปลี่ยนตำแหน่ง" ที่เหลือ (local เทียบ global, `{#key}` บังคับ add/remove ใหม่) ก็ตามมาจากกฎข้อเดียวนั้น
+
+## ข้อแลกเปลี่ยน
+
+| ทางเลือก | ข้อดี | ต้นทุน |
+| --- | --- | --- |
+| local transition (default) | transition ที่ nest ไม่เล่นซ้ำตอน ancestor เปลี่ยนแบบไม่เกี่ยวข้อง (เช่น page navigation) | อาจแปลกใจง่ายเมื่อ transition ที่คาดว่าจะเล่นซ้ำไม่เล่น ถ้ามัน nest ลึกกว่าที่คิด |
+| `\|global` transition | เล่นซ้ำเมื่อ ancestor ไหนก็ตามถูกสร้าง/ทำลาย — ตรงกับ "ควร animate เสมอเมื่อปรากฏ" | trigger เกินได้: ancestor toggle ไหนก็เล่นซ้ำ รวมถึงตัวที่ไม่เกี่ยวกับความหมายของ element นี้เอง |
+| `{#key}` เพื่อบังคับ replay | วิธีง่าย ชัดเจนในการบอกว่า "ปฏิบัติกับสิ่งนี้เหมือน element ใหม่เอี่ยมตอน X เปลี่ยน" | ทำลายแล้วสร้าง state ทั้ง block ใหม่ (component state ข้างในหายไปด้วย) ไม่ใช่แค่ DOM ของมัน |
+| `animate:flip` คู่กับ `transition:` | เรียงใหม่ได้ลื่นและถูกต้อง แทบไม่ต้องเขียนโค้ดเพิ่ม | ต้องการ keyed each block — list ที่ไม่ keyed ใช้ `animate:` ไม่ได้เลย |
+| custom `css` transition | รันนอก main thread (Web Animations API) | ต้องเขียน effect เป็น CSS property ได้ — `tick` จำเป็นสำหรับสิ่งที่ CSS ทำไม่ได้ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`transition:` จะ animate item ที่เรียงใหม่ใน keyed `{#each}` อย่างลื่น"** ไม่จริง — พิสูจน์ด้านบน: การเรียงใหม่ reuse DOM node เดิม (ไม่มี add/remove) จึงไม่มี intro/outro ถูก fire สำหรับการย้ายเลย มีแค่ `animate:flip` เท่านั้นที่จัดการการเรียงใหม่
+- **"rule `prefers-reduced-motion` ของ CSS ที่ครอบทั้งหน้าจะลด transition ของ Svelte ให้อ่อนลงอัตโนมัติ"** ไม่จริง — transition รันผ่าน Web Animations API ไม่ใช่ property `animation`/`transition` ของ CSS ดังนั้น media query นั้นไม่มีผลกับมันโดย default ใช้ `prefersReducedMotion` จาก `svelte/motion` แทน
+- **"local เป็นแค่ default เก่า `|global` คือวิธีเขียน transition แบบสมัยใหม่"** ตรงกันข้าม: local เป็น default มาตั้งแต่ Svelte 4 โดยตั้งใจเพื่อ *เลี่ยง* ไม่ให้ transition เล่นซ้ำตอน ancestor เปลี่ยนแบบไม่เกี่ยวข้อง; `|global` คือ opt-in ที่ตั้งใจสำหรับกรณีที่พบน้อยกว่า
+- **"`{#key}` มีประโยชน์แค่กับ list `{#each}`"** มันทำงานกับ expression อะไรก็ได้ — การใช้ทั่วไปคือบังคับ remount เต็มรูปแบบ (และเล่น transition ซ้ำ) เมื่อ route param หรือ selected item id เปลี่ยน โดยไม่มี list เกี่ยวข้องเลย
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ component ที่ generate มาใช้ transition หรือ animation ให้ตรวจสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- keyed `{#each}` พึ่งพา `transition:` เพียงอย่างเดียวเพื่อ animate การเรียงใหม่ โดยไม่มี `animate:flip` หรือเปล่า?
+- transition ถูก mark `|global` ทั้งที่จริง ๆ ตั้งใจให้เล่นแค่ตอน block ที่เป็นสมาชิกโดยตรงของมันเปลี่ยน (trigger เกินตอน ancestor toggle ที่ไม่เกี่ยวข้อง) หรือเปล่า?
+- โค้ดสมมติว่า rule CSS `prefers-reduced-motion` ที่ครอบทั้งหน้าจะปิดเสียง transition ของ Svelte แทนที่จะอ่าน `prefersReducedMotion` จาก `svelte/motion` หรือเปล่า?
+- `{#key}` ถูกใช้ในที่ที่ `{#if}`/การอัปเดต reactive prop ธรรมดาก็พอแล้ว — ทำลายแล้วสร้าง component state ใหม่โดยไม่จำเป็นแค่เพื่อเล่น transition ซ้ำหรือเปล่า?
+- function `css` ของ custom transition เมิน parameter `u` (`1 - t`) ทั้งที่ effect จริง ๆ ต้องการทั้งคู่ (เช่น รวม property สองตัวที่เคลื่อนไปคนละทิศ) หรือเปล่า?
+
+<SpotTheBug code={`<script>
+  import { fade } from 'svelte/transition';
+  let items = $state([
+    { id: 1, label: 'Alpha' },
+    { id: 2, label: 'Beta' },
+    { id: 3, label: 'Gamma' },
+  ]);
+  function sortAlpha() {
+    items = items.toSorted((a, b) => a.label.localeCompare(b.label));
+  }
+</script>
+
+<button onclick={sortAlpha}>Sort A→Z</button>
+{#each items as item (item.id)}
+  <div transition:fade>{item.label}</div>
+{/each}`}>
+list ถูก key ถูกต้อง (`(item.id)`) ดังนั้น Svelte รู้แน่ชัดว่าแถวไหนย้ายไปไหน — แต่ `transition:fade` fire แค่ตอน **add** กับ **remove** เท่านั้น การเรียงใหม่ทำให้แถวที่มีอยู่แล้วเปลี่ยนตำแหน่ง ไม่มีแถวไหนถูก add หรือ remove ดังนั้น `sortAlpha()` จะทำให้เกิดการกระโดดทันทีที่กระตุกตา ไม่มี animation เลย ทั้งที่โค้ด "มี transition" พิสูจน์ด้านบน (`reorder.test.ts`): DOM node เดิมรอดจากการเรียงใหม่โดยไม่ถูกแตะ ดังนั้นไม่มี intro/outro ถูก trigger สำหรับการย้ายนั้นเลย
+
+วิธีแก้คือเพิ่ม `animate:flip` (ส่วนที่จัดการการเปลี่ยนตำแหน่งจริง ๆ):
+
+```svelte
+<script>
+  import { flip } from 'svelte/animate';
+</script>
+{#each items as item (item.id)}
+  <div transition:fade animate:flip={{ duration: 250 }}>{item.label}</div>
+{/each}
+```
+
+ตอนนี้ add/remove ยัง fade (`transition:`) และทุกการเรียงใหม่จะเลื่อนไปตำแหน่งใหม่อย่างลื่น (`animate:`) — สอง directive นี้เสริมกัน ไม่ใช่ซ้ำซ้อนกัน
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**`transition:`** animate element ตอนเข้า *และ* ออกจาก DOM (ใช้ **`in:`**/**`out:`** สำหรับ intro/outro ต่างกัน); ตัวที่มีมาให้อย่าง `fade`/`fly`/`slide`/`scale` มาจาก `svelte/transition` และรับพารามิเตอร์ `duration`/`delay`/`easing` **`animate:flip`** (จาก `svelte/animate`) เลื่อน item ใหม่อย่างลื่นเมื่อ keyed `{#each}` เรียงใหม่ — transition จัดการ add/remove, `animate:` จัดการการเคลื่อนที่
+**`transition:`** animate element ตอนเข้า *และ* ออกจาก DOM (ใช้ **`in:`**/**`out:`** สำหรับ intro/outro ต่างกัน); มันเป็น **local โดย default** (เล่นซ้ำแค่ตอน block ของตัวมันเองเปลี่ยน — เพิ่ม **`\|global`** เพื่อให้เล่นซ้ำตอน ancestor เปลี่ยนด้วย) และ **`{#key}`** บังคับ add/remove ใหม่เพื่อเล่นมันซ้ำตอนค่าเปลี่ยน **`animate:flip`** (จาก `svelte/animate`) คือกลไก *แยกต่างหาก* สำหรับการเรียง keyed `{#each}` ใหม่ — transition ไม่เคย fire สำหรับการเรียงใหม่เลย เพราะ DOM node ถูก reuse ไม่ใช่ add ใหม่ เคารพ `prefers-reduced-motion` อย่างชัดเจนผ่าน `prefersReducedMotion` จาก `svelte/motion` (Svelte 5.7+) เพราะ CSS media query ที่ครอบทั้งหน้าไม่มีผลกับ transition engine ที่ขับด้วย Web Animations API
 </Callout>
 
 export const quizTrans = [
@@ -86,36 +381,62 @@ export const quizTrans = [
       'route change',
     ],
     answer: 1,
+    explain: 'transition: fire ทั้งตอน intro (element ถูกเพิ่ม) และ outro (element ถูกลบ); in:/out: ให้ระบุแยกกันแต่ละอันได้',
   },
   {
-    q: 'ใช้ animation ต่างกันสำหรับเข้า vs ออกยังไง?',
+    q: 'transition เป็น local หรือ global โดย default และตั้งแต่เมื่อไร?',
     options: [
-      'ทำไม่ได้',
-      'ใช้ `in:` และ `out:` แยกกันแทน `transition:`',
-      'สอง transition: directive',
-      'store',
+      'global โดย default มาตลอด',
+      'local โดย default ตั้งแต่ Svelte 4 — มันเล่นซ้ำแค่ตอน block ของตัวมันเองถูกสร้าง/ทำลาย ไม่ใช่ของ ancestor',
+      'global โดย default ตั้งแต่ Svelte 5',
+      'ไม่มีความแตกต่างแบบนั้น',
     ],
     answer: 1,
+    explain: 'local-โดย-default ถูกนำมาใช้ใน Svelte 4 (เพื่อหยุด transition เล่นซ้ำตอน page navigation ที่ไม่เกี่ยวข้อง) และ Svelte 5 ยังคงกติกาเดิม; |global คือ opt-in กลับไปเล่นซ้ำตอน ancestor เปลี่ยน',
   },
   {
-    q: '`animate:flip` ทำอะไร และต้องการอะไร?',
+    q: '```svelte\n{#each items as item (item.id)}\n  <div transition:fade>{item.label}</div>\n{/each}\n```\nหลังเรียง `items` ใหม่ (ไม่มีการ add/remove) จะเกิดอะไรขึ้นในสายตา?',
     options: [
-      'fade element; ไม่ต้องการอะไร',
-      'เลื่อน item ใหม่อย่างลื่นเมื่อ keyed `{#each}` เรียงใหม่ — ต้องการ keyed each block',
-      'หมุน element 180 องศา',
-      'ลบ element',
+      'แต่ละแถวเลื่อนไปตำแหน่งใหม่อย่างลื่น',
+      'แถวกระโดดไปตำแหน่งใหม่ทันที — transition:fade ไม่เคย fire สำหรับการเรียงใหม่ มีแค่ animate:flip เท่านั้นที่จัดการ',
+      'list ทั้งหมด fade ออกแล้วกลับเข้ามาใหม่',
+      'compile error เพราะ transition: ใช้กับ keyed each ไม่ได้',
     ],
     answer: 1,
+    explain: 'พิสูจน์ใน reorder.test.ts: keyed each ที่เรียงใหม่ reuse DOM node เดิม (ไม่มี add/remove) จึงไม่มี intro/outro ถูก fire เลย มีแค่ animate:flip เท่านั้นที่ animate การเปลี่ยนตำแหน่ง',
   },
   {
-    q: 'transition ที่มีมาให้อย่าง `fly` มาจากไหน?',
+    q: 'ทำไม rule CSS `@media (prefers-reduced-motion: reduce)` ที่ครอบทั้งหน้าถึงไม่มีผลกับ transition ของ Svelte?',
     options: [
-      'global',
-      'import จาก `svelte/transition` (และ `flip` จาก `svelte/animate`)',
-      'จาก DOM',
-      'จาก store',
+      'มันมีผลอัตโนมัติอยู่แล้ว',
+      'transition รันผ่าน Web Animations API ไม่ใช่ property animation/transition ของ CSS จึง media query นั้นไม่มีผลกับมันโดย default',
+      'transition ของ Svelte เมิน media query ทุกตัวโดยตั้งใจ ไม่มีทางแก้',
+      'มันมีผลแค่กับ animate:flip ไม่ใช่ transition:',
     ],
     answer: 1,
+    explain: 'ตาม docs: ใช้ prefersReducedMotion (svelte/motion ตั้งแต่ 5.7) เพื่ออ่าน preference แล้วปรับพารามิเตอร์ transition เอง',
+  },
+  {
+    q: '`{#key value}` ทำอะไร?',
+    options: [
+      'ไม่ทำอะไรเลยนอกจาก value เป็น object',
+      'ทำลายแล้วสร้างเนื้อหาข้างในใหม่ทุกครั้งที่ `value` เปลี่ยน เล่น transition ข้างในซ้ำ',
+      'ใช้ได้แค่ข้างใน {#each}',
+      'ป้องกันไม่ให้ transition เล่นซ้ำเลย',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ใน key-reset.test.ts: intro fire แค่หนึ่งครั้ง เฉพาะ render ที่ key value เปลี่ยนจริง ๆ — ไม่ใช่ตอน initial mount หรือ re-render ด้วยค่าเดิม',
+  },
+  {
+    q: '`animate:flip` ต้องการอะไรที่ `transition:` ธรรมดาไม่ต้องการ?',
+    options: [
+      'ไม่ต้องการอะไรเพิ่ม',
+      'each block ที่ keyed — key คือวิธีที่ Svelte รู้ว่า element ไหนย้ายไปไหน',
+      'svelte:boundary',
+      'compiler flag experimental.async',
+    ],
+    answer: 1,
+    explain: 'animate: ใช้ได้แค่ข้างใน keyed each block โดยตรง; มันใช้ key เพื่อตรวจว่า element ตัวไหนย้าย',
   },
 ];
 

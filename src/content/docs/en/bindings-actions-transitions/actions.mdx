@@ -1,6 +1,6 @@
 ---
 title: 'Actions'
-description: 'The use: directive — attaching imperative behavior to an element when it mounts, the action lifecycle, and integrating non-Svelte libraries.'
+description: 'Attachments (@attach) as the modern way to run imperative code on an element or component, attachment factories that re-run reactively, the fromAction() bridge, and use: actions as the legacy form for library code.'
 sidebar:
   order: 3
 ---
@@ -9,57 +9,212 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## An action is a function that runs on an element
+## An attachment is a function that runs on an element
 
-Sometimes you need imperative access to a DOM node — to initialize a charting library, trap focus, set up a tooltip, or detect clicks outside. An **action** packages that logic as a reusable function attached with the `use:` directive.
-
-An action is a function that receives the DOM `node` (and optional parameters) when the element mounts, and may return an object with `update` and `destroy` methods:
+Sometimes you need imperative access to a DOM node — to initialize a charting library, trap focus, set up a tooltip, or detect clicks outside. Since **Svelte 5.29**, the tool for this is an **attachment**: a function passed with the `{@attach ...}` syntax that receives the element and can return a cleanup function.
 
 ```svelte
-<script>
-  // An action: (node, params?) => { update?, destroy? }
-  function tooltip(node, text) {
-    const el = document.createElement('div');
-    el.className = 'tooltip';
-    el.textContent = text;
-
-    function show() { document.body.appendChild(el); }
-    function hide() { el.remove(); }
-    node.addEventListener('mouseenter', show);
-    node.addEventListener('mouseleave', hide);
-
-    return {
-      update(newText) { el.textContent = newText; },   // params changed
-      destroy() {                                       // element unmounting
-        node.removeEventListener('mouseenter', show);
-        node.removeEventListener('mouseleave', hide);
-        el.remove();
-      },
+<!-- src/lib/LogAttachment.svelte -->
+<script lang="ts">
+  /** @type {import('svelte/attachments').Attachment} */
+  function logMount(element: Element) {
+    console.log(element.nodeName); // 'DIV'
+    return () => {
+      console.log('cleaning up');
     };
   }
 </script>
 
-<button use:tooltip={'Save your work'}>Save</button>
+<div {@attach logMount}>...</div>
 ```
 
-<Mermaid title="The action lifecycle" code={actionDiagram} />
+An attachment runs when the element mounts; if it returns a function, that function runs when the element unmounts (or before the attachment re-runs — see below). That's the whole shape: `(element) => cleanup?`.
 
-export const actionDiagram = `flowchart LR
-  mount["element mounts"] --> run["action(node, params) runs"]
-  run --> update["params change → update(newParams)"]
-  update --> update
-  update --> destroy["element unmounts → destroy()"]`;
+## Attachment factories re-run reactively — actions don't
 
-## A practical example: click-outside
-
-Actions shine for cross-cutting DOM behavior. A `clickOutside` action dispatches when a click lands outside the node — perfect for closing dropdowns and modals:
+The interesting part is what happens when an attachment reads reactive state. `{@attach expr}` runs `expr` inside an effect, so an **attachment factory** — a function that takes arguments and *returns* an attachment — is automatically destroyed and recreated whenever a value it reads changes:
 
 ```svelte
-<script>
-  function clickOutside(node, callback) {
-    function handle(e) {
-      if (!node.contains(e.target)) callback();
+<!-- src/lib/AttachTooltip.svelte -->
+<script lang="ts">
+  let { text, onRun }: { text: string; onRun: (n: number) => void } = $props();
+  let runs = 0;
+
+  // An attachment factory: (text) => (node) => cleanup?
+  function tooltip(t: string) {
+    return (node: HTMLElement) => {
+      runs += 1;
+      onRun(runs);
+      node.title = t;
+    };
+  }
+</script>
+
+<div {@attach tooltip(text)}>hover</div>
+```
+
+Compare that to the equivalent written as a legacy `use:` action, with no `update` method:
+
+```svelte
+<!-- src/lib/UseTooltip.svelte -->
+<script lang="ts">
+  let { text, onRun }: { text: string; onRun: (n: number) => void } = $props();
+  let runs = 0;
+
+  // A use: action — runs ONCE per mount. Without an `update` method,
+  // a changed `text` argument is silently ignored.
+  function tooltip(node: HTMLElement, t: string) {
+    runs += 1;
+    onRun(runs);
+    node.title = t;
+  }
+</script>
+
+<div use:tooltip={text}>hover</div>
+```
+
+These look almost identical, but they behave differently the moment `text` changes after mount:
+
+```ts
+// src/lib/attach-vs-use.test.ts
+import { render } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import AttachTooltip from './AttachTooltip.svelte';
+import UseTooltip from './UseTooltip.svelte';
+
+test('an attachment factory re-runs when its argument changes; a use: action does not', async () => {
+  const attachRuns: number[] = [];
+  const { rerender } = render(AttachTooltip, {
+    props: { text: 'a', onRun: (n: number) => attachRuns.push(n) },
+  });
+  await rerender({ text: 'b', onRun: (n: number) => attachRuns.push(n) });
+  expect(attachRuns).toEqual([1, 2]); // ran again when `text` changed
+
+  const actionRuns: number[] = [];
+  const { rerender: rerenderAction } = render(UseTooltip, {
+    props: { text: 'a', onRun: (n: number) => actionRuns.push(n) },
+  });
+  await rerenderAction({ text: 'b', onRun: (n: number) => actionRuns.push(n) });
+  expect(actionRuns).toEqual([1]); // never ran again — text change was ignored
+});
+```
+
+```text
+✓ an attachment factory re-runs when its argument changes; a use: action does not
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+That's the core trade-off: an attachment factory is **reactive by default** — it re-runs whenever anything it reads changes, tearing down the old attachment (running its cleanup) first. A `use:` action only re-runs its `update` method, and only if you write one; without it, a changed parameter is silently ignored — a common, quiet bug when the AI-generated code assumes `use:tooltip={text}` "just works" like a prop.
+
+If the setup itself is expensive and you only want a *part* of the attachment to react, read the reactive value inside a nested `$effect` instead of at the top of the factory:
+
+```svelte
+<!-- src/lib/OptimizedAttach.svelte -->
+<script lang="ts">
+  let { text }: { text: string } = $props();
+
+  function tooltip(getText: () => string) {
+    return (node: HTMLElement) => {
+      veryExpensiveSetupWork(node);
+      $effect(() => {
+        node.title = getText(); // only this part re-runs when `text` changes
+      });
+    };
+  }
+
+  function veryExpensiveSetupWork(_node: HTMLElement) {}
+</script>
+
+<div {@attach tooltip(() => text)}>hover</div>
+```
+
+## Attachments work on components too
+
+An attachment on a component becomes a prop with a `Symbol` key; if the component spreads its remaining props onto an element, that element receives the attachment. This lets you build **wrapper components** that augment whatever they render, without the wrapper needing to know about attachments at all:
+
+```svelte
+<!-- src/lib/Button.svelte -->
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  let { children, ...props }: { children?: Snippet } & Record<string, unknown> = $props();
+</script>
+
+<!-- `props` includes any attachment the caller passed -->
+<button {...props}>{@render children?.()}</button>
+```
+
+```svelte
+<!-- src/lib/ButtonWithAttachment.svelte -->
+<script lang="ts">
+  import Button from './Button.svelte';
+
+  function logAttach(): import('svelte/attachments').Attachment {
+    return (element) => {
+      element.setAttribute('data-attached', 'true');
+    };
+  }
+</script>
+
+<Button {@attach logAttach()}>Click</Button>
+```
+
+`use:` cannot be used on a component at all — only on a DOM element. An attachment works on both, which is one reason the docs describe attachments as "more flexible and composable."
+
+For the rarer case of building up a set of attachments programmatically (e.g. from a loop, or merging several sources) rather than writing them literally in the markup, `createAttachmentKey` mints the same kind of symbol key so you can spread it onto a `$state` object:
+
+```svelte
+<!-- src/lib/SpreadAttachment.svelte -->
+<script lang="ts">
+  import { createAttachmentKey } from 'svelte/attachments';
+
+  let stuff = $state({
+    [createAttachmentKey()]: (node: HTMLElement) => console.log(node.nodeName),
+  });
+</script>
+
+<div {...stuff}>spread</div>
+```
+
+## Bridging existing action libraries with fromAction
+
+Plenty of libraries still ship a plain Svelte **action** (the `(node, params?) => { update?, destroy? }` shape) rather than an attachment. `fromAction` converts one into the other, keeping the exact same behavior, so you can use it on a component or alongside other attachments:
+
+```svelte
+<!-- src/lib/FromActionBridge.svelte -->
+<script lang="ts">
+  import { fromAction } from 'svelte/attachments';
+
+  // A library-style action — untouched, still the classic (node, params) shape.
+  function legacyTooltip(node: HTMLElement, text: string) {
+    node.title = text;
+    return {
+      update(t: string) { node.title = t; },
+    };
+  }
+
+  let text = $state('hi');
+</script>
+
+<!-- Note the second argument is a FUNCTION that returns the action's
+     argument, not the argument itself — fromAction re-reads it reactively. -->
+<div {@attach fromAction(legacyTooltip, () => text)}>hover</div>
+```
+
+## use: is the legacy form, still there for library code
+
+Before attachments existed, the only way to do this was the `use:` directive. An action is a function that receives the DOM `node` (and optional parameters) when the element mounts, and may return an object with `update` and `destroy` methods:
+
+```svelte
+<!-- src/lib/ClickOutsideDemo.svelte -->
+<script lang="ts">
+  // A use: action: (node, params?) => { update?, destroy? }
+  function clickOutside(node: HTMLElement, callback: () => void) {
+    function handle(e: MouseEvent) {
+      if (!node.contains(e.target as Node)) callback();
     }
     document.addEventListener('click', handle, true);
     return {
@@ -71,58 +226,168 @@ Actions shine for cross-cutting DOM behavior. A `clickOutside` action dispatches
 </script>
 
 {#if open}
-  <div class="menu" use:clickOutside={() => (open = false)}>…</div>
+  <div class="menu" use:clickOutside={() => (open = false)}>menu</div>
 {/if}
 ```
 
-## Why actions instead of an effect
+`update` is called with the new argument whenever it changes (immediately after Svelte applies the surrounding markup update); `destroy` is called when the element unmounts. You'll still see and write `use:` when a **library** hands you an action directly (many pre-attachment component libraries do), or when you're maintaining older code — but for anything new, reach for an attachment instead. Svelte's own docs are direct about this:
 
-You *could* do some of this with `bind:this` plus a `$effect`. Actions are better when the behavior is **reusable across elements** and **self-contained** (setup + teardown in one place): the `destroy` method guarantees cleanup, and passing parameters with `use:action={params}` keeps it declarative at the call site. Reach for an action when you want to say "this element behaves like *X*" and reuse *X* everywhere.
+> In Svelte 5.29 and newer, consider using [attachments](https://svelte.dev/docs/svelte/@attach) instead, as they are more flexible and composable.
+> — [svelte.dev/docs/svelte/use](https://svelte.dev/docs/svelte/use)
+
+<Mermaid title="Attachments vs. use: actions" code={actionDiagram} />
+
+export const actionDiagram = `flowchart TB
+  subgraph attach["{@attach factory(arg)} — Svelte 5.29+"]
+    a1["arg changes"] --> a2["old attachment's cleanup runs"]
+    a2 --> a3["factory(arg) called again"]
+    a3 --> a4["new attachment runs"]
+  end
+  subgraph use["use:action={arg} — legacy"]
+    u1["arg changes"] --> u2{"did the action\\nreturn update()?"}
+    u2 -->|"yes"| u3["update(newArg) runs"]
+    u2 -->|"no — common bug"| u4["nothing happens, silently"]
+  end
+  unmount["element unmounts"] --> cleanup["attachment cleanup / action destroy()"]`;
+
+## Why an attachment (or action) instead of an effect
+
+You *could* do some of this with `bind:this` plus a `$effect`. Attachments and actions are better when the behavior is **reusable across elements** and **self-contained** (setup + teardown in one place): the returned cleanup guarantees teardown, and passing arguments keeps it declarative at the call site. Reach for one when you want to say "this element behaves like *X*" and reuse *X* everywhere — a tooltip, a click-outside, a focus trap, a chart library's mount point.
+
+## Mental Model
+
+An attachment is "a function that runs when this element exists, and cleans up when it stops" — the same escape hatch actions always were, just wired through Svelte's own effect system instead of a bespoke action lifecycle. That's why an attachment factory re-runs on its own: reading reactive state inside an effect makes that effect re-run, exactly like a `$derived` or a plain `$effect` would. An action's `update` method exists because actions predate `$effect` entirely (they're older than runes) — it's a parallel, hand-rolled reactivity mechanism that only fires if you remember to write it. Attachments retire that hand-rolled part by riding on the reactivity system that already exists.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| `{@attach factory(arg)}` | Reactive by default (no `update` to forget), works on elements **and** components, composable via `fromAction`/spread | Requires Svelte 5.29+; a large factory that reads many values re-runs all of it unless you push reads into a nested `$effect` |
+| `use:action={arg}` | Familiar, still the shape most third-party action libraries ship | `update` is opt-in and easy to omit; cannot be used on a component at all |
+| `fromAction(action, () => arg)` | Reuses a library's existing action unmodified, but gets it working on components | One more layer of indirection versus writing a native attachment |
+| Attachment factory reading state directly (no nested `$effect`) | Simplest code | Re-runs (and re-does expensive setup) on every dependency change, not just the ones that matter |
+
+## Common Misconceptions
+
+- **"`use:action={value}` updates automatically when `value` changes, like a prop."** It doesn't — only the action's own `update` method runs on a param change, and only if you wrote one. Proven above: the `use:` version's `onRun` never fires a second time.
+- **"Attachments are just a new name for actions."** They're a different mechanism (effects, not a custom lifecycle), they work on components (actions don't), and their reactivity is automatic rather than hand-written via `update`.
+- **"You have to rewrite every `use:` action as an attachment."** No — `fromAction` bridges an existing action into an attachment with identical behavior; there's no need to touch a working library's action to use it on a component.
+- **"An attachment factory's second argument re-reads live state as long as you pass an expression."** Only the outer call (`tooltip(text)`) is reactive by virtue of running inside an effect; a value captured once inside a nested closure and never re-read won't update — same rule as any other Svelte reactivity.
+
+## Reading AI-generated code
+
+When a generated component uses `use:` or `{@attach}`, check for these before trusting it:
+
+- Does a `use:action={value}` site assume `value` updates the DOM automatically, with no `update` method defined on the action?
+- Is `use:` being attached to a **component** (`<MyComponent use:foo />`) — that's not valid; only attachments work on components.
+- Does an attachment factory do expensive setup work that would be better isolated inside a nested `$effect`, so only the cheap part re-runs?
+- Is a library's ready-made `action` being manually rewritten into an attachment, when `fromAction(action, () => arg)` would keep it working unmodified?
+- Does the action/attachment actually return a cleanup (`destroy`, or a returned function) — or does it leak listeners/subscriptions on unmount?
+
+<SpotTheBug code={`<script>
+  function tooltip(node, text) {
+    node.title = text;
+  }
+  let label = $state('Save your work');
+</script>
+
+<button use:tooltip={label}>Save</button>
+<button onclick={() => (label = 'Saved!')}>Mark saved</button>`}>
+This looks reasonable — pass the label into the `tooltip` action, and expect the tooltip text to update to `"Saved!"` after the button is clicked. It won't. `tooltip` is a `use:` action with no `update` method, so Svelte calls it exactly once, at mount, with the *initial* value of `label`. Every later change to `label` is silently ignored — proven above with `attach-vs-use.test.ts`: the `use:` version's run-counter stays at `1` no matter how many times its argument changes, while the equivalent attachment factory's counter increments every time.
+
+The fix is either of:
+
+```svelte
+<script>
+  function tooltip(node, text) {
+    node.title = text;
+    return { update(newText) { node.title = newText; } };
+  }
+</script>
+```
+
+or, better for new code, switch to an attachment factory, which gets this for free:
+
+```svelte
+<script>
+  function tooltip(text) {
+    return (node) => { node.title = text; };
+  }
+</script>
+<button {@attach tooltip(label)}>Save</button>
+```
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-An **action** is a reusable function attached with **`use:action`** that receives the DOM `node` (plus optional params) when the element mounts and returns optional **`update`** (params changed) and **`destroy`** (element unmounting) methods. It's the clean escape hatch for imperative, self-contained DOM behavior — third-party libraries, focus management, click-outside — with guaranteed teardown, more reusable than a `bind:this` + `$effect` pair.
+Since **Svelte 5.29**, prefer **attachments** (`{@attach fn}`) over `use:` actions: an attachment factory re-runs automatically when the reactive state it reads changes (an action's `update` method is opt-in and easy to forget), attachments work on **components** as well as elements, and `fromAction()` bridges an existing library action into one unmodified. `use:` remains the legacy form — still correct for library code that hands you an action directly, with the same `(node, params?) => { update?, destroy? }` shape it always had.
 </Callout>
 
 export const quizActions = [
   {
-    q: 'What does an action function receive when the element mounts?',
+    q: 'What is the key behavioral difference between `{@attach tooltip(text)}` and `use:tooltip={text}` when `text` changes after mount?',
     options: [
-      'The component instance',
-      'The DOM `node` (and optional parameters)',
-      'The store value',
-      'Nothing',
+      'There is no difference',
+      'The attachment factory re-runs automatically; the action only re-runs if it returns an `update` method',
+      'The action re-runs automatically; the attachment does not',
+      'Both require a manual `update` method',
     ],
     answer: 1,
+    explain: 'Proven in attach-vs-use.test.ts: the attachment factory\'s run-counter incremented on every text change ([1, 2]); the action\'s stayed at [1] because it had no update() method.',
   },
   {
-    q: 'What does an action\'s `destroy` method do?',
+    q: 'Can `use:someAction` be attached to a component (`<MyComponent use:someAction />`)?',
     options: [
-      'Deletes the component',
-      'Runs cleanup when the element unmounts (remove listeners, tear down libraries)',
-      'Resets state',
-      'Re-renders the element',
+      'Yes, exactly like an element',
+      'No — `use:` only works on DOM elements; attachments work on both elements and components',
+      'Only if the component calls $host()',
+      'Only in legacy mode',
     ],
     answer: 1,
+    explain: 'One of the concrete reasons the docs describe attachments as "more flexible and composable" — use: is element-only.',
   },
   {
-    q: 'When is an action a better fit than a `bind:this` + `$effect`?',
+    q: 'What does `fromAction(action, () => arg)` do?',
     options: [
-      'Never',
-      'When the behavior is reusable across elements and self-contained (setup + guaranteed teardown in one place)',
-      'When you need styling',
-      'When you need a route',
+      'Deletes the action',
+      'Converts an existing use:-style action into an attachment with identical behavior, so it can be used on components too',
+      'Runs the action once and caches the result forever',
+      'Converts an attachment into a use: action',
     ],
     answer: 1,
+    explain: 'fromAction is the bridge for libraries that only ship actions — the second argument must be a function that returns the argument, so it stays reactive.',
   },
   {
-    q: 'How do you attach an action with a parameter to an element?',
+    q: '```svelte\n<script>\n  function tooltip(node, text) {\n    node.title = text;\n  }\n  let label = $state(\'Save\');\n</script>\n<button use:tooltip={label}>Save</button>\n```\nAfter `label` changes, what does the button\'s tooltip show?',
     options: [
-      '`action:use={params}`',
-      '`use:action={params}`',
-      '`bind:action={params}`',
-      '`on:action={params}`',
+      'The new label, updated automatically',
+      'The original label from mount time — the action has no `update` method, so the change is silently ignored',
+      'An empty string',
+      'A compile error',
     ],
     answer: 1,
+    explain: 'Same bug as the SpotTheBug above: a use: action without update() only ever sees the argument\'s value at mount.',
+  },
+  {
+    q: '```svelte\n<script>\n  import { createAttachmentKey } from \'svelte/attachments\';\n  let stuff = $state({ [createAttachmentKey()]: (node) => console.log(node.nodeName) });\n</script>\n<div {...stuff}>spread</div>\n```\nWhat is `createAttachmentKey` for here?',
+    options: [
+      'It has no effect',
+      'It mints a Symbol key so an attachment can be added to a plain object and applied to an element via spread',
+      'It converts the div into a component',
+      'It is required before every `{@attach}`',
+    ],
+    answer: 1,
+    explain: 'createAttachmentKey is for building attachments programmatically (e.g. in a loop) rather than writing {@attach fn} literally in the markup.',
+  },
+  {
+    q: 'Why might you read a reactive value inside a nested `$effect` rather than directly in an attachment factory\'s body?',
+    options: [
+      'It is required syntax',
+      'So expensive setup work in the factory runs once, and only the cheap, reactive part re-runs when the value changes',
+      'To disable reactivity entirely',
+      'It has no effect on behavior',
+    ],
+    answer: 1,
+    explain: 'The whole factory call re-runs (tearing down and recreating the attachment) whenever anything it reads changes; isolating the expensive part outside the nested $effect avoids redoing it unnecessarily.',
   },
 ];
 

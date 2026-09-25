@@ -1,6 +1,6 @@
 ---
 title: 'Forms & Inputs'
-description: 'การจัดการ form ในทางปฏิบัติใน Svelte — controlled input ด้วย bind:, validation ด้วย $derived และการจัดการ submit ด้วย onsubmit'
+description: 'การจัดการ form ในทางปฏิบัติใน Svelte — bind:value coerce ค่าให้ number input, bind:checked/bind:files, controlled derived validation ด้วย $derived และทำไม onsubmit|preventDefault ถึงเป็น compile error จริงใน runes mode'
 sidebar:
   order: 5
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## controlled input ด้วย bind:
 
@@ -33,6 +34,81 @@ form รวม binding, runes และ event เข้าด้วยกัน 
 ```
 
 ไอเดียสำคัญ: **validation ถูก derive ไม่ใช่เก็บ** `emailValid` คำนวณใหม่อัตโนมัติทุกครั้งที่ `email` เปลี่ยน — ไม่มีขั้นตอน "revalidate" ให้ลืม นี่คือหลัก "derive อย่า sync" จากบท effect มาใช้กับ form
+
+## bind:value coerce ค่าให้ number กับ range input
+
+สำหรับ input `type="number"` และ `type="range"` `bind:value` จะไม่ส่ง string มาให้ — Svelte coerce มันให้เป็น `number` แทน:
+
+```svelte
+<!-- src/lib/NumericBinding.svelte -->
+<script lang="ts">
+  let age: number = $state(0);
+</script>
+<input type="number" bind:value={age} min="0" max="120" />
+<p data-testid="age">{age}</p>
+```
+
+```ts
+// src/lib/numeric-binding.test.ts
+import { render, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import NumericBinding from './NumericBinding.svelte';
+
+test('a number input coerces the bound value to a number, not a string', async () => {
+  const { getByRole, getByTestId } = render(NumericBinding);
+  const input = getByRole('spinbutton') as HTMLInputElement;
+  await fireEvent.input(input, { target: { value: '42' } });
+  expect(getByTestId('age').textContent).toBe('42');
+});
+```
+
+```text
+✓ a number input coerces the bound value to a number, not a string
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+เรื่องนี้สำคัญกับอะไรก็ตามที่ต่อจากนั้นแล้วคาดว่าจะได้ number จริง ๆ (arithmetic, comparison) — ไม่ต้อง `Number(e.currentTarget.value)` เองเหมือน `oninput` handler ที่เขียนเองบน text input
+
+## bind:checked และ bind:files
+
+checkbox bind ค่า checked แบบ boolean ด้วย **`bind:checked`**; file input เปิดให้เข้าถึง `FileList` ที่เลือกด้วย **`bind:files`**:
+
+```svelte
+<!-- src/lib/CheckedAndFiles.svelte -->
+<script lang="ts">
+  let accepted = $state(false);
+  let files: FileList | undefined = $state();
+</script>
+<input type="checkbox" bind:checked={accepted} data-testid="accept" />
+<p data-testid="accepted-value">{accepted}</p>
+<input type="file" bind:files data-testid="upload" />
+<p data-testid="file-count">{files?.length ?? 0}</p>
+```
+
+```ts
+// src/lib/checked-binding.test.ts
+import { render, fireEvent } from '@testing-library/svelte';
+import { expect, test } from 'vitest';
+import CheckedAndFiles from './CheckedAndFiles.svelte';
+
+test('bind:checked syncs the checkbox to state', async () => {
+  const { getByTestId } = render(CheckedAndFiles);
+  const checkbox = getByTestId('accept') as HTMLInputElement;
+  await fireEvent.click(checkbox);
+  expect(getByTestId('accepted-value').textContent).toBe('true');
+});
+```
+
+```text
+✓ bind:checked syncs the checkbox to state
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`bind:files` เป็น read-only ในความหมายสำคัญข้อหนึ่ง: คุณอ่าน `FileList` ที่ user เลือกได้ แต่ assign array อะไรก็ได้เข้าไปตรง ๆ ไม่ได้ — docs บอกชัดว่า "การอัปเดตแบบ programmatic ต้องใช้ object `DataTransfer`" (`files = new DataTransfer().files` คือวิธี *เคลียร์* file input; `null`/`undefined` ใช้ไม่ได้) เพราะ `FileList` เก็บได้แค่ object `File` จริงที่มาจาก user หรือสร้างผ่าน `DataTransfer` เท่านั้น
 
 ## การจัดการ submit
 
@@ -61,6 +137,46 @@ form รวม binding, runes และ event เข้าด้วยกัน 
 
 สังเกตว่า button ที่ disabled derive จาก `formValid` และ `submitting` — UI ถูกต้องเสมอโดยไม่ต้อง toggle เอง
 
+## ไม่มี event modifier ใน runes mode — onsubmit|preventDefault เป็น error จริง
+
+syntax modifier `on:submit|preventDefault` ของ Svelte 4 เจาะจงกับ `on:` directive แบบเดิม — มันไม่มีอยู่สำหรับ attribute `onsubmit` แบบสมัยใหม่ เขียนแบบนั้นไม่ใช่ no-op เงียบ ๆ — มันคือ compile error ที่ถูกจับได้ เพราะ `onsubmit|preventDefault` ถูก parse เป็น attribute name เดียวที่ไม่ถูกต้อง:
+
+```svelte
+<!-- @expect-error 'onsubmit|preventDefault' is not a valid attribute name -->
+<!-- src/lib/BadSubmitModifier.svelte -->
+<script lang="ts">
+  function handleSubmit(e: SubmitEvent) {
+    console.log(e);
+  }
+</script>
+
+<form onsubmit|preventDefault={handleSubmit}>
+  <button type="submit">Go</button>
+</form>
+```
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+'onsubmit|preventDefault' is not a valid attribute name
+https://svelte.dev/e/attribute_invalid_name
+```
+
+วิธีแก้คือสิ่งที่บทนี้ทำอยู่แล้ว: เรียก `e.preventDefault()` เป็นบรรทัดแรกข้างใน handler แทนที่จะหยิบ modifier ที่ไม่มีอยู่แล้วมาใช้:
+
+```svelte
+<!-- src/lib/GoodSubmit.svelte -->
+<script lang="ts">
+  function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    console.log('submitted');
+  }
+</script>
+
+<form onsubmit={handleSubmit}>
+  <button type="submit">Go</button>
+</form>
+```
+
 <Mermaid title="form: bind, derive แล้ว submit" code={formDiagram} />
 
 export const formDiagram = `flowchart LR
@@ -73,8 +189,76 @@ export const formDiagram = `flowchart LR
 
 บทนี้จัดการ form ทั้งหมดบน client — โอเคสำหรับ local state และเคสง่าย ๆ แต่แอปจริงต้องการข้อมูลบน **server**: การ persist, auth, validation ที่เชื่อถือได้ นั่นคือสิ่งที่ **SvelteKit form actions** (โมดูลถัดไป) ให้มา — form แบบ progressive-enhancement ที่ทำงานทั้งมีและไม่มี JavaScript validate บน server client-side `bind:` + `$derived` ให้ UX ที่ตอบสนอง; SvelteKit ให้ pipeline แบบ full-stack
 
+## Mental Model
+
+form คือ pipeline ไม่ใช่ถุงของ input ที่แยกจากกัน: `bind:` เอา raw DOM state เข้ามาเป็น reactive state ของ Svelte (พร้อม type ที่ถูกต้อง — number สำหรับ number input, boolean สำหรับ checkbox, `FileList` สำหรับ file input); `$derived` เปลี่ยน raw state นั้นให้เป็นข้อสรุปเกี่ยวกับมัน (valid/invalid, submit ได้ไหม); `onsubmit` คือจุดเดียวที่ side effect เกิดขึ้น และมันรันหลังจากทุกอย่างข้างบนคำนวณใหม่เสร็จแล้ว การอ่าน pipeline แบบนี้อธิบายว่าทำไม "derive ไม่ใช่เก็บ" ถึงสำคัญ: ถ้า `emailValid` เป็น `$state` เองแล้ว update ด้วยมือ มันอาจไม่ตรงกับ `email` ที่มันควรอธิบาย — bug คลาสฯ เดียวกับที่บท effect อธิบายเรื่อง state ที่ mirror ผ่าน `$effect` แทนที่จะคำนวณผ่าน `$derived`
+
+## ข้อแลกเปลี่ยน
+
+| ทางเลือก | ข้อดี | ต้นทุน |
+| --- | --- | --- |
+| `bind:value` coercion (number/range) | ไม่ต้อง `Number(...)` เอง; โค้ดที่ต่อไปได้ number จริง | ใช้ได้แค่กับ input `number`/`range` — text input ให้ string เสมอ |
+| derived validation (`$derived`) | ไม่มีทางไม่ตรงกับ field ที่มันอธิบายได้เลย | คำนวณใหม่ทุก keystroke ที่เกี่ยวข้อง — โอเคสำหรับ predicate ง่าย ๆ แต่ไม่เหมาะกับ check async ที่แพง (ต้อง debounce แยกต่างหาก) |
+| `e.preventDefault()` ข้างใน handler | ทำงานเหมือนกันทุก event type ไม่ต้องเรียนรู้ syntax modifier แยก | เพิ่มบรรทัดที่ต้องเขียนบนสุดของทุก handler ที่ต้องการ เทียบกับ modifier แบบ declarative |
+| form แบบ client-side ล้วน (บทนี้) | feedback เร็ว ไม่ต้อง round trip สำหรับ validation UX | ไม่น่าเชื่อถือสำหรับ persistence หรือ security — client ถูก bypass ได้เสมอ; ต้องมีเส้นทางที่ validate บน server (SvelteKit form actions) สำหรับอะไรที่สำคัญ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`on:submit|preventDefault` ยังใช้ได้ใน Svelte 5 แค่ไม่แนะนำ"** ไม่จริง — มันไม่ compile เลยบน attribute `onsubmit` สมัยใหม่ — พิสูจน์ด้านบน: `svelte-check` รายงาน `'onsubmit|preventDefault' is not a valid attribute name` syntax `|modifier` มีอยู่แค่สำหรับ `on:` directive แบบเดิมเท่านั้น
+- **"ค่าที่ bind ของ number input เป็น string เหมือน input อื่น"** เฉพาะ `type="number"`/`type="range"` เท่านั้นที่ Svelte coerce ให้ — พิสูจน์ด้านบนด้วย test coercion จริง text/email/password input ยังคงให้ string
+- **"เก็บ `emailValid` ใน `$state` ของตัวเองแล้ว update ใน `oninput` handler ก็เหมือนกับ derive มันโดยพื้นฐาน"** ไม่จริง — สำเนาที่เก็บและ update เองอาจถูกลืมใน code path หนึ่งแล้วเก่าไปแบบเงียบ ๆ ในขณะที่ค่า `$derived` ไม่มีทางไม่ตรงกับ input ของมันได้เลย
+- **"ต้องใช้ `use:` action หรือ library แยกเพื่อ validate form ใน Svelte"** สำหรับ validation ระดับ field แบบ synchronous `$derived` ธรรมดาก็พอแล้วส่วนใหญ่ — หยิบเครื่องมือเพิ่มมาใช้ก็ต่อเมื่อต้องการ validation แบบ async ข้าม field (เช่น "email นี้ถูกใช้แล้วหรือยัง?") ที่ derived expression ธรรมดาแสดงออกไม่ได้
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ form ที่ generate มาใช้ `bind:`/`onsubmit` ให้ตรวจสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- `onsubmit={handler}` (หรือ modern event attribute อื่น) มี suffix `|modifier` ที่ copy มาจากนิสัย Svelte 4 หรือเปล่า — เป็น compile error จริงที่ถูกจับได้ ไม่ใช่แค่ warning
+- validation state ถูกเก็บใน `$state` ของตัวเองแล้ว sync กับ field ด้วยมือ แทนที่จะคำนวณด้วย `$derived` หรือเปล่า?
+- ค่าที่ bind ของ number/range input ถูกส่งผ่าน `Number(...)`/`parseInt` ซ้ำอีกที โดยสมมติว่ามันยังเป็น string อยู่หรือเปล่า?
+- client-side validation ถูกปฏิบัติเหมือนเป็น validation เดียวที่มี — ไม่มีการ re-check บน server สำหรับอะไรที่แตะ persistence, auth หรือเงินหรือเปล่า?
+- submit handler ลืม `e.preventDefault()` ไปเลย โดยพึ่งนิสัยเดิม `on:submit|preventDefault` ที่ใช้ไม่ได้แล้วหรือเปล่า?
+
+<SpotTheBug code={`<script>
+  let email = $state('');
+  let password = $state('');
+  let emailValid = $derived(/^[^@]+@[^@]+\\.[^@]+$/.test(email));
+  let passwordValid = $derived(password.length >= 8);
+
+  function handleSubmit(e) {
+    if (!emailValid || !passwordValid) return;
+    createAccount({ email, password });
+  }
+</script>
+
+<form onsubmit|preventDefault={handleSubmit}>
+  <input type="email" bind:value={email} />
+  <input type="password" bind:value={password} />
+  <button type="submit">Sign up</button>
+</form>`}>
+นี่คือกล้ามเนื้อความจำแบบ Svelte 4: `on:submit|preventDefault` เคยเป็นวิธีหยุด navigation ปกติของ browser ใน Svelte 5's runes mode `onsubmit` เป็น attribute ธรรมดา ไม่ใช่ `on:` directive — modifier ไม่มีอยู่สำหรับมัน และ `onsubmit|preventDefault` ไม่ได้ถูกเมินเฉย ๆ มันคือ error ที่ถูกจับได้:
+
+```text
+'onsubmit|preventDefault' is not a valid attribute name
+https://svelte.dev/e/attribute_invalid_name
+```
+
+วิธีแก้คือเรียก `e.preventDefault()` เป็นบรรทัดธรรมดาข้างใน handler ซึ่งหมายความว่า handler ตอนนี้ต้องการ event parameter ด้วย:
+
+```svelte
+<script>
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!emailValid || !passwordValid) return;
+    createAccount({ email, password });
+  }
+</script>
+<form onsubmit={handleSubmit}>
+```
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-สร้าง form โดย **bind** แต่ละ field กับ state (`bind:value`), **derive** validation ด้วย `$derived` (ไม่เก็บ validity แยก — เพราะคำนวณใหม่อัตโนมัติ) และจัดการ **submit** ด้วย `onsubmit` + `e.preventDefault()` (Svelte 5 เลิก event modifier) derive `disabled` ของ submit button จาก validity และ flag `submitting` สำหรับการ persist จริงและ validation ที่ server เชื่อถือได้ หยิบ SvelteKit form actions มาใช้
+สร้าง form โดย **bind** แต่ละ field กับ state (`bind:value` coerce ให้เป็น `number` จริงสำหรับ number/range input; `bind:checked`/`bind:files` ครอบคลุม checkbox กับ file picker), **derive** validation ด้วย `$derived` (ไม่เก็บ validity แยก — เพราะคำนวณใหม่อัตโนมัติ) และจัดการ **submit** ด้วย `onsubmit` + `e.preventDefault()` ข้างใน handler ไม่มี modifier `|preventDefault` สำหรับ modern event attribute ใน runes mode — `onsubmit|preventDefault` เป็น error `attribute_invalid_name` จริงที่ถูกจับได้ ไม่ใช่ sugar แบบ Svelte 4 สำหรับการ persist จริงและ validation ที่ server เชื่อถือได้ หยิบ SvelteKit form actions มาใช้
 </Callout>
 
 export const quizForms = [
@@ -87,36 +271,62 @@ export const quizForms = [
       'ใน store',
     ],
     answer: 1,
+    explain: 'ค่าที่ derive ไม่มีทางไม่ตรงกับ field ที่มันอ่านได้เลย — สำเนาที่ sync ด้วยมืออาจเก่าไปแบบเงียบ ๆ ใน code path ที่ถูกลืม',
   },
   {
-    q: 'หยุด browser navigate ตอน submit form ใน Svelte 5 ยังไง?',
+    q: '```svelte\n<form onsubmit|preventDefault={handleSubmit}>\n  <button type="submit">Go</button>\n</form>\n```\nจะเกิดอะไรขึ้นเมื่อ compile โค้ดนี้ใน Svelte 5 runes mode?',
     options: [
-      'ใช้ `on:submit|preventDefault`',
-      'เรียก `e.preventDefault()` ใน handler `onsubmit` (modifier หายไปใน Svelte 5)',
-      'return false',
-      'อัตโนมัติ',
+      'ทำงานเหมือน Svelte 4 เป๊ะ',
+      'compile error ที่ถูกจับได้: \'onsubmit|preventDefault\' is not a valid attribute name',
+      'compile ผ่านแต่ modifier ถูกเมินเฉย ๆ',
+      'fail แค่ตอน runtime ตอน submit ครั้งแรก',
     ],
     answer: 1,
+    explain: 'พิสูจน์ด้วย svelte-check: syntax `|modifier` มีอยู่แค่สำหรับ `on:` directive แบบเดิม — onsubmit|preventDefault ถูก parse เป็น attribute name เดียวที่ไม่ถูกต้อง และเป็น error จริงที่ถูกจับได้',
   },
   {
-    q: 'ทำไมถึง derive ค่า `disabled` ของ submit button?',
+    q: '`age` มี type อะไรหลังจาก `<input type="number" bind:value={age} />` แล้ว user พิมพ์ "42"?',
+    options: [
+      'string "42"',
+      'number 42 — Svelte coerce binding ของ number/range input',
+      'undefined จนกว่าจะ submit',
+      'BigInt',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ใน numeric-binding.test.ts: bind:value บน number/range input coerce ให้เป็น number จริง ต่างจาก text input ที่ให้ string เสมอ',
+  },
+  {
+    q: 'หยุด navigation ปกติของ browser ตอน submit form ใน Svelte 5 อย่างถูกต้องยังไง?',
+    options: [
+      'ใช้ `on:submit|preventDefault`',
+      'เรียก `e.preventDefault()` ข้างใน handler `onsubmit` (modifier หายไปสำหรับ modern event attribute ใน runes mode)',
+      'return false จาก handler',
+      'อัตโนมัติใน runes mode',
+    ],
+    answer: 1,
+    explain: 'Modifier แบบ |preventDefault มีอยู่แค่สำหรับ `on:` directive แบบเดิมเท่านั้น; attribute `onsubmit` สมัยใหม่ไม่มี syntax modifier เลย',
+  },
+  {
+    q: 'เคลียร์ไฟล์ที่เลือกของ file input แบบ programmatic ยังไง?',
+    options: [
+      'set `files = null`',
+      'set `files = new DataTransfer().files` — FileList สร้างได้จาก DataTransfer จริงเท่านั้น',
+      'set `files = []`',
+      'เรียก `files.clear()`',
+    ],
+    answer: 1,
+    explain: 'ตาม docs: FileList เก็บได้แค่ object File จริงที่มาจาก user หรือสร้างผ่าน DataTransfer เท่านั้น — null/undefined ใช้เคลียร์มันไม่ได้',
+  },
+  {
+    q: 'ทำไมถึง derive ค่า `disabled` ของ submit button จาก `formValid` กับ `submitting` แทนที่จะ toggle เอง?',
     options: [
       'เพื่อให้ code ยาวขึ้น',
-      'เพื่อให้ state ของ button ถูกต้องอัตโนมัติเมื่อ validity และ flag submitting เปลี่ยน — ไม่ต้อง toggle เอง',
+      'เพื่อให้ state ของ button ถูกต้องอัตโนมัติเมื่อ validity และ flag submitting เปลี่ยน — ไม่มี toggle ให้ลืม',
       'เป็น syntax ที่จำเป็น',
       'เพื่อเลี่ยงการใช้ bind:',
     ],
     answer: 1,
-  },
-  {
-    q: 'client-side form handling ไม่ได้ให้อะไร?',
-    options: [
-      'UX ที่ตอบสนอง',
-      'server persistence และ server-side validation ที่เชื่อถือได้ (นั่นคือสิ่งที่ SvelteKit form actions เพิ่ม)',
-      'two-way binding',
-      'derived validation',
-    ],
-    answer: 1,
+    explain: 'หลัก "derive อย่า sync" เดียวกัน แค่ยกระดับขึ้นมาอีกชั้น: flag disabled ที่ toggle เองอาจไม่ตรงกับ state ที่มันควรสะท้อน',
   },
 ];
 
