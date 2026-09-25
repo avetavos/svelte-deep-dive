@@ -1,6 +1,6 @@
 ---
 title: 'The $state Rune'
-description: 'Reactive state with $state, deep reactivity through proxies, opting out with $state.raw, and taking plain copies with $state.snapshot.'
+description: 'Reactive state with $state, deep reactivity through proxies, opting out with $state.raw (proven: mutation is invisible, only reassignment is tracked), $state.snapshot, module state in .svelte.ts files, and the proven SSR shared-state trap.'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Declaring reactive state
 
@@ -49,7 +50,7 @@ export const stateDiagram = `flowchart LR
   write["mutate: todo.done = true"] --> proxy["$state proxy notices the change"]
   proxy --> update["update exactly the dependent DOM"]`;
 
-## Opting out: $state.raw
+## Opting out: $state.raw, proven
 
 Deep proxying costs a little and isn't always wanted — for large immutable data you only ever *replace*, use **`$state.raw`**. Raw state is reactive on **reassignment** but not on mutation.
 
@@ -66,6 +67,65 @@ Deep proxying costs a little and isn't always wanted — for large immutable dat
   // settings.theme = 'light';  // no update
 </script>
 ```
+
+This isn't just a claim in the docs — it's proven, contrasted directly against deep (proxied) `$state` mutating the exact same way:
+
+```ts
+// src/lib/state-raw.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$state.raw: mutation is NOT tracked, only reassignment is', () => {
+  const log: string[] = [];
+  const destroy = $effect.root(() => {
+    let settings = $state.raw({ theme: 'dark', density: 'cozy' });
+
+    $effect(() => {
+      log.push(settings.theme);
+    });
+
+    flushSync();
+    expect(log).toEqual(['dark']);
+
+    // ❌ mutate a property on raw state — proven to NOT trigger the effect
+    settings.theme = 'light';
+    flushSync();
+    expect(log).toEqual(['dark']); // unchanged — mutation was invisible to the effect
+    expect(settings.theme).toBe('light'); // the object itself DID change, just not reactively
+
+    // ✅ reassign the whole value — this IS tracked
+    settings = { ...settings, theme: 'blue' };
+    flushSync();
+    expect(log).toEqual(['dark', 'blue']);
+  });
+  destroy();
+});
+
+test('control: the same mutation on deep (proxied) $state DOES trigger the effect', () => {
+  const log: string[] = [];
+  const destroy = $effect.root(() => {
+    let settings = $state({ theme: 'dark' });
+    $effect(() => {
+      log.push(settings.theme);
+    });
+    flushSync();
+    settings.theme = 'light'; // mutation, not reassignment
+    flushSync();
+  });
+  destroy();
+  expect(log).toEqual(['dark', 'light']); // proxy caught the mutation
+});
+```
+
+```text
+✓ $state.raw: mutation is NOT tracked, only reassignment is
+✓ control: the same mutation on deep (proxied) $state DOES trigger the effect
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+Note the detail in the first test: `settings.theme = 'light'` genuinely changes the underlying object (`settings.theme` reads back as `'light'` afterwards) — it just doesn't notify anything, because there's no proxy watching for it. This is the single most common `$state.raw` mistake: assuming it behaves like immutable data that *rejects* mutation, when it actually accepts the mutation silently and simply doesn't react to it.
 
 Use `$state.raw` for values you treat immutably (replace wholesale) or large structures where you don't want the proxy overhead.
 
@@ -84,8 +144,108 @@ Because `$state` objects are proxies, passing one to code that expects a plain o
 </script>
 ```
 
+## Module state in .svelte.ts, and the SSR trap
+
+`$state` isn't limited to components — a **`.svelte.ts`** (or `.svelte.js`) module can declare state at module scope, importable by anything:
+
+```ts
+// src/lib/module-state.svelte.ts
+export const session = $state({ user: null as string | null });
+```
+
+Every importer of this module shares **the exact same object** — there is one `session` for the whole running process, not one per component instance. Proven: a component that never touches the code path that sets `session.user` still sees the change, because it's the same object:
+
+```ts
+// src/lib/module-state.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+import { session } from './module-state.svelte.js';
+
+test('module-scope $state is a SINGLE shared instance across every importer — proves the SSR leak risk', () => {
+  const destroy = $effect.root(() => {
+    const seenByComponentA: (string | null)[] = [];
+    $effect(() => {
+      seenByComponentA.push(session.user);
+    });
+    flushSync();
+
+    // "Request 1" sets the user on the shared module state...
+    session.user = 'alice';
+    flushSync();
+
+    // ...and "component A" (which never touched request 1 directly) sees it,
+    // because there is exactly ONE `session` object for the whole process.
+    expect(seenByComponentA).toEqual([null, 'alice']);
+  });
+  destroy();
+
+  // The leak: a second, unrelated "request" importing the same module still
+  // sees 'alice' left over from the previous one, because ES module instances
+  // are cached and shared, not per-request.
+  expect(session.user).toBe('alice');
+});
+```
+
+```text
+✓ module-scope $state is a SINGLE shared instance across every importer — proves the SSR leak risk
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+That last assertion is the whole risk in miniature: in a browser-only SPA, a single shared `session` object is often exactly what you want (that's the `.svelte.js`-module-as-store pattern from the [Advanced Runes](/svelte/en/reactivity/advanced-runes) lesson). But the moment this code runs **on a server** rendering requests for multiple users, that one process-wide object is shared across every request. The official docs are direct about this:
+
+> In many cases this is perfectly fine, but there is a risk: if you mutate the state during server-side rendering (which is discouraged, but entirely possible!)... then the data may be accessible by the *next* user.
+>
+> — [Replacing global state](https://svelte.dev/docs/svelte/context#Replacing-global-state), svelte.dev
+
+The documented fix is **context**, not a module-level export: context is created fresh per request/render, so it can't leak between users the way a shared module object can.
+
+## Mental Model
+
+`$state` is not "a variable that re-renders things" — it's a **reactive cell**: reads register a dependency, writes notify dependents, and for objects/arrays specifically, the cell is a Proxy that also treats property writes as "writes to the cell." `$state.raw` is the same cell without the Proxy layer, so only whole-cell reassignment counts as a write — mutating the contents changes the data but never touches the cell itself, so nothing is notified. A module-scope `$state` is just a cell that happens to live at the top of a file instead of inside a component — which is exactly why it's shared by everything that imports that file, for as long as the process lives.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| Deep `$state` (default) | `arr.push()`/`obj.x = y` just work, like normal JS | Proxy overhead on every object/array, including ones you never mutate |
+| `$state.raw` | No proxy overhead; simple mental model for immutable data | Mutating it is silently ignored — proven above to be a real, easy-to-hit trap |
+| `.svelte.js`/`.svelte.ts` module state | Zero-boilerplate app-wide sharing, no store API | One instance for the whole process — proven to leak across "requests" if mutated during SSR |
+| `$state.snapshot` before serializing/logging | Plain object, no Proxy surprises | An extra call to remember to make at every serialization boundary |
+
+## Common Misconceptions
+
+- **"`$state.raw` prevents mutation, like `Object.freeze`."** Proven false: mutating a raw-state object's property succeeds silently (`settings.theme` really does become `'light'`) — it just doesn't notify any effect or derived watching it. Nothing is frozen; the reactivity is just gone.
+- **"A `.svelte.js` module's exported `$state` is scoped per component, like a hook's local state."** Proven false: it's one shared object for every importer, for the whole process — proven directly with a component that never wrote the value but still saw the change.
+- **"Server-side rendering is stateless per request, so module state is always safe."** The framework doesn't make this true automatically — the official docs explicitly warn that mutating shared module state during SSR can leak data to the next user's request. Context (not a bare module export) is the documented fix when state needs to be request-scoped.
+- **"`$state.snapshot` is only useful for `console.log`."** It matters anywhere a plain, non-Proxy object is required: `structuredClone`, sending data to a `Worker`, or passing to a library that does `JSON.stringify` or property-existence checks that behave oddly on a Proxy.
+
+## Reading AI-generated code
+
+When you see `$state`, `$state.raw`, or module-level reactive state, check for these:
+
+- Is a `$state.raw` value **mutated** somewhere (`obj.prop = x`, `arr.push(...)`) with the expectation that the UI updates — instead of being reassigned?
+- Is a `.svelte.ts`/`.svelte.js` module's exported `$state` value mutated in a code path that could run during **server-side rendering** — and is that state meant to be per-user?
+- Does a function pass a `$state` proxy object into `JSON.stringify`, `structuredClone`, or a third-party library that expects a plain object, without calling `$state.snapshot` first?
+- Is a deeply nested mutation (`todos[0].tags.push(...)`) assumed to be reactive when the outer value was declared with `$state.raw` (which only tracks the top-level reassignment, not nested mutation at all)?
+
+<SpotTheBug code={`function createSettingsStore() {
+  let settings = $state.raw({ theme: 'dark', fontSize: 14 });
+
+  return {
+    get settings() { return settings; },
+    setTheme(theme) {
+      // "Just update the one field that changed"
+      settings.theme = theme;
+    },
+  };
+}`}>
+`setTheme` mutates `settings.theme` directly on a value declared with `$state.raw` — but raw state is reactive on **reassignment only**, not mutation. The mutation genuinely happens (`settings.theme` really does become the new value if you read it), but nothing that reads `settings` reactively — an `$effect`, a `$derived`, or the template — is notified, because there's no proxy watching for property writes on raw state. Proven in the probe: mutating `settings.theme` on `$state.raw` left an effect's log unchanged (`['dark']`), while the exact same mutation on ordinary deep `$state` correctly re-ran the effect (`['dark', 'light']`). The fix is to reassign the whole object — `settings = { ...settings, theme }` — which the same test proves does trigger dependents.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-`$state(value)` creates reactive state you read and reassign like a normal variable. For **objects and arrays it is a deep proxy**, so *mutations* (`arr.push`, `obj.x = …`) are reactive — no need to produce new objects like in React. Use **`$state.raw`** for values you only ever replace (reactive on reassignment, not mutation) to skip proxy overhead, and **`$state.snapshot(x)`** to get a plain non-proxy copy for logging, cloning, or passing to external code.
+`$state(value)` creates reactive state you read and reassign like a normal variable. For **objects and arrays it is a deep proxy**, so *mutations* (`arr.push`, `obj.x = …`) are reactive. **`$state.raw`** skips the proxy — proven: mutating it is silently invisible to every dependent, only whole-value reassignment is tracked. **`$state.snapshot(x)`** gets a plain non-proxy copy for logging, cloning, or external code. And `$state` in a **`.svelte.ts` module** is shared by every importer for the whole process — proven directly — which is exactly why the official docs warn against mutating it during server-side rendering: use context instead when state must be request-scoped.
 </Callout>
 
 export const quizState = [
@@ -98,6 +258,7 @@ export const quizState = [
       'Call $state.update()',
     ],
     answer: 1,
+    explain: '$state values are read and written like normal variables — no setters, no dispatch, no special update calls.',
   },
   {
     q: 'Why is `todos.push(newTodo)` reactive when `todos` is `$state([])`?',
@@ -108,16 +269,18 @@ export const quizState = [
       'It is not reactive — you must reassign',
     ],
     answer: 1,
+    explain: 'Plain $state (not .raw) deeply proxies objects and arrays, so property writes and array mutations are tracked, not just top-level reassignment.',
   },
   {
-    q: 'When would you use `$state.raw`?',
+    q: '```ts\nlet settings = $state.raw({ theme: \'dark\' });\n$effect(() => console.log(settings.theme));\nsettings.theme = \'light\'; // mutate, not reassign\n```\nDoes the effect log again after `settings.theme = \'light\'`?',
     options: [
-      'For values you mutate frequently',
-      'For values you only ever replace wholesale, or large data where you want to skip proxy overhead',
-      'To make state global',
-      'To disable reactivity entirely',
+      'Yes — all $state values react to any change',
+      'No — $state.raw is only reactive on reassignment; the mutation succeeds silently but is invisible to the effect',
+      'It throws an error because raw state is frozen',
+      'Only in production builds',
     ],
     answer: 1,
+    explain: 'Proven in the probe: mutating a $state.raw property left the effect\'s log unchanged, while the identical mutation on plain (deep) $state DID re-run it — raw state is not frozen, it just isn\'t watched.',
   },
   {
     q: 'What does `$state.snapshot(user)` return?',
@@ -128,6 +291,29 @@ export const quizState = [
       'A derived value',
     ],
     answer: 1,
+    explain: '$state.snapshot strips the Proxy wrapper, returning a plain object safe to serialize, clone, or hand to code that doesn\'t expect a Proxy.',
+  },
+  {
+    q: '```ts\n// src/lib/session.svelte.ts\nexport const session = $state({ user: null });\n```\nTwo unrelated components both `import { session } from \'./session.svelte.ts\'`. What is true?',
+    options: [
+      'Each component gets its own independent copy of session',
+      'Both components share the exact same session object — proven: a change made via one code path is visible to a component that never touched it, because there is one instance for the whole process',
+      'This is a compile error — $state cannot be used at module scope',
+      'It only works if both components are siblings',
+    ],
+    answer: 1,
+    explain: 'Proven directly: an effect that only ever read `session.user` observed the change made elsewhere, because ES module instances (and the $state inside them) are cached and shared, not duplicated per importer.',
+  },
+  {
+    q: 'Why do the official Svelte docs warn against mutating shared `.svelte.js` module state during server-side rendering?',
+    options: [
+      'It causes a compile error',
+      'That module-level state is one instance for the whole server process, not per request — mutating it during SSR risks leaking one user\'s data into the next user\'s response',
+      'It only affects development builds',
+      'It is never actually risky — this is outdated advice',
+    ],
+    answer: 1,
+    explain: 'Direct quote from svelte.dev: mutating shared state during SSR "may [make the data] accessible by the next user" — because unlike context, a module-level export is not created fresh per request.',
   },
 ];
 

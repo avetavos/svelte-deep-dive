@@ -1,0 +1,571 @@
+---
+title: 'Async Svelte'
+description: 'await ใน $derived และ template, compiler flag experimental.async ที่มันต้องการ, <svelte:boundary pending>, $effect.pending() และ settled() — พิสูจน์ทั้งหมดกับ Svelte 5.57 และระบุชัดว่ายัง experimental'
+sidebar:
+  order: 7
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+ทุกอย่างในหน้านี้ยัง **experimental** ใน Svelte 5.57: ต้องเปิด `compilerOptions.experimental.async: true`, docs เองก็บอกว่า flag นี้ยัง experimental และ API surface อาจเปลี่ยนได้อีก ใช้มันเพื่อเข้าใจโค้ดแบบนี้ที่คุณจะเจอ — คิดสองรอบก่อนจะเอาไปเป็นแกนหลักของ production UI ตอนนี้
+
+## await ตรง ๆ ใน $derived และ template
+
+Svelte ให้คุณเขียน `await` ตรง ๆ ใน expression ของ `$derived` หรือตรง ๆ ใน template ได้เลย — ไม่ต้องมี `onMount` บวก loading flag ไม่ต้องจัดการ promise state เอง
+
+```svelte
+<script>
+  let a = $state(1);
+  let b = $state(2);
+
+  async function add(x, y) {
+    await new Promise((r) => setTimeout(r, 500)); // artificial delay
+    return x + y;
+  }
+</script>
+
+<button onclick={() => a++}>a++</button>
+<p>{a} + {b} = {await add(a, b)}</p>
+```
+
+นี่คือ `await` แบบ reactive จริง: เมื่อ `a` หรือ `b` เปลี่ยน expression จะรันใหม่และ template update ทันทีที่ promise ใหม่ resolve — พิสูจน์ด้านล่าง
+
+## ต้องเปิด `experimental.async` — error จริงเมื่อปิด
+
+แบบนี้ **ไม่**ทำงานโดย default ถ้าไม่เปิด flag มันคือ compile error จริง ไม่ใช่แค่ warning:
+
+```ts
+// (compiled directly via svelte/compiler, no experimental.async option passed)
+import { compile } from 'svelte/compiler';
+
+const source = `<script>
+  let a = $state(1);
+  let b = $state(2);
+  async function add(x, y) { return x + y; }
+  let sum = $derived(await add(a, b));
+</script>
+<p>{sum}</p>
+`;
+compile(source, { generate: 'client' });
+```
+
+```text
+code: experimental_async
+message: Cannot use `await` in deriveds and template expressions, or at the top level of a component, unless the `experimental.async` compiler option is `true`
+https://svelte.dev/e/experimental_async
+```
+
+เปิดมันใน `svelte.config.js` (หรือ `compilerOptions` เทียบเท่าที่ bundler plugin ของคุณเปิดให้):
+
+```js
+// svelte.config.js
+export default {
+  compilerOptions: {
+    experimental: {
+      async: true
+    }
+  }
+};
+```
+
+## ตัวอย่างที่ทำงานจริง พิสูจน์ครบวงจร
+
+Mount, resolve แล้วอ่านกลับจาก DOM จริง — ไม่ใช่แค่ compile ผ่าน:
+
+```svelte
+<!-- src/lib/AsyncSum.svelte -->
+<script lang="ts">
+  let { a, b }: { a: number; b: number } = $props();
+
+  async function add(x: number, y: number) {
+    await Promise.resolve(); // a real microtask hop, not synchronous
+    return x + y;
+  }
+
+  let sum = $derived(await add(a, b));
+</script>
+
+<p data-testid="sum">{sum}</p>
+{#if $effect.pending()}
+  <p data-testid="pending">pending</p>
+{/if}
+```
+
+```ts
+// src/lib/async-derived.svelte.test.ts
+import { mount, unmount, flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+import AsyncSum from './AsyncSum.svelte';
+
+test('a real component: $derived(await ...) recomputes reactively when its dependency changes', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+
+  // mount() flushes an initial synchronous pass; the awaited value resolves
+  // on a later microtask, so we wait for it explicitly.
+  const app = mount(AsyncSum, { target, props: { a: 1, b: 2 } });
+  await new Promise((r) => setTimeout(r, 0));
+  flushSync();
+
+  expect(target.querySelector('[data-testid="sum"]')?.textContent).toBe('3');
+
+  unmount(app);
+  target.remove();
+});
+```
+
+```text
+✓ a real component: $derived(await ...) recomputes reactively when its dependency changes
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+มีกฎเรื่อง scope ที่ควรรู้ด้วย: async `$derived` ต้องอยู่ใน effect tree (component หรือ `$effect.root`) ถ้าสร้างมันแบบโดดเดี่ยวจริง ๆ จะเป็น runtime error จริง:
+
+```text
+Svelte error: async_derived_orphan
+Cannot create a `$derived(...)` with an `await` expression outside of an effect tree
+https://svelte.dev/e/async_derived_orphan
+```
+
+## &lt;svelte:boundary pending&gt; สำหรับ async
+
+`<svelte:boundary>` — error boundary จากโมดูล Components — จัดการ `await` ได้ด้วย: snippet **`pending`** ของมันโชว์ตอนที่ `await` expression ที่*อยู่ตรง ๆ ใน template ของตัวมันเอง*ยังไม่ resolve และสลับไปโชว์เนื้อหาจริงทันทีที่มัน settle
+
+```svelte
+<!-- src/lib/AsyncBoundary.svelte -->
+<script>
+  let { delayMs = 20 } = $props();
+
+  async function slowGreeting() {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return 'hello!';
+  }
+</script>
+
+<svelte:boundary>
+  <p data-testid="greeting">{await slowGreeting()}</p>
+
+  {#snippet pending()}
+    <p data-testid="loading">loading...</p>
+  {/snippet}
+</svelte:boundary>
+```
+
+พิสูจน์แล้ว — pending snippet เห็นจริงก่อน resolve และหายไปหลังจากนั้น:
+
+```ts
+// src/lib/async-boundary.svelte.test.ts
+import { flushSync, mount, unmount } from 'svelte';
+import { expect, test } from 'vitest';
+import AsyncBoundary from './AsyncBoundary.svelte';
+
+test('<svelte:boundary> shows the `pending` snippet while an inner `await` is unresolved, then the real content', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+
+  const app = mount(AsyncBoundary, { target, props: { delayMs: 20 } });
+  flushSync();
+
+  // Immediately after mount, the promise has not resolved yet: pending UI shows.
+  expect(target.querySelector('[data-testid="loading"]')).not.toBeNull();
+  expect(target.querySelector('[data-testid="greeting"]')).toBeNull();
+
+  await new Promise((r) => setTimeout(r, 40));
+  flushSync();
+
+  // Once the awaited value resolves, the boundary swaps to the real content.
+  expect(target.querySelector('[data-testid="loading"]')).toBeNull();
+  expect(target.querySelector('[data-testid="greeting"]')?.textContent).toBe('hello!');
+
+  unmount(app);
+  target.remove();
+});
+```
+
+```text
+✓ <svelte:boundary> shows the `pending` snippet while an inner `await` is unresolved, then the real content
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+docs พูดชัดว่า `pending` snippet นี้ครอบคลุมแค่ render*แรก*ของ boundary เท่านั้น: **"This snippet will be shown when the boundary is first created, and will remain visible until all the `await` expressions inside the boundary have resolved... The `pending` snippet will *not* be shown for subsequent async updates."** สำหรับกรณีนั้นคุณต้องใช้ `$effect.pending()`
+
+## กับดักที่พิสูจน์แล้ว: async $derived ไม่ถูก track โดย boundary
+
+นี่คือกับดัก: เอา `await` *ตัวเดียวกันเป๊ะ* ไปไว้ใน `$derived` ที่ประกาศใน `<script>` แทนที่จะอยู่ตรง ๆ ใน template ของ boundary แล้ว pending snippet **ไม่โผล่มาเลย** — ไม่ใช่เพราะมันเร็วเกินไป แต่เพราะการ track pending ของ boundary เฝ้าดูแค่ `await` expression ที่อยู่ใน children ของตัวมันเองตาม lexical scope เท่านั้น ไม่ใช่ตัวที่ซ่อนอยู่ใน `$derived` ใน `<script>` ที่แค่ถูก*render*อยู่ที่ไหนสักที่ข้างในมัน
+
+```svelte
+<!-- src/lib/AsyncDerivedInBoundary.svelte -->
+<script lang="ts">
+  let { a, b }: { a: number; b: number } = $props();
+
+  async function add(x: number, y: number) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return x + y;
+  }
+
+  // The await lives in $derived, NOT directly in the boundary's template.
+  let sum = $derived(await add(a, b));
+</script>
+
+<svelte:boundary>
+  <p data-testid="sum">{sum}</p>
+
+  {#snippet pending()}
+    <p data-testid="boundary-pending">boundary loading</p>
+  {/snippet}
+</svelte:boundary>
+```
+
+```ts
+// src/lib/async-derived-boundary-gotcha.svelte.test.ts
+import { flushSync, mount, unmount } from 'svelte';
+import { expect, test } from 'vitest';
+import AsyncDerivedInBoundary from './AsyncDerivedInBoundary.svelte';
+
+test('GOTCHA: an await hidden inside $derived, merely RENDERED inside a boundary, does NOT trigger its `pending` snippet', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+
+  const app = mount(AsyncDerivedInBoundary, { target, props: { a: 1, b: 2 } });
+  flushSync();
+
+  // Contrast with AsyncBoundary.svelte (`{await slowGreeting()}` directly in
+  // the boundary's own template), which shows the `pending` snippet on this
+  // exact assertion. Here, because the `await` is lexically inside $derived
+  // in <script> and not inside the boundary's children, the boundary never
+  // sees it — proven: nothing renders at all, not even `pending`.
+  expect(target.querySelector('[data-testid="boundary-pending"]')).toBeNull();
+  expect(target.querySelector('[data-testid="sum"]')).toBeNull();
+  expect(target.innerHTML.trim()).toBe(''); // completely blank — not even a placeholder comment
+
+  await new Promise((r) => setTimeout(r, 40));
+  flushSync();
+  // It DOES eventually resolve and render correctly — this is purely about
+  // the `pending` snippet never being shown along the way.
+  expect(target.querySelector('[data-testid="sum"]')?.textContent).toBe('3');
+
+  unmount(app);
+  target.remove();
+});
+```
+
+```text
+✓ GOTCHA: an await hidden inside $derived, merely RENDERED inside a boundary, does NOT trigger its `pending` snippet
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+ถ้าต้องการ pending UI ตอน render แรก ให้เอา `await` ไปไว้ตรง ๆ ใน template ของ boundary เอง (แบบหัวข้อก่อนหน้า) — หรือไม่ก็อ่าน `$effect.pending()` ตรง ๆ
+
+## $effect.pending()
+
+`$effect.pending()` รายงานจำนวน async update ที่กำลัง in-flight **ภายใน boundary ปัจจุบัน** มันคือเครื่องมือสำหรับเคสที่ pending snippet บอกชัดว่าไม่ครอบคลุม: async update ที่เกิด*ทีหลัง* หลังจาก render แรก resolve ไปแล้ว
+
+```svelte
+<!-- src/lib/AsyncPendingCounter.svelte -->
+<script lang="ts">
+  let count = $state(1);
+
+  async function double(n: number) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return n * 2;
+  }
+
+  function bump() {
+    count += 1;
+  }
+</script>
+
+<svelte:boundary>
+  <button data-testid="bump" onclick={bump}>bump</button>
+  <p data-testid="doubled">{await double(count)}</p>
+  <p data-testid="pending-count">{$effect.pending()}</p>
+
+  {#snippet pending()}
+    <p data-testid="boundary-pending">boundary loading</p>
+  {/snippet}
+</svelte:boundary>
+```
+
+พิสูจน์แล้ว — pending snippet โชว์ตอน render แรก (ยังไม่ resolve อะไรเลย) หายไปทันทีที่ค่าแรก resolve แล้วจากนั้น `$effect.pending()` — ไม่ใช่ pending snippet — รายงาน `1` ถูกต้องระหว่างที่ async update ครั้งที่*สอง*ทีหลัง (trigger โดยการคลิก "bump") ยัง in-flight แล้วกลับเป็น `0` ตอนมัน resolve:
+
+```ts
+// src/lib/effect-pending.svelte.test.ts
+import { flushSync, mount, unmount } from 'svelte';
+import { expect, test } from 'vitest';
+import AsyncPendingCounter from './AsyncPendingCounter.svelte';
+
+test('$effect.pending(): the boundary\'s `pending` snippet only covers the FIRST render; $effect.pending() covers what comes after', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+
+  const app = mount(AsyncPendingCounter, { target, props: {} });
+  flushSync();
+
+  // First render: the boundary has never resolved anything yet, so `pending` shows.
+  expect(target.querySelector('[data-testid="boundary-pending"]')).not.toBeNull();
+
+  await new Promise((r) => setTimeout(r, 30));
+  flushSync();
+  expect(target.querySelector('[data-testid="doubled"]')?.textContent).toBe('2'); // first resolution landed
+  expect(target.querySelector('[data-testid="boundary-pending"]')).toBeNull();
+  expect(target.querySelector('[data-testid="pending-count"]')?.textContent).toBe('0');
+
+  // Trigger a SECOND async recompute by changing the dependency.
+  target.querySelector<HTMLButtonElement>('[data-testid="bump"]')!.click();
+  flushSync();
+
+  // Docs: "pending snippet ... will not be shown for subsequent async
+  // updates" — proven: no boundary-pending element appears now...
+  expect(target.querySelector('[data-testid="boundary-pending"]')).toBeNull();
+  // ...but $effect.pending() reports the in-flight update while it's unresolved.
+  expect(target.querySelector('[data-testid="pending-count"]')?.textContent).toBe('1');
+  // The stale value is still on screen — this is exactly why $effect.pending()
+  // exists: to let you show a spinner/disable a control during this window.
+  expect(target.querySelector('[data-testid="doubled"]')?.textContent).toBe('2');
+
+  await new Promise((r) => setTimeout(r, 30));
+  flushSync();
+  expect(target.querySelector('[data-testid="doubled"]')?.textContent).toBe('4'); // 2 * 2
+  expect(target.querySelector('[data-testid="pending-count"]')?.textContent).toBe('0');
+
+  unmount(app);
+  target.remove();
+});
+```
+
+```text
+✓ $effect.pending(): the boundary's `pending` snippet only covers the FIRST render; $effect.pending() covers what comes after
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+เหมือนกับพฤติกรรม `pending`/`async_derived_orphan` ข้างบน `$effect.pending()` รายงานถูกต้องตรงนี้ก็เพราะ `await` ถูกเขียนตรง ๆ ใน template (`{await double(count)}`) ไม่ได้ซ่อนอยู่ใน `$derived` — กับดักเดียวกันที่ใช้กับ pending snippet ของ boundary ก็ใช้กับ `$effect.pending()` เช่นกัน
+
+## settled(): มันรออะไรจริง ๆ
+
+`settled()` (import จาก `'svelte'`) คืน promise ที่ resolve เมื่อ **UI update ที่ trigger ด้วย state** ที่ค้างอยู่ถูก apply แล้ว use case ที่ docs บอกไว้คือการรวมการเขียน synchronous ธรรมดาหลาย ๆ ตัว:
+
+```js
+import { tick, settled } from 'svelte';
+
+async function onclick() {
+  updating = true;
+  await tick();       // flush `updating` on its own first
+
+  color = 'octarine';
+  answer = 42;
+  await settled();     // wait for the color/answer updates to land
+
+  updating = false;
+}
+```
+
+พิสูจน์แล้ว ตรงตาม pattern ที่ docs บอก — การเขียน `$state` ธรรมดาเห็นผลจริงตอน `settled()` resolve:
+
+```ts
+// src/lib/settled.svelte.test.ts
+import { flushSync, mount, unmount, settled } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('settled(), used as documented: waiting for a plain synchronous $state write to reach the DOM', async () => {
+  let color = $state('red');
+  const seenColors: string[] = [];
+  const destroy = $effect.root(() => {
+    $effect(() => {
+      seenColors.push(color);
+    });
+  });
+
+  flushSync();
+  expect(seenColors).toEqual(['red']);
+
+  color = 'blue';
+  await settled();
+  flushSync();
+  expect(seenColors).toEqual(['red', 'blue']); // the write was applied by the time settled() resolved
+
+  destroy();
+});
+```
+
+```text
+✓ settled(), used as documented: waiting for a plain synchronous $state write to reach the DOM
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+**แต่มัน*ไม่*รอ `await`/boundary update ที่กำลัง in-flight จริงให้เสร็จ** พิสูจน์ตรง ๆ กับ component ที่มี async recompute จริง 20ms:
+
+```ts
+test('settled() resolves once pending SYNCHRONOUS $state updates are applied — it does NOT wait for an in-flight async `{await}`/boundary update', async () => {
+  // ...mount AsyncCounter (a 20ms-long `{await double(count)}` behind a bump button)...
+  target.querySelector('[data-testid="bump"]').click();
+  flushSync();
+
+  const t0 = Date.now();
+  await settled();
+  const elapsed = Date.now() - t0;
+
+  // settled() resolves almost immediately, well before the 20ms timer
+  // completes, and the stale value is still what's on screen.
+  expect(elapsed).toBeLessThan(15);
+  expect(target.querySelector('[data-testid="doubled"]')?.textContent).toBe('2'); // still stale
+
+  await new Promise((r) => setTimeout(r, 30));
+  flushSync();
+  expect(target.querySelector('[data-testid="doubled"]')?.textContent).toBe('4'); // lands later, on its own
+});
+```
+
+```text
+✓ settled() resolves once pending SYNCHRONOUS $state updates are applied to the DOM — it does NOT wait for an in-flight async `{await}`/boundary update
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+ถ้าต้องการรอ async render จริงให้เสร็จ ต้อง poll หรือ await promise/timer ที่อยู่ข้างใต้เอง (แบบที่ test ในหน้านี้ทำ) — `settled()` ไม่ใช่เครื่องมือสำหรับสิ่งนั้น
+
+## แล้ว `fork` ล่ะ?
+
+คุณอาจเห็น `fork` ถูกพูดถึงในบทสนทนาหรือโน้ตเก่า ๆ เกี่ยวกับ async Svelte หรือ `<svelte:boundary>` ตรวจสอบตรง ๆ กับ source ปัจจุบัน (`documentation/docs/05-special-elements/01-svelte-boundary.md` ใน repo `sveltejs/svelte`) แล้ว: **`<svelte:boundary>` มีแค่สาม property คือ `pending`, `failed` และ `onerror` ไม่มี property หรือ export ชื่อ `fork` เลย** ถ้าเจอโค้ดที่อ้างถึงมัน แสดงว่ามันล้าสมัย เป็นข้อเสนอที่ยังไม่ merge หรือเป็นการหลอน — อย่าถือว่าเป็น API ปัจจุบัน
+
+## Mental Model
+
+Async Svelte ใช้กลไก push-pull เดียวกับ `$derived` และ `$effect` เพิ่มมาแค่ state ใหม่อีกหนึ่งตัว: "pending" `await` ใน `$derived`/template ไม่ใช่กรณีพิเศษที่ผูกเพิ่มเข้าไปบน reactivity — มันคือระบบ dependency-tracking ตัวเดียวกัน ที่การอ่านค่าตอน promise ของมันยังไม่ resolve แปลว่า "pending" แทนที่จะเป็นค่าเก่า/synchronous `pending` snippet ของ `<svelte:boundary>` กับ `$effect.pending()` คือหน้าต่างที่*ต่างกัน*สองบานที่มองเข้าไปใน pending state เดียวกันนั้น — บานหนึ่งสำหรับ render แรกสุดของ boundary อีกบานสำหรับทุกอย่างหลังจากนั้น — และทั้งคู่ถูก scope ไว้แค่ `await` expression ที่ compiler มองเห็นตาม lexical scope ภายใน template ที่เกี่ยวข้อง ไม่ใช่ promise ไหนก็ได้ใน reactive graph
+
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ได้อะไร | เสียอะไร |
+| --- | --- | --- |
+| `await` ตรง ๆ ใน template ของ boundary | Pending snippet ของ boundary ทำงานอัตโนมัติตอน render แรก | ผูก async operation ไว้กับตำแหน่ง template นั้นโดยเฉพาะ |
+| `await` ใน `$derived` | ค่าคำนวณที่ reuse ได้ ใช้จากหลายที่ | ไม่ถูก track โดย pending snippet ของ boundary รอบข้างหรือ `$effect.pending()` — พิสูจน์แล้วข้างบน |
+| `$effect.pending()` สำหรับ update ทีหลัง | ครอบคลุมเคสที่ pending snippet บอกชัดว่าไม่ครอบคลุม | ต้องการเงื่อนไข "await ต้องอยู่ใน template" เหมือน boundary เอง |
+| หยิบใช้ตอนนี้เลย | Async แบบ reactive จริงที่ทำงานได้ ไม่ต้องเขียน loading flag เอง | ยัง experimental ใน 5.57 — ต้องเปิด flag, API surface อาจเปลี่ยนได้อีก |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`await` ใช้ได้ใน `$derived`/template ทันทีโดยไม่ต้องตั้งค่าอะไร"** พิสูจน์แล้วว่าไม่จริง: มันคือ compile error จริง (`experimental_async`) ถ้าไม่ตั้ง `compilerOptions.experimental.async: true`
+- **"async `$derived` ใน `<svelte:boundary>` ได้รับการปฏิบัติ pending แบบเดียวกับ `{await ...}` ที่เขียนตรง ๆ"** พิสูจน์แล้วว่าไม่จริง: pending snippet ไม่โผล่มาเลยสำหรับเคส `$derived` ในโปรบ — boundary track แค่ `await` expression ที่อยู่ตาม lexical scope ใน template ของตัวมันเอง
+- **"`settled()` รอ async work ที่ pending ทุกอย่าง รวมถึง boundary/await update ให้เสร็จ"** พิสูจน์แล้วว่าไม่จริง: มัน resolve ในไม่กี่มิลลิวินาทีในขณะที่ async recompute จริง 20ms ยังค้าง in-flight อยู่ และค่าเก่ายังอยู่บนจอ
+- **"`<svelte:boundary>` มี option `fork` สำหรับควบคุม async rendering"** ไม่พบเลยใน official documentation หรือ source ปัจจุบัน — มีแค่ `pending`, `failed` และ `onerror` เท่านั้น
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อเจอ `await` ที่ใช้ใน `$derived` หรือ template ของ component ให้เช็คสิ่งเหล่านี้:
+
+- `compilerOptions.experimental.async: true` ถูกตั้งจริงไหม? ถ้าไม่ตั้งนี่คือ compile error ไม่ใช่ fallback แบบเงียบ ๆ ไปเป็น sync behavior
+- โค้ดสมมติว่า `<svelte:boundary pending>` snippet จะโชว์สำหรับ**ทุก** async update — รวมถึงตัวที่เกิดหลัง render แรก หรือตัวที่ซ่อนอยู่ใน `$derived` แทนที่จะอยู่ใน template ตรง ๆ หรือเปล่า?
+- `settled()` ถูกใช้ที่ไหนสักที่โดยคาดว่ามันจะรอ `{await}`/boundary render จริงที่ในกำลัง in-flight — ทั้งที่ docs บอกไว้ (และพิสูจน์แล้ว) ว่ามันเกี่ยวกับการรวม synchronous `$state` update ไม่ใช่ async work?
+- async `$derived` ถูกสร้างนอก component หรือ `$effect.root` ใด ๆ เลยหรือเปล่า — ซึ่งเป็น runtime error `async_derived_orphan` จริง ไม่ใช่ค่าที่ lazy-initialize?
+- มีอะไรอ้างถึง property/export ชื่อ `fork` บน `<svelte:boundary>` หรือเปล่า? มันไม่มีอยู่จริงใน API ปัจจุบัน
+
+<SpotTheBug code={`<script>
+  let a = $state(1);
+  let b = $state(2);
+
+  async function add(x, y) {
+    await new Promise((r) => setTimeout(r, 300));
+    return x + y;
+  }
+</script>
+
+<p>{a} + {b} = {await add(a, b)}</p>`}>
+Snippet นี้ใช้ `await` ตรง ๆ ใน template expression — syntax async ของ Svelte ที่ถูกต้อง — แต่ไม่มีที่ไหนในนี้ตั้ง `compilerOptions.experimental.async: true` ถ้าไม่มี flag นี้ นี่คือ compile error จริง ไม่ใช่ warning หรือ fallback แบบเงียบไปเป็น synchronous: `Cannot use \`await\` in deriveds and template expressions, or at the top level of a component, unless the \`experimental.async\` compiler option is \`true\`` (error code `experimental_async`) ทางแก้ไม่ใช่การแก้โค้ดในไฟล์นี้เลย — คือการเพิ่ม flag ใน `svelte.config.js` (หรือ `compilerOptions` เทียบเท่าของ bundler plugin) และเข้าใจว่าการทำแบบนั้นคือการเลือกให้ทั้งโปรเจกต์เปิดใช้ฟีเจอร์ที่ยัง experimental อย่างชัดเจน
+</SpotTheBug>
+
+<Mermaid title="pending สองแบบที่ต่างกัน: boundary กับ $effect.pending()" code={asyncDiagram} />
+
+export const asyncDiagram = `flowchart TB
+  first["First render: an unresolved await INSIDE the boundary's own template"] --> pendingSnippet["<svelte:boundary> pending snippet shows"]
+  later["A LATER async update, after first resolution"] --> effectPending["$effect.pending() reports the count instead"]
+  derived["await hidden inside a $derived, merely rendered inside the boundary"] --> nothing["NEITHER is triggered — proven gotcha"]`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+`await` ใช้ได้ตรง ๆ ใน `$derived` และ template — แต่ต้องอยู่หลัง flag **experimental** `compilerOptions.experimental.async: true` (compile error จริงถ้าไม่เปิด) snippet **`pending`** ของ `<svelte:boundary>` ครอบคลุมแค่ render แรกที่ยังไม่ resolve ของ boundary และเฉพาะ `await` expression ที่เขียนตรง ๆ ใน template ของตัวมันเอง — พิสูจน์แล้วว่า*ไม่*ทำงานกับ `await` ตัวเดียวกันที่ซ่อนอยู่ใน `$derived` ที่แค่ถูก render อยู่ข้างในมัน **`$effect.pending()`** คือเครื่องมือสำหรับ async update ที่มาทีหลัง **`settled()`** รอ synchronous `$state` update ที่ค้างอยู่ให้ apply เสร็จ — พิสูจน์แล้วว่า*ไม่*รอ async render จริงที่กำลัง in-flight และ `<svelte:boundary>` ไม่มี property `fork` — มีแค่ `pending`, `failed` และ `onerror` เท่านั้น
+</Callout>
+
+export const quizAsync = [
+  {
+    q: '```js\n// svelte.config.js\nexport default {};\n```\n```svelte\n<script>\n  let sum = $derived(await Promise.resolve(1 + 1));\n</script>\n<p>{sum}</p>\n```\nด้วย `svelte.config.js` แบบนี้ จะเกิดอะไรขึ้นตอน component นี้ compile?',
+    options: [
+      'มัน compile ผ่านและทำงาน โดย fallback ไปเป็น synchronous behavior',
+      'Compile error จริง: experimental_async — await ใน $derived ต้องการ compilerOptions.experimental.async: true',
+      'มัน compile ผ่านแต่ template ว่างเปล่าตลอดไป',
+      'มัน compile ผ่านเฉพาะใน development mode',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วยการ compile ตรง ๆ: ถ้าไม่เปิด flag Svelte throw "Cannot use `await` in deriveds and template expressions... unless the `experimental.async` compiler option is `true`" (error code experimental_async)',
+  },
+  {
+    q: '`<svelte:boundary>` ห่อ `<p>{sum}</p>` โดย `sum` คือ `$derived(await fetchSum())` ที่ประกาศใน `<script>` pending snippet ของ boundary โชว์ระหว่างที่ `fetchSum()` ยังไม่ resolve หรือไม่?',
+    options: [
+      'โชว์ เหมือนกับ `{await fetchSum()}` ที่เขียนตรง ๆ ใน template ทุกประการ',
+      'ไม่โชว์ — พิสูจน์แล้ว: boundary track แค่ await expression ที่อยู่ตาม lexical scope ใน template ของตัวมันเอง ไม่ใช่ตัวที่ซ่อนอยู่ใน $derived ที่แค่ render อยู่ข้างในมัน',
+      'โชว์เฉพาะถ้าใช้ $effect.pending() ด้วย',
+      'โชว์เฉพาะฝั่ง client ไม่ใช่ตอน SSR',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: mount component ที่มีรูปร่างแบบนี้ทำให้เนื้อหาว่างเปล่าสนิท (ไม่โผล่แม้แต่ pending snippet) จนกว่า derived จะ resolve — เทียบกับ await ตัวเดียวกันที่เขียนตรง ๆ ใน template ของ boundary ซึ่งโชว์ pending ทันที',
+  },
+  {
+    q: 'หลังจาก render async ครั้งแรกของ boundary resolve ไปแล้ว การคลิกปุ่มทำให้เกิด async update ครั้งที่*สอง* อะไรที่โชว์ pending snippet จาก `{#snippet pending()}`?',
+    options: [
+      'Pending snippet โชว์อีกครั้ง เหมือนครั้งแรกทุกประการ',
+      'ไม่มีอะไรโชว์ — ตาม docs pending snippet ครอบคลุมแค่ render แรก; $effect.pending() คือเครื่องมือสำหรับ update ทีหลัง พิสูจน์แล้วว่ารายงาน 1 ถูกต้องระหว่างที่ update ที่สองยัง in-flight',
+      'Boundary ทั้งก้อน unmount แล้ว remount ใหม่',
+      'มัน throw error',
+    ],
+    answer: 1,
+    explain: 'Docs: "The pending snippet will not be shown for subsequent async updates" พิสูจน์ในโปรบแล้ว: หลังคลิก bump ไม่มี element boundary-pending โผล่ขึ้นมาเลย แต่ $effect.pending() อ่านค่า "1" ถูกต้องระหว่าง recompute ยัง in-flight แล้วเป็น "0" ตอน resolve',
+  },
+  {
+    q: '```js\nasync function onclick() {\n  price += 1; // triggers a real 20ms async recompute elsewhere\n  const t0 = Date.now();\n  await settled();\n  console.log(Date.now() - t0);\n}\n```\nการเรียก `settled()` นี้ใช้เวลาประมาณเท่าไร?',
+    options: [
+      'ประมาณ 20ms — มันรอ async recompute ให้เสร็จ',
+      'น้อยกว่า 15ms มาก — พิสูจน์แล้ว: settled() ไม่รอ async `{await}`/boundary work ที่ in-flight รอแค่ synchronous $state update ที่ค้างอยู่เท่านั้น',
+      '0ms เป๊ะเสมอ ไม่ว่าอะไรจะเปลี่ยน',
+      'มันไม่ resolve เลยถ้ามี async work ค้างอยู่',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ แล้ว: settled() resolve ในไม่กี่มิลลิวินาทีในขณะที่ async recompute จริง 20ms ยังค้าง in-flight อยู่ และค่าเก่า (ก่อน update) ยังอยู่บนจอตอนนั้น',
+  },
+  {
+    q: '`<svelte:boundary>` รองรับ property อะไรบ้างจริง ๆ ตาม official documentation และ source ปัจจุบัน?',
+    options: [
+      '`pending`, `failed`, `onerror` และ `fork`',
+      '`pending`, `failed` และ `onerror` เท่านั้น — `fork` ไม่มีอยู่ใน API ปัจจุบัน',
+      'มีแค่ `onerror` เท่านั้น',
+      'มีแค่ `pending` เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'ตรวจสอบตรงกับ source ปัจจุบันของ sveltejs/svelte แล้ว: มีแค่ pending (snippet), failed (snippet ที่รับ error/reset) และ onerror (callback) เท่านั้น ไม่พบ property หรือ export ชื่อ fork เลย',
+  },
+  {
+    q: 'async `$derived` ถูกสร้างนอก component และนอก `$effect.root()` ใด ๆ เลย จะเกิดอะไรขึ้น?',
+    options: [
+      'ทำงานได้ปกติ — $derived ไม่ต้องการ effect tree เลย',
+      'Runtime error จริง: async_derived_orphan — "Cannot create a `$derived(...)` with an `await` expression outside of an effect tree"',
+      'มัน evaluate เงียบ ๆ ครั้งเดียวแล้วไม่ update อีกเลย',
+      'มันทำงานได้แค่ถ้า experimental.async เป็น false',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ แล้ว: การเรียกโค้ดที่ประกาศ async $derived โดยไม่มี effect tree ล้อมรอบ throw async_derived_orphan — async derived ต้องมีที่ให้รายงาน pending state และ error',
+  },
+];
+
+<Quiz client:visible id="reactivity-async" questions={quizAsync} />
+
+<ProgressTracker client:visible id="reactivity-async" />

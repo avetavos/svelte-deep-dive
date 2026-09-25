@@ -1,6 +1,6 @@
 ---
 title: 'The $derived Rune'
-description: 'Computed values with $derived and $derived.by, automatic dependency tracking, caching, and why derived state beats an effect that writes state.'
+description: 'Computed values with $derived and $derived.by, automatic dependency tracking, proven push-pull laziness, writable deriveds (5.25+), deriveds in classes, and why derived state beats an effect that writes state.'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Computed values
 
@@ -24,7 +25,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <p>{double} — {label}</p>
 ```
 
-You never list dependencies. The compiler sees that `double` reads `count` and rebuilds `double` exactly when `count` changes. Derived values are read-only — you don't assign to them; they are a function of their inputs.
+You never list dependencies. The compiler sees that `double` reads `count` and rebuilds `double` exactly when `count` changes. Derived values are read-only by default — you don't normally assign to them; they are a function of their inputs. (There is one deliberate exception — see "Writable deriveds" below.)
 
 ## Complex logic: $derived.by
 
@@ -54,6 +55,208 @@ export const derivedDiagram = `flowchart LR
   d --> ui["DOM updates when inputs change"]
   e --> ui`;
 
+## Push-pull: proven lazy evaluation
+
+`$derived` is often described as "automatically recomputing," which makes it sound like it re-runs the moment a dependency changes. It doesn't. Svelte's reactivity is **push-pull**: a dependency change **pushes** a "you're dirty" notification to the derived, but the derived's function only actually re-runs — is **pulled** — the next time something *reads* it. If nothing ever reads it, it never re-runs at all, no matter how many times its dependencies change.
+
+```ts
+// src/lib/derived-laziness.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$derived is push-pull: dependency changes mark it dirty, but it only re-evaluates on next READ', () => {
+  let evaluations = 0;
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let double = $derived.by(() => {
+      evaluations++;
+      return count * 2;
+    });
+
+    flushSync();
+    expect(evaluations).toBe(0); // never read yet — nothing has evaluated it
+
+    void double; // read #1
+    expect(evaluations).toBe(1);
+    void double; // read #2, no dependency changed — cached, no re-evaluation
+    expect(evaluations).toBe(1);
+
+    // Change the dependency THREE times without reading `double` in between.
+    count = 1;
+    count = 2;
+    count = 3;
+    flushSync();
+    expect(evaluations).toBe(1); // still 1 — "push" only marked it dirty, didn't recompute
+
+    void double; // one read now triggers exactly one re-evaluation, for the LATEST value
+    expect(evaluations).toBe(2);
+    expect(double).toBe(6); // 3 * 2, not 2 or 4 — it skipped the intermediate values entirely
+  });
+  destroy();
+});
+```
+
+```text
+✓ $derived is push-pull: dependency changes mark it dirty, but it only re-evaluates on next READ
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The practical consequence: a `$derived` that is never read (dead code, or a value only used behind a condition that's never true) costs **nothing** at runtime beyond the initial declaration — proven by changing its dependency five times and observing zero evaluations:
+
+```text
+✓ an unread $derived never evaluates at all, even across many dependency changes
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+This is also why a `$derived` must stay free of side effects: you cannot rely on it running a specific number of times, or at a specific moment — only that its *value* will be correct the next time something reads it.
+
+## Writable deriveds (since Svelte 5.25)
+
+Before Svelte 5.25, deriveds were strictly read-only. Since 5.25, you **can** reassign a `$derived` value — the override holds until the next time a real dependency change forces a recompute, at which point it snaps back to being derived. The canonical use case is **optimistic UI**: show the new value immediately, then reconcile with the server.
+
+```svelte
+<script>
+  let { post, like } = $props();
+
+  let likes = $derived(post.likes);
+
+  async function onclick() {
+    likes += 1;           // optimistic: show it immediately
+    try {
+      await like();        // tell the server
+    } catch {
+      likes -= 1;           // failed — roll back
+    }
+  }
+</script>
+
+<button {onclick}>🧡 {likes}</button>
+```
+
+Proven — the override is visible immediately, and a real dependency change discards it:
+
+```ts
+// src/lib/derived-writable.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('a $derived value can be reassigned (writable derived, since Svelte 5.25) for optimistic UI', () => {
+  const destroy = $effect.root(() => {
+    let serverLikes = $state(10);
+    let likes = $derived(serverLikes);
+
+    expect(likes).toBe(10);
+
+    // Optimistic bump: reassign the derived value directly, ahead of the server.
+    likes += 1;
+    expect(likes).toBe(11); // the override is visible immediately
+
+    // The override holds ONLY until a real dependency change forces a recompute.
+    serverLikes = 20; // server eventually reports the real count
+    flushSync();
+    expect(likes).toBe(20); // the manual override is gone — back to deriving from source
+  });
+  destroy();
+});
+```
+
+```text
+✓ a $derived value can be reassigned (writable derived, since Svelte 5.25) for optimistic UI
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+A `const $derived` cannot be reassigned — that's a real compile error, not just a lint warning:
+
+```ts
+test('a $derived declared with `const` cannot be reassigned (compile error)', async () => {
+  const { compile } = await import('svelte/compiler');
+  const source = `
+<script>
+  let count = $state(0);
+  const double = $derived(count * 2);
+  function bump() { double += 1; }
+</script>
+<button onclick={bump}>{double}</button>
+`;
+  expect(() => compile(source, { generate: 'client' })).toThrowError();
+});
+```
+
+```text
+✓ a $derived declared with `const` cannot be reassigned (compile error)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## Deriveds in classes
+
+Just like `$state`, `$derived` works as a class field, computed from other fields on the same instance:
+
+```svelte
+<script>
+  class Cart {
+    items = $state([]);
+    total = $derived(this.items.reduce((sum, i) => sum + i.price * i.qty, 0));
+
+    add(price, qty) {
+      this.items.push({ price, qty });
+    }
+  }
+
+  const cart = new Cart();
+</script>
+
+<p>Total: {cart.total}</p>
+```
+
+Proven, recomputing correctly as items are added:
+
+```ts
+// src/lib/derived-in-class.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+class Cart {
+  items = $state<{ price: number; qty: number }[]>([]);
+  total = $derived(this.items.reduce((sum, i) => sum + i.price * i.qty, 0));
+
+  add(price: number, qty: number) {
+    this.items.push({ price, qty });
+  }
+}
+
+test('$derived works as a class field, recomputing from other reactive fields on the same instance', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    const cart = new Cart();
+    $effect(() => {
+      log.push(cart.total);
+    });
+    flushSync();
+    cart.add(10, 2);
+    flushSync();
+    cart.add(5, 1);
+    flushSync();
+  });
+  destroy();
+  expect(log).toEqual([0, 20, 25]);
+});
+```
+
+```text
+✓ $derived works as a class field, recomputing from other reactive fields on the same instance
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
 ## Derive, do not sync with an effect
 
 A common React-brain mistake is to compute a value in an effect and write it into state:
@@ -68,7 +271,7 @@ A common React-brain mistake is to compute a value in an effect and write it int
 </script>
 ```
 
-This is worse in every way: an extra state variable, an extra update cycle, a chance for `double` to be briefly out of sync, and harder-to-follow data flow. The right tool is `$derived`:
+This is worse in every way: an extra state variable, an extra update cycle, a chance for `double` to be briefly out of sync, and harder-to-follow data flow. The [Effect Rune](/svelte/en/reactivity/effect-rune) lesson proves the "briefly out of sync" part with a running test — the effect-mirrored version genuinely lags by a beat. The right tool is `$derived`:
 
 ```svelte
 <script>
@@ -79,8 +282,54 @@ This is worse in every way: an extra state variable, an extra update cycle, a ch
 
 Rule of thumb: **if a value can be computed from other state, derive it — don't store it and sync it.** Reach for `$effect` only for genuine side effects (the next lesson), not for computing values.
 
+## Mental Model
+
+Think of `$derived` as a **cached formula**, not a subscription. Declaring it doesn't run anything; a dependency changing doesn't run anything either — it only flips an internal "stale" flag. The formula runs exactly once, lazily, the next time someone asks for the value, and the answer is cached until the flag flips again. This is why an unread derived is free, why it must stay pure (you can't count on *when* or *how many times* it runs), and why "overriding" it (writable deriveds) is really just replacing the cached answer until the next real recompute clears it.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| `$derived` over `$state` + `$effect` | One source of truth, always consistent, no extra render cycle | None when the value is a pure function of other reactive state |
+| `$derived.by` over `$derived` | Handles multi-statement logic (loops, branches) | Slightly more ceremony than a single expression |
+| Writable derived (optimistic override) | Immediate UI feedback before a server round-trip | Only holds until the next real dependency change — don't rely on it as durable storage |
+| A `$derived` with a side effect | — | None — side effects inside `$derived` are unreliable by design: laziness means you cannot predict how many times, or when, they'll fire |
+
+## Common Misconceptions
+
+- **"`$derived` recomputes the instant its dependency changes."** It doesn't — proven above. A dependency change only marks it dirty; the actual recompute happens lazily, on the next read.
+- **"An unread `$derived` still costs something because its dependency changed."** Proven false: zero evaluations occurred across five dependency changes when nothing ever read the value.
+- **"Putting a `console.log` or an API call inside `$derived` is fine, it's basically the same as an effect."** It is not the same — a derived can run zero times, or be recomputed at a moment you don't control, purely based on read timing. Side effects belong in `$effect`.
+- **You may see `state_referenced_locally` from the compiler** ("This reference only captures the initial value...") when reading a `$state`/`$derived` variable directly in test-style code after reassigning it in the same scope. It's a real, useful warning for closures held for later use (like `setContext`), but a plain synchronous read-and-assert in the same tick — as in the tests on this page — still observes the live, correct value.
+
+## Reading AI-generated code
+
+When you see a `$derived`, check for these before trusting it:
+
+- Does the derived expression **mutate state** or call something with a side effect (an API call, `console.log` used for anything beyond debugging, pushing to an array declared outside it)? Svelte disallows state mutation inside `$derived`, but non-state side effects will compile and then misbehave.
+- Is a value computed in an `$effect` and written into a separate `$state` variable, when it could just be `$derived` directly from its inputs?
+- Is a `$derived` value reassigned somewhere expecting the override to be **permanent**, rather than understanding it lasts only until the next real recompute?
+- Is `$derived.by` used just to wrap a single expression (no benefit over plain `$derived`), or is plain `$derived` misused for logic that actually needs multiple statements?
+- Does a class mix reactive `$derived` fields with plain, non-reactive computed getters, inconsistently?
+
+<SpotTheBug code={`function useAnalytics(events) {
+  let count = $state(0);
+
+  // "Track every time the filtered list changes" — logs a side effect
+  // inside the derived computation itself.
+  let filtered = $derived.by(() => {
+    const result = events.filter((e) => e.type === 'click');
+    trackAnalytics('filtered-recomputed', result.length); // side effect!
+    return result;
+  });
+
+  return { get filtered() { return filtered; } };
+}`}>
+`trackAnalytics(...)` runs inside the `$derived.by` callback, which the author assumes fires exactly once per change to `events` — but `$derived` is push-pull and lazy: it only re-evaluates the next time `filtered` is actually **read**, and it never evaluates at all if nothing reads it. Proven in the probe: changing a dependency five times with no read in between produced **zero** evaluations of the derived function, and a single subsequent read produced exactly **one** evaluation reflecting only the latest state — the intermediate changes were silently skipped. So `trackAnalytics` here fires an unpredictable number of times — possibly never, possibly once for several batched changes — which is unusable for anything that needs to count real state transitions. The fix: move the tracking call into an `$effect` that reads `filtered`, since `$effect` is the rune that guarantees "run when this changes," not `$derived`.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-`$derived(expression)` (or **`$derived.by(() => { … })`** for multi-statement logic) declares a **cached, read-only value computed from other reactive values**, recomputed automatically when a tracked dependency changes — with no manual dependency lists. Prefer deriving a value over storing it in `$state` and syncing it with an `$effect`: derived state is one source of truth, always consistent, and simpler.
+`$derived(expression)` (or **`$derived.by(() => { … })`** for multi-statement logic) declares a **cached, push-pull value**: a dependency change only marks it dirty, and the actual recompute happens lazily on the next read — proven by counting evaluations. Since **Svelte 5.25**, deriveds are **writable**: reassigning one overrides the cached value until the next real dependency change recomputes it (useful for optimistic UI). `$derived` also works as a **class field**. Prefer deriving a value over storing it in `$state` and syncing it with an `$effect`: derived state is one source of truth, always consistent, and — because of its laziness — must stay free of side effects.
 </Callout>
 
 export const quizDerived = [
@@ -88,11 +337,12 @@ export const quizDerived = [
     q: 'What does `$derived` do?',
     options: [
       'Creates writable state',
-      'Declares a cached, read-only value computed from other reactive values, recomputed when they change',
+      'Declares a cached, read-only-by-default value computed from other reactive values, recomputed when they change',
       'Runs a side effect',
       'Fetches data',
     ],
     answer: 1,
+    explain: '$derived declares a value that Svelte recomputes from its tracked dependencies — cached, and (since 5.25) reassignable as a temporary override, but not a place for side effects.',
   },
   {
     q: 'When do you use `$derived.by` instead of `$derived`?',
@@ -103,26 +353,51 @@ export const quizDerived = [
       'To make it writable',
     ],
     answer: 1,
+    explain: '$derived(x) is shorthand for $derived.by(() => x); use $derived.by directly when the computation needs more than a single expression.',
   },
   {
-    q: 'How does Svelte know a `$derived` value depends on `count`?',
+    q: '```ts\nlet evaluations = 0;\nlet count = $state(0);\nlet double = $derived.by(() => { evaluations++; return count * 2; });\ncount = 1;\ncount = 2;\ncount = 3;\nflushSync();\n// (nothing has read `double` yet)\n```\nWhat is `evaluations` at this point?',
     options: [
-      'You pass a dependency array',
-      'The compiler tracks that the derived computation reads `count`',
-      'You call a subscribe method',
-      'It recomputes on every render',
+      '3, once per change',
+      '1, it recomputes once per flush',
+      '0 — a dependency change only marks it dirty; it has not been read yet, so it never actually ran',
+      'It throws an error',
+    ],
+    answer: 2,
+    explain: 'Proven in the probe: evaluations stayed at 0 after three dependency changes with no read — "push" (dirty-marking) and "pull" (actual recompute on read) are separate steps.',
+  },
+  {
+    q: '```svelte\n<script>\n  let serverLikes = $state(10);\n  let likes = $derived(serverLikes);\n  likes += 1; // reassign the derived value\n</script>\n```\nOn Svelte 5.25+, what happens when `likes += 1` runs?',
+    options: [
+      'A compile error — deriveds are always read-only',
+      'It works: `likes` becomes 11 immediately, overriding the cached value until `serverLikes` changes again',
+      'It silently does nothing',
+      'It reassigns `serverLikes` instead',
     ],
     answer: 1,
+    explain: 'Proven in the probe: the reassignment is visible immediately (11), and holds until a real dependency change (serverLikes = 20) forces a recompute that discards the override.',
   },
   {
     q: 'Why prefer `$derived` over an `$effect` that writes derived state?',
     options: [
       'Effects are deprecated',
-      'Deriving keeps one source of truth, always in sync, with no extra state or update cycle',
+      'Deriving keeps one source of truth, always in sync, with no extra state or update cycle — an effect-mirrored value provably lags by one flush',
       'Effects cannot read state',
       'There is no difference',
     ],
     answer: 1,
+    explain: 'Proven in the Effect Rune lesson: reading the effect-mirrored value immediately after a state change (before flushSync) shows the OLD value — a real, provable lag that a $derived does not have.',
+  },
+  {
+    q: 'A `$derived.by` computation calls an analytics-tracking function as a side effect, expecting it to fire once per change to its dependency. What is wrong with this?',
+    options: [
+      'Nothing — deriveds run once per dependency change, like an effect',
+      '$derived is lazy (pull-based): it may run zero times if never read, or once for several batched changes — an unpredictable count for anything that must track every transition',
+      '$derived cannot call functions at all',
+      'Analytics calls always need to be in $effect.root',
+    ],
+    answer: 1,
+    explain: 'Proven in the probe: an unread $derived never evaluates even across five dependency changes, and reading it once after several changes triggers exactly one evaluation for the latest value, skipping the intermediate ones entirely.',
   },
 ];
 

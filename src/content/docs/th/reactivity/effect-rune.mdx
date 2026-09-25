@@ -1,6 +1,6 @@
 ---
 title: 'The $effect Rune'
-description: 'sync กับโลกภายนอกด้วย $effect, cleanup function, $effect.pre และแนวทางสำคัญว่าส่วนใหญ่คุณไม่ต้องใช้ effect'
+description: 'Sync กับโลกภายนอกด้วย $effect, cleanup และลำดับที่พิสูจน์แล้ว, dependency คือ "สิ่งที่การรันล่าสุดอ่าน" (พิสูจน์ด้วยการอ่านแบบมีเงื่อนไข), untrack, $effect.pre และ anti-pattern $effect-vs-$derived ที่พิสูจน์แล้ว'
 sidebar:
   order: 4
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## effect sync กับโลกภายนอก
+## Effect sync กับโลกภายนอก
 
-`$effect` รัน function หลัง DOM update แล้ว และรันซ้ำทุกครั้งที่ค่า reactive ที่อ่านเปลี่ยน มีไว้สำหรับ **side effect** — sync state ของ Svelte กับสิ่งที่อยู่นอก Svelte: DOM ตรง ๆ, library ภายนอก, subscription, timer, logging, `localStorage`
+`$effect` รันฟังก์ชันหลัง DOM update แล้ว และรันใหม่ทุกครั้งที่ค่า reactive ที่มันอ่านเปลี่ยน มันมีไว้สำหรับ **side effect** — sync state ของ Svelte กับสิ่งที่อยู่นอก Svelte: DOM ตรง ๆ, library ภายนอก, subscription, timer, logging, `localStorage`
 
 ```svelte
 <script>
@@ -25,11 +26,82 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </script>
 ```
 
-dependency ถูก track อัตโนมัติ เหมือน `$derived` เป๊ะ — effect อ่าน `count` จึงรันซ้ำเมื่อ `count` เปลี่ยน ไม่ต้องมี dependency array
+Dependency ถูก track อัตโนมัติ เหมือน `$derived` ทุกประการ — effect อ่าน `count` มันจึงรันใหม่ตอน `count` เปลี่ยน ไม่ต้องมี dependency array
 
-## Cleanup
+## Dependency คือสิ่งที่การรันล่าสุดอ่านพอดี
 
-ถ้า effect ตั้งอะไรบางอย่างที่ต้อง tear down — interval, event listener, subscription — ให้ **return cleanup function** Svelte จะรัน cleanup ก่อน effect รันซ้ำ และตอน component ถูก destroy
+รายการ dependency ของ effect **ไม่ได้**ถูกกำหนดตายตัวตอนประกาศ — มันถูกคำนวณใหม่ทุกครั้งที่ effect รัน จากสิ่งที่มันอ่านจริง ๆ *ในรอบนั้น* ถ้า effect อ่านค่าใดค่าหนึ่งจากสองค่าแบบมีเงื่อนไข การพลิก condition จะเปลี่ยน dependency set ของมันในรอบถัดไป
+
+```svelte
+<script>
+  let useA = $state(true);
+  let a = $state('a1');
+  let b = $state('b1');
+
+  $effect(() => {
+    console.log(useA ? a : b);   // only ONE of a/b is a dependency, depending on useA
+  });
+</script>
+```
+
+พิสูจน์แล้ว — effect ไม่สนใจการเปลี่ยนของ branch ที่มัน*ไม่ได้*อ่านในการรันล่าสุด และจับ branch อีกฝั่งทันทีที่ condition พลิก:
+
+```ts
+// src/lib/effect-deps-last-run.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('an effect\'s dependencies are exactly what it read on its LAST run, not a fixed list', () => {
+  const runs: string[] = [];
+  const destroy = $effect.root(() => {
+    let useA = $state(true);
+    let a = $state('a1');
+    let b = $state('b1');
+
+    $effect(() => {
+      runs.push(useA ? a : b);
+    });
+
+    flushSync();
+    expect(runs).toEqual(['a1']); // deps so far: useA, a
+
+    b = 'b2'; // NOT read on the last run — must NOT re-run the effect
+    flushSync();
+    expect(runs).toEqual(['a1']);
+
+    a = 'a2'; // WAS read on the last run — must re-run
+    flushSync();
+    expect(runs).toEqual(['a1', 'a2']);
+
+    // Flip the branch: now the effect reads `b` instead of `a`.
+    useA = false;
+    flushSync();
+    expect(runs).toEqual(['a1', 'a2', 'b2']); // picks up the CURRENT value of b (set earlier while untracked)
+
+    a = 'a3'; // `a` is no longer a dependency after the flip — must NOT re-run
+    flushSync();
+    expect(runs).toEqual(['a1', 'a2', 'b2']);
+
+    b = 'b3'; // `b` IS now a dependency — must re-run
+    flushSync();
+    expect(runs).toEqual(['a1', 'a2', 'b2', 'b3']);
+  });
+  destroy();
+});
+```
+
+```text
+✓ an effect's dependencies are exactly what it read on its LAST run, not a fixed list
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+นี่คือเหตุผลที่ "แค่เพิ่มมันเข้า deps" ไม่ค่อย make sense เป็น mental model ใน Svelte แบบที่มันเป็นกับ array ชัดเจนของ React — ไม่มี array ให้แก้ dependency set คือผลลัพธ์ live ของ code path ที่ effect เดินจริง ๆ ในรอบล่าสุด
+
+## Cleanup ที่พิสูจน์แล้ว
+
+ถ้า effect ตั้งค่าอะไรที่ต้องรื้อทิ้ง — interval, event listener, subscription — ให้ **return cleanup function** Svelte รันมันก่อน effect รันใหม่และตอน component (หรือ root) ถูกทำลาย
 
 ```svelte
 <script>
@@ -42,9 +114,135 @@ dependency ถูก track อัตโนมัติ เหมือน `$deri
 </script>
 ```
 
+พิสูจน์แล้ว — cleanup ของรอบ*เก่า*เกิดขึ้นก่อนรอบ*ใหม่*ของ effect เดียวกันเสมอ:
+
+```ts
+// src/lib/effect-cleanup-order.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('cleanup for the OLD run always happens before the new run for the SAME effect', () => {
+  const log: string[] = [];
+  const destroy = $effect.root(() => {
+    let id = $state(1);
+    $effect(() => {
+      const current = id;
+      log.push(`setup ${current}`);
+      return () => log.push(`cleanup ${current}`);
+    });
+    flushSync();
+    id = 2;
+    flushSync();
+    id = 3;
+    flushSync();
+  });
+  destroy();
+  expect(log).toEqual(['setup 1', 'cleanup 1', 'setup 2', 'cleanup 2', 'setup 3', 'cleanup 3']);
+});
+```
+
+```text
+✓ cleanup for the OLD run always happens before the new run for the SAME effect
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+คำถามที่ไม่ชัดเจนนัก: เมื่อ effect ที่เป็น *sibling* กันหลายตัวถูกทำลายพร้อมกัน (scope ทั้งหมดถูกทำลาย) มันเก็บกวาดตามลำดับไหน? หลายคนอาจสมมติว่าเป็น "stack" (สร้างหลังสุด ทำลายก่อน) แบบระบบ disposal ทั่วไป — แต่ไม่ใช่แบบนั้น:
+
+```ts
+test('sibling effects in the same scope clean up in THE SAME order they were created (not reversed)', () => {
+  const log: string[] = [];
+  const destroy = $effect.root(() => {
+    $effect(() => { log.push('setup A'); return () => log.push('cleanup A'); });
+    $effect(() => { log.push('setup B'); return () => log.push('cleanup B'); });
+    $effect(() => { log.push('setup C'); return () => log.push('cleanup C'); });
+    flushSync();
+  });
+  log.length = 0;
+  destroy(); // tear down the whole root — all three effects clean up
+  // Empirically: creation order A, B, C -> cleanup order A, B, C. Svelte does
+  // NOT reverse sibling effect cleanup like a LIFO stack/disposer pattern.
+  expect(log).toEqual(['cleanup A', 'cleanup B', 'cleanup C']);
+});
+```
+
+```text
+✓ sibling effects in the same scope clean up in THE SAME order they were created (not reversed)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+อย่าสมมติลำดับ LIFO สำหรับ sibling effect — ถ้า cleanup logic ของคุณพึ่งพาลำดับสัมพัทธ์ระหว่าง effect สองตัว ให้ตรวจสอบด้วย test แบบข้างบน
+
+## untrack: พิสูจน์แล้ว
+
+`untrack` (แนะนำในบท [Advanced Runes](/svelte/th/reactivity/advanced-runes)) ให้ effect อ่านค่า**โดยไม่**เพิ่มมันเป็น dependency ที่นี่พิสูจน์แบบครบวงจร รวมถึงเคส "control" ที่โชว์ว่าถ้าไม่ใช้มันจะเกิดอะไร:
+
+```ts
+// src/lib/effect-untrack.svelte.test.ts
+import { flushSync, untrack } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('untrack lets an effect read a value without adding it as a dependency', () => {
+  const runs: number[] = [];
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let verbose = $state(false);
+
+    $effect(() => {
+      const isVerbose = untrack(() => verbose); // read, but NOT tracked
+      runs.push(count);
+      void isVerbose;
+    });
+
+    flushSync();
+    expect(runs).toEqual([0]);
+
+    verbose = true; // read through untrack — must NOT trigger a re-run
+    flushSync();
+    expect(runs).toEqual([0]);
+
+    count = 1; // a real, tracked dependency — must trigger a re-run
+    flushSync();
+    expect(runs).toEqual([0, 1]);
+  });
+  destroy();
+});
+
+test('control: without untrack, reading verbose directly DOES make it a dependency', () => {
+  const runs: string[] = [];
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let verbose = $state(false);
+
+    $effect(() => {
+      runs.push(`${count}:${verbose}`); // direct read — tracked
+    });
+
+    flushSync();
+    expect(runs).toEqual(['0:false']);
+
+    verbose = true; // now this alone re-runs the effect, because it was read directly
+    flushSync();
+    expect(runs).toEqual(['0:false', '0:true']);
+  });
+  destroy();
+});
+```
+
+```text
+✓ untrack lets an effect read a value without adding it as a dependency
+✓ control: without untrack, reading verbose directly DOES make it a dependency
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
 ## $effect.pre
 
-`$effect` รัน **หลัง** DOM update บางครั้งคุณต้องอ่าน DOM *ก่อน* DOM update — เช่น จับ scroll position ก่อน content ใหม่จะดันตำแหน่งไป **`$effect.pre`** รันก่อน DOM update แทน โดยมีกฎ track และ cleanup เหมือนกัน
+`$effect` รัน**หลัง** DOM update บางครั้งคุณต้องอ่าน DOM *ก่อน*มัน update — เช่น เก็บตำแหน่ง scroll ก่อนเนื้อหาใหม่จะดันมัน **`$effect.pre`** รันก่อน DOM update แทน ด้วยกฎ tracking, dependency และ cleanup เดียวกับที่พิสูจน์ไว้ข้างบน
 
 ```svelte
 <script>
@@ -57,67 +255,199 @@ dependency ถูก track อัตโนมัติ เหมือน `$deri
 </script>
 ```
 
-## ส่วนใหญ่คุณไม่ต้องใช้ effect
+## บทพิสูจน์: $effect เทียบ $derived สำหรับ sync state
 
-นี่คือแนวทางที่สำคัญที่สุดในโมดูล effect คือ escape hatch และการหยิบมาจัดการ state *ภายใน* คือความผิดพลาดที่พบบ่อยที่สุดใน Svelte 5 ก่อนเขียน effect ให้ถามว่า:
+บท [$derived Rune](/svelte/th/reactivity/derived-rune) เตือนว่าการ mirror ค่าที่คำนวณได้ลง `$state` ผ่าน effect เป็น anti-pattern นี่คือบทพิสูจน์ที่เป็นรูปธรรม — ค่าที่ mirror **ล้าหลังจริง** วัดได้ ชั่วขณะหนึ่ง ในแบบที่ `$derived` ไม่มีวันเป็น:
 
-- **คำนวณค่าจาก state?** ใช้ `$derived` ไม่ใช่ effect ที่ assign state
-- **ตอบสนอง user action?** ทำงานใน event handler (`onclick`) ไม่ใช่ effect ที่คอยดูตัวแปร
-- **mirror prop ลง state?** มักเป็น design smell — derive จาก prop แทน
+```ts
+// src/lib/effect-vs-derived-lag.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('anti-pattern proven: an $effect that mirrors state into another $state variable LAGS by a flush', () => {
+  const destroy = $effect.root(() => {
+    let count = $state(2);
+    let double = $state(0); // ❌ mirrored via effect, not derived
+
+    $effect(() => {
+      double = count * 2;
+    });
+
+    flushSync(); // let the initial effect run
+    expect(double).toBe(4);
+
+    count = 3;
+    // Read `double` SYNCHRONOUSLY, before flushSync — the effect has not run yet.
+    expect(double).toBe(4); // ❌ STALE: still the old value, one write behind
+    flushSync();
+    expect(double).toBe(6); // only correct AFTER an explicit flush
+  });
+  destroy();
+});
+
+test('the fix: $derived recomputes synchronously on read — no lag, no flush needed', () => {
+  const destroy = $effect.root(() => {
+    let count = $state(2);
+    let double = $derived(count * 2); // ✅ derived, not mirrored via effect
+
+    expect(double).toBe(4);
+    count = 3;
+    // No flushSync at all — $derived is pulled fresh the instant it's read.
+    expect(double).toBe(6); // ✅ always correct, synchronously
+  });
+  destroy();
+});
+```
+
+```text
+✓ anti-pattern proven: an $effect that mirrors state into another $state variable LAGS by a flush
+✓ the fix: $derived recomputes synchronously on read — no lag, no flush needed
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+นี่ไม่ใช่แค่ความชอบด้าน style เชิงทฤษฎี — โค้ดไหนก็ตามที่อ่านค่า `$state` ที่ mirror ไว้แบบ synchronous ทันทีหลังการเขียนที่ควรจะเปลี่ยนมัน — เช่น click handler ที่ update `count` แล้วเช็ค `double` ทันที — จะเห็นค่า**เก่า**กับ pattern ที่ mirror ผ่าน effect และเห็นค่า**ถูกต้อง**กับ `$derived`
+
+## คุณอาจไม่ต้องใช้ effect เลย
+
+นี่คือคำแนะนำที่สำคัญที่สุดในโมดูลนี้ Effect เป็น escape hatch และการหยิบมันมาจัดการ state *ภายใน* คือความผิดพลาดที่พบบ่อยที่สุดของ Svelte 5 ก่อนเขียน effect ให้ถามตัวเอง:
+
+- **กำลังคำนวณค่าจาก state?** ใช้ `$derived` ไม่ใช่ effect ที่ assign state — พิสูจน์แล้วข้างบนว่าทั้งช้ากว่า (flush เกิน) และผิดชั่วขณะ
+- **กำลังตอบสนอง user action?** ทำงานใน event handler (`onclick`) ไม่ใช่ใน effect ที่คอยดูตัวแปร
+- **กำลัง mirror prop ลง state?** ปกติแล้วเป็นกลิ่นของ design ที่ไม่ดี — derive จาก prop แทน
 
 <Mermaid title="เลือกเครื่องมือให้ถูก" code={effectDiagram} />
 
 export const effectDiagram = `flowchart TB
-  q["ต้อง react ต่อ state?"] --> derive["คำนวณค่า? ใช้ $derived"]
-  q --> handler["จาก user action? ใช้ event handler"]
-  q --> effect["sync กับสิ่งนอก Svelte? ใช้ $effect"]`;
+  q["Need to react to state?"] --> derive["Computing a value? → $derived"]
+  q --> handler["From a user action? → event handler"]
+  q --> effect["Syncing with something OUTSIDE Svelte? → $effect"]`;
 
-effect เป็นเครื่องมือที่ถูกก็ต่อเมื่อคุณเชื่อมไปยังสิ่งที่ Svelte ไม่ได้ควบคุม — document title, canvas, websocket, `localStorage`, analytics call ถ้างานยังอยู่ในโลก reactive ของ Svelte rune อย่าง `$derived` มักเหมาะกว่าเสมอ
+Effect เป็นเครื่องมือที่ถูกต้องก็ต่อเมื่อคุณเชื่อมกับสิ่งที่ Svelte ควบคุมไม่ได้ — document title, canvas, websocket, `localStorage`, การเรียก analytics ถ้างานยังอยู่ในโลก reactive ของ Svelte rune อย่าง `$derived` มักเหมาะกว่าเกือบทุกครั้ง
 
-<Callout title="สรุปบรรทัดเดียว">
-`$effect(fn)` รัน **หลัง DOM update** และรันซ้ำเมื่อค่าที่ track อ่านเปลี่ยน — สำหรับ **side effect ที่เชื่อมไปโลกภายนอก** (DOM, subscription, timer, `localStorage`) ให้ return **cleanup function** เพื่อ tear down subscription/interval และใช้ **`$effect.pre`** เพื่อรันก่อน DOM update ที่สำคัญ **ส่วนใหญ่คุณไม่ต้องใช้ effect**: derive ค่าด้วย `$derived` ทำงานจาก action ใน event handler และเก็บ `$effect` ไว้สำหรับ sync กับภายนอกจริง ๆ
+## Mental Model
+
+Effect ไม่ใช่ lifecycle hook ที่ผูกกับการเกิดและตายของ component — มันคือ *loop การ sync* ที่ dependency set ของมันถูกคำนวณใหม่ทุกรอบจาก code path ที่มันเดินจริง ๆ Mount กับ unmount ก็แค่ setup แรกและ cleanup สุดท้ายของ loop เดียวกันนั้น เพราะ dependency set คือ "สิ่งที่เกิดขึ้นครั้งล่าสุด ไม่ใช่รายการตายตัว" การอ่านแบบมีเงื่อนไขใน effect จึงเปลี่ยนพฤติกรรมของมันจริง ๆ ในการเปลี่ยนค่าครั้งถัดไป — พิสูจน์แล้วข้างบนด้วยการพลิก branch
+
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ได้อะไร | เสียอะไร |
+| --- | --- | --- |
+| `$derived` แทน `$effect` สำหรับค่าคำนวณ | ไม่มีการล้าหลัง: ถูกต้องทันทีที่อ่าน ไม่ต้อง flush | ไม่มีข้อเสียเมื่อค่าคือฟังก์ชันบริสุทธิ์ของ state อื่น |
+| `$effect.pre` แทน `$effect` | อ่าน DOM ก่อน update ได้ (ตำแหน่ง scroll, การวัดขนาด) | แทบไม่ค่อยจำเป็น ส่วนใหญ่ต้องการ `$effect` แบบหลัง update |
+| `untrack` ใน effect | อ่านค่าที่เปลี่ยนบ่อยโดยไม่ trigger การรันซ้ำเกินจำเป็น | ใช้ผิดง่ายจนไปปิดเสียง dependency *จริง* — ตรวจด้วย test แบบข้างบน |
+| พึ่งพาลำดับ cleanup ของ sibling effect | — | อย่าทำ — พิสูจน์แล้วว่ามันคือลำดับสร้าง ไม่ใช่ LIFO อย่าสร้าง logic ที่สมมติเป็นอย่างอื่นโดยไม่ตรวจก่อน |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"Dependency ของ effect ถูกกำหนดตายตัวครั้งเดียวจากการรันครั้งแรก"** พิสูจน์แล้วว่าไม่จริง: การอ่านแบบมีเงื่อนไขเปลี่ยน dependency set ทุกรอบถัดไป ตาม branch ที่เดินจริง
+- **"Sibling effect เก็บกวาดแบบย้อนกลับ (LIFO) ตอน scope ถูกทำลาย"** พิสูจน์แล้วว่าไม่จริง: cleanup รันตามลำดับ*เดียวกัน*กับการสร้าง (A, B, C) ไม่ใช่ย้อนกลับ
+- **"การ mirror state ที่ derive ได้ลง `$state` ผ่าน `$effect` เป็นแค่ความต่างเชิง style"** พิสูจน์แล้วว่าไม่จริง: ค่าที่ mirror ล้าหลังวัดได้จริงในช่วงระหว่างการเขียน state กับ flush ถัดไป — เป็นบั๊กจริงกับโค้ดใดก็ตามที่อ่านมันแบบ synchronous ในช่วงนั้น
+- **"`untrack` ปิด reactivity ทั้ง effect"** มันปิดแค่ค่า*เฉพาะ*ที่อ่านใน callback ของมันไม่ให้กลายเป็น dependency — ทุกอย่างอื่นที่ effect อ่านตรง ๆ ยัง track อยู่เหมือนเดิม ตามที่ control test ข้างบนแสดง
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อ component ที่ AI เขียนใช้ `$effect` ให้เช็คสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- effect assign ค่าให้ `$state` แยกต่างหากที่จริง ๆ ทำเป็น `$derived` ตรง ๆ ได้เลยหรือเปล่า? นี่คือ anti-pattern ที่พบบ่อยที่สุดของ Svelte 5 และมันล้าหลังพิสูจน์ได้ชั่วขณะจริง ๆ ไม่ใช่แค่ "ไม่ idiomatic เฉย ๆ"
+- การอ่านแบบมีเงื่อนไขใน effect (`flag ? a : b`) เป็นความตั้งใจหรือเปล่า — ผู้เขียนเข้าใจไหมว่ามีแค่ branch ที่เดินจริงเท่านั้นที่กลายเป็น dependency ในรอบนั้น?
+- effect ที่ตั้ง interval, listener หรือ subscription **return cleanup function** หรือเปล่า — หรือมันจะ leak ทุกครั้งที่รันใหม่และตอน unmount?
+- `untrack` ถูกใช้อ่านค่าที่ผู้เขียนต้องการให้ react จริง ๆ ปิดเสียง dependency *จริง* แทนที่จะเป็นตัวที่ตั้งใจ exclude หรือเปล่า?
+- Cleanup logic ของ effect หลายตัวสมมติลำดับสัมพัทธ์เฉพาะระหว่างกันโดยไม่ได้ตรวจสอบลำดับนั้นหรือเปล่า?
+
+<SpotTheBug code={`function PriceDisplay({ price, taxRate }) {
+  let total = $state(0);
+
+  // "Keep total in sync with price and taxRate"
+  $effect(() => {
+    total = price * (1 + taxRate);
+  });
+
+  return {
+    get total() { return total; },
+  };
+}
+
+// Usage:
+const display = PriceDisplay({ price: $state(100), taxRate: $state(0.1) });
+function onPriceChange(newPrice) {
+  display.price = newPrice;
+  console.log('total right after price change:', display.total); // read immediately
+}`}>
+`total` ถูก mirror จาก `price`/`taxRate` ผ่าน `$effect` แทนที่จะเป็น `$derived` — มัน update แค่ตอน **flush ถัดไป** ไม่ใช่แบบ synchronous `console.log('total right after price change:', display.total)` รันทันทีหลัง `display.price = newPrice` ก่อนที่ Svelte จะ flush effect ที่ค้างอยู่ ดังนั้นมัน log total ที่**ล้าหลัง**ซึ่งคำนวณจาก price *เก่า* พิสูจน์ในโปรบแล้ว: การอ่านค่าที่ mirror ผ่าน effect แบบ synchronous ทันทีหลังการเขียนที่ trigger มันคืนค่าเก่า (`4` ไม่ใช่ `6` หลัง `count` เปลี่ยนจาก `2` เป็น `3`) — มันจะถูกต้องก็ต่อเมื่อมี `flushSync()` ชัดเจน (หรือในการใช้งานจริง หลัง microtask/render ถัดไปของ browser) ทางแก้คือ `let total = $derived(price * (1 + taxRate))`: `$derived` คำนวณใหม่ทันทีที่ถูกอ่าน ไม่มีการล้าหลัง และไม่ต้องมี `$state` ตัวเกิน
+</SpotTheBug>
+
+<Callout title="สรุปหนึ่งบรรทัด">
+`$effect(fn)` รัน**หลัง DOM update** และรันใหม่ตาม **สิ่งที่มันอ่านในการรันล่าสุด** — ไม่ใช่รายการตายตัว พิสูจน์ด้วย test อ่านแบบมีเงื่อนไขที่เปลี่ยน dependency ตอนพลิก branch return **cleanup function** เพื่อรื้อ subscription/interval (พิสูจน์แล้ว: cleanup ของรอบเก่ามาก่อน setup ของรอบใหม่เสมอ; sibling effect เก็บกวาดตาม**ลำดับสร้าง** ไม่ใช่ย้อนกลับ) ใช้ **`untrack`** อ่านค่าโดยไม่ depend และ **`$effect.pre`** รันก่อน DOM update ที่สำคัญที่สุด — พิสูจน์แล้ว ไม่ใช่แค่กล่าวอ้าง — การ mirror ค่าคำนวณลง `$state` ผ่าน `$effect` ล้าหลังวัดได้จริงในช่วงที่ `$derived` ไม่มีวันเป็น: **คุณมักไม่ต้องใช้ effect เลย**
 </Callout>
 
 export const quizEffect = [
   {
-    q: '`$effect` มีไว้ทำอะไร?',
+    q: '```svelte\n<script>\n  let useA = $state(true);\n  let a = $state(1);\n  let b = $state(2);\n  $effect(() => {\n    console.log(useA ? a : b);\n  });\n</script>\n```\nถ้า `useA` เป็น `true` และมีแค่ `b` เปลี่ยน effect รันใหม่ไหม?',
     options: [
-      'คำนวณค่าจาก state',
-      'side effect ที่ sync กับโลกภายนอก — DOM, subscription, timer, localStorage',
-      'ประกาศ props',
-      'style component',
+      'รัน เพราะ b ประกาศด้วย $state',
+      'ไม่รัน — ในการรันล่าสุด effect อ่านแค่ `useA` กับ `a` เท่านั้น `b` ไม่ถูกอ่าน จึงไม่ใช่ dependency ตอนนี้',
+      'รัน เพราะตัวแปร $state ทุกตัวเป็น dependency ของทุก effect เสมอ',
+      'มันจะ throw error',
     ],
     answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: การเปลี่ยน branch ที่ไม่ถูกอ่าน (b ตอน useA เป็น true) ไม่ทำให้ effect รันใหม่ แต่การเปลี่ยน branch ที่ถูกอ่าน (a) ทำให้รันใหม่ — dependency คือสิ่งที่การรันล่าสุดอ่านจริง ๆ พอดี',
   },
   {
-    q: 'จะ tear down subscription หรือ interval ที่สร้างใน effect ยังไง?',
+    q: 'Cleanup function ต้องทำอะไร?',
     options: [
-      'เรียก onDestroy แยก',
-      'return cleanup function จาก effect — cleanup จะรันก่อนรอบถัดไปและตอน destroy',
-      'clean up ไม่ได้',
-      'ตั้ง state เป็น null',
+      'Return state ใหม่',
+      'Undo สิ่งที่ effect ตั้งไว้ (disconnect, clear timer, remove listener) — พิสูจน์แล้วว่ารันก่อน setup รอบถัดไปของ effect ตัวเอง',
+      'รัน component ใหม่',
+      'ไม่ต้องทำอะไร — cleanup เป็นแค่ของตกแต่งที่ไม่บังคับ',
     ],
     answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: สำหรับ effect เดียวกัน cleanup ของค่าเก่ารันก่อน setup ของค่าใหม่เสมอ (setup 1, cleanup 1, setup 2, cleanup 2, ...)',
   },
   {
-    q: 'คุณอยากคำนวณ `fullName` จาก `first` กับ `last` ควรใช้อะไร?',
+    q: 'Sibling effect สามตัว A, B, C ถูกสร้างตามลำดับนั้นใน `$effect.root` scope เดียวกัน เมื่อ root ถูกทำลาย มันเก็บกวาดตามลำดับไหน?',
     options: [
-      '`$effect` ที่ assign `fullName`',
-      '`$derived` — อย่าใช้ effect คำนวณค่า',
-      'store',
-      'onMount',
+      'C, B, A — ย้อนกลับจากลำดับสร้าง (LIFO) แบบ disposer pattern ทั่วไป',
+      'A, B, C — ลำดับ*เดียวกัน*กับที่สร้าง',
+      'สุ่ม / ไม่ระบุ',
+      'เก็บกวาดพร้อมกันไม่ได้ ต้องทำทีละตัว',
     ],
     answer: 1,
+    explain: 'พิสูจน์เชิงประจักษ์ในโปรบแล้ว: cleanup รัน A, B, C — ลำดับเดียวกับการสร้าง ไม่ใช่ย้อนกลับ อย่าสมมติ LIFO สำหรับการเก็บกวาด sibling effect',
   },
   {
-    q: 'ความต่างระหว่าง `$effect` กับ `$effect.pre` คืออะไร?',
+    q: '```svelte\n<script>\n  let price = $state(2);\n  let total = $state(0);\n  $effect(() => { total = price * 2; });\n  // ... later, synchronously:\n  price = 3;\n  console.log(total); // read immediately, no flushSync\n</script>\n```\n`console.log(total)` จะ print อะไร?',
     options: [
-      'เหมือนกัน',
-      '`$effect` รันหลัง DOM update; `$effect.pre` รันก่อน',
+      'total ที่ถูกต้อง อัปเดตแล้ว — effect รันแบบ synchronous ตอน state เขียน',
+      'total ที่**ล้าหลัง**จากก่อนการเปลี่ยน price — effect ยังไม่ทันรัน',
+      'undefined',
+      'compile error',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: การอ่านค่าที่ mirror ผ่าน effect แบบ synchronous ทันทีหลังการเขียนที่ trigger มันคืนค่า*เก่า*; มันจะถูกต้องก็ต่อเมื่อมี flushSync() ชัดเจน ถ้าเป็น $derived จะถูกต้องทันที',
+  },
+  {
+    q: '`untrack(() => config.verbose)` ใน effect ทำอะไร?',
+    options: [
+      'ลบ config.verbose',
+      'อ่านค่าโดยไม่สร้าง dependency ทำให้ effect ไม่รันใหม่ตอนมันเปลี่ยน — พิสูจน์เทียบกับเวอร์ชัน "control" ที่อ่านตรง ๆ แล้วรันใหม่จริง',
+      'ทำให้มัน reactive',
+      'รันมันบน server',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: เมื่อใช้ untrack การเปลี่ยน `verbose` ไม่ทำให้ effect รันใหม่; ใน control test (อ่านตรง ๆ ไม่ใช้ untrack) การเปลี่ยน `verbose` ทำให้รันใหม่จริง',
+  },
+  {
+    q: '`$effect` กับ `$effect.pre` ต่างกันอย่างไร?',
+    options: [
+      'เหมือนกันทุกประการ',
+      '`$effect` รันหลัง DOM update; `$effect.pre` รันก่อนมัน — กฎ tracking, dependency และ cleanup ที่เหลือเหมือนกัน',
       '`$effect.pre` track dependency ไม่ได้',
       '`$effect.pre` รันบน server เท่านั้น',
     ],
     answer: 1,
+    explain: '$effect.pre มีไว้เฉพาะสำหรับอ่าน DOM (เช่น ตำแหน่ง scroll) ก่อนเนื้อหาใหม่จะ update มัน ส่วนที่เหลือเรื่อง tracking และ cleanup ทำงานเหมือน $effect ทุกอย่าง',
   },
 ];
 

@@ -50,7 +50,8 @@ export const runeDiagram = `flowchart LR
 - **`$derived`** — cached values computed from other reactive values.
 - **`$effect`** — synchronize with the outside world (and why you usually should not).
 - **`$props` / `$bindable`** — component inputs and two-way binding.
-- **Advanced** — `$inspect`, `untrack`, and shared reactive state in `.svelte.js` modules.
+- **Advanced** — `$inspect`, `$inspect.trace`, `$effect.tracking`/`$effect.root`, `$host()`, class fields, `untrack`, and shared reactive state in `.svelte.js` modules.
+- **Async Svelte** — `await` directly in `$derived` and templates, `<svelte:boundary pending>`, and `$effect.pending()` (experimental).
 
 <Callout title="The one-line takeaway">
 **Runes** are `$`-prefixed compiler signals that make reactivity **explicit**: `$state` (reactive state), `$derived` (computed values), `$effect` (side effects), and `$props` (inputs). In Svelte 5 they **replaced** Svelte 4's implicit `let` reactivity, `$:` statements, and `export let` props — with one uniform system that works the same inside components and in `.svelte.js` modules. You mark what is reactive; the compiler wires the dependency graph.

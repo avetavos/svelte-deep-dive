@@ -1,6 +1,6 @@
 ---
 title: 'The $derived Rune'
-description: 'computed value ด้วย $derived และ $derived.by, การ track dependency อัตโนมัติ, caching และทำไม derived state ดีกว่า effect ที่เขียน state'
+description: 'ค่าคำนวณด้วย $derived และ $derived.by, dependency tracking อัตโนมัติ, พิสูจน์ push-pull laziness, writable derived (5.25+), derived ใน class และทำไม derived state ถึงดีกว่า effect ที่เขียน state'
 sidebar:
   order: 3
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## Computed value
+## ค่าคำนวณ (Computed values)
 
-`$derived` ประกาศค่าที่คำนวณจากค่า reactive อื่น จะ recompute อัตโนมัติทุกครั้งที่ค่าที่อ่านเปลี่ยน — และ **cache** ไว้ ดังนั้นจะ recompute เฉพาะตอน dependency เปลี่ยนจริง ๆ
+`$derived` ประกาศค่าที่คำนวณจากค่า reactive อื่น ๆ มันคำนวณใหม่อัตโนมัติทุกครั้งที่ค่าที่มันอ่านเปลี่ยน — และมันถูก **cache** ไว้ จึงคำนวณใหม่เฉพาะตอน dependency เปลี่ยนจริง ๆ
 
 ```svelte
 <script>
@@ -24,11 +25,11 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <p>{double} — {label}</p>
 ```
 
-คุณไม่ต้อง list dependency เลย compiler เห็นว่า `double` อ่าน `count` แล้ว rebuild `double` ตอน `count` เปลี่ยนพอดี ค่า derived เป็น read-only — คุณไม่ assign ค่าให้ตรง ๆ เพราะเป็น function ของ input
+คุณไม่ต้องระบุ dependency เอง compiler เห็นว่า `double` อ่าน `count` และสร้าง `double` ใหม่พอดีตอน `count` เปลี่ยน ค่า derived เป็น read-only โดย default — ปกติคุณไม่ assign ให้มันตรง ๆ มันคือฟังก์ชันของ input ของมัน (มีข้อยกเว้นตั้งใจอยู่หนึ่งอย่าง — ดู "Writable deriveds" ด้านล่าง)
 
-## logic ซับซ้อน: $derived.by
+## Logic ที่ซับซ้อน: $derived.by
 
-`$derived(expr)` รับ expression เดียว เมื่อการคำนวณต้องใช้หลาย statement — loop, ตัวแปรชั่วคราว, branch — ให้ใช้ **`$derived.by`** พร้อม function ที่ return ค่า
+`$derived(expr)` รับ expression เดียว เมื่อการคำนวณต้องการหลาย statement — loop, ตัวแปรชั่วคราว, branch — ให้ใช้ **`$derived.by`** พร้อมฟังก์ชันที่ return ค่า
 
 ```svelte
 <script>
@@ -44,19 +45,221 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <p>sum {stats.sum}, avg {stats.avg}</p>
 ```
 
-`$derived(x)` ก็แค่ shorthand ของ `$derived.by(() => x)` dependency ยัง track อัตโนมัติ — อะไรก็ตามที่ function อ่านจะกลายเป็น dependency
+`$derived(x)` เป็นแค่ shorthand ของ `$derived.by(() => x)` dependency ยัง track อัตโนมัติเหมือนเดิม — อะไรก็ตามที่ฟังก์ชันอ่านจะกลายเป็น dependency
 
-<Mermaid title="derived value recompute จาก dependency ที่ track" code={derivedDiagram} />
+<Mermaid title="ค่า derived คำนวณใหม่จาก dependency ที่ track ไว้" code={derivedDiagram} />
 
 export const derivedDiagram = `flowchart LR
   a["$state count"] --> d["$derived double = count * 2"]
   b["$state numbers"] --> e["$derived.by stats"]
-  d --> ui["DOM update เมื่อ input เปลี่ยน"]
+  d --> ui["DOM updates when inputs change"]
   e --> ui`;
 
-## Derive อย่า sync ด้วย effect
+## Push-pull: พิสูจน์ lazy evaluation
 
-ความผิดพลาดแบบ React-brain ที่พบบ่อยคือคำนวณค่าใน effect แล้วเขียนลง state:
+`$derived` มักถูกอธิบายว่า "คำนวณใหม่อัตโนมัติ" ซึ่งฟังดูเหมือนมันรันทันทีที่ dependency เปลี่ยน แต่ไม่ใช่ reactivity ของ Svelte เป็นแบบ **push-pull**: dependency ที่เปลี่ยน**ผลัก (push)** สัญญาณ "คุณ dirty แล้วนะ" ไปให้ derived แต่ฟังก์ชันของ derived จะรันจริงก็ต่อเมื่อมีคน**ดึง (pull)** มันด้วยการ*อ่าน*ในครั้งถัดไปเท่านั้น ถ้าไม่มีใครอ่านมันเลย มันจะไม่รันอีกเลย ไม่ว่า dependency จะเปลี่ยนกี่ครั้งก็ตาม
+
+```ts
+// src/lib/derived-laziness.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$derived is push-pull: dependency changes mark it dirty, but it only re-evaluates on next READ', () => {
+  let evaluations = 0;
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let double = $derived.by(() => {
+      evaluations++;
+      return count * 2;
+    });
+
+    flushSync();
+    expect(evaluations).toBe(0); // never read yet — nothing has evaluated it
+
+    void double; // read #1
+    expect(evaluations).toBe(1);
+    void double; // read #2, no dependency changed — cached, no re-evaluation
+    expect(evaluations).toBe(1);
+
+    // Change the dependency THREE times without reading `double` in between.
+    count = 1;
+    count = 2;
+    count = 3;
+    flushSync();
+    expect(evaluations).toBe(1); // still 1 — "push" only marked it dirty, didn't recompute
+
+    void double; // one read now triggers exactly one re-evaluation, for the LATEST value
+    expect(evaluations).toBe(2);
+    expect(double).toBe(6); // 3 * 2, not 2 or 4 — it skipped the intermediate values entirely
+  });
+  destroy();
+});
+```
+
+```text
+✓ $derived is push-pull: dependency changes mark it dirty, but it only re-evaluates on next READ
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+ผลที่ตามมาในทางปฏิบัติ: `$derived` ที่ไม่เคยถูกอ่าน (dead code หรือค่าที่ใช้แค่หลัง condition ที่ไม่เคยเป็นจริง) **ไม่มีต้นทุน**อะไรเลยตอน runtime นอกจากตอนประกาศ — พิสูจน์แล้วด้วยการเปลี่ยน dependency ห้าครั้งแล้วสังเกตว่า evaluation เป็นศูนย์:
+
+```text
+✓ an unread $derived never evaluates at all, even across many dependency changes
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+นี่ก็เป็นเหตุผลที่ `$derived` ต้องปราศจาก side effect: คุณพึ่งพาไม่ได้ว่ามันจะรันกี่ครั้ง หรือรันตอนไหน — พึ่งพาได้แค่ว่า*ค่า*ของมันจะถูกต้องในครั้งถัดไปที่มีคนอ่าน
+
+## Writable derived (ตั้งแต่ Svelte 5.25)
+
+ก่อน Svelte 5.25 deriveds เป็น read-only เข้มงวด ตั้งแต่ 5.25 คุณ **reassign** ค่า `$derived` ได้ — ค่าที่ override จะคงอยู่จนกว่า dependency ตัวจริงจะเปลี่ยนแล้วบังคับให้คำนวณใหม่ ตอนนั้นมันจะกลับไปเป็น derived ตามปกติ use case หลักคือ **optimistic UI**: โชว์ค่าใหม่ทันที แล้วค่อยกระทบยอดกับ server
+
+```svelte
+<script>
+  let { post, like } = $props();
+
+  let likes = $derived(post.likes);
+
+  async function onclick() {
+    likes += 1;           // optimistic: show it immediately
+    try {
+      await like();        // tell the server
+    } catch {
+      likes -= 1;           // failed — roll back
+    }
+  }
+</script>
+
+<button {onclick}>🧡 {likes}</button>
+```
+
+พิสูจน์แล้ว — override เห็นผลทันที และ dependency ตัวจริงที่เปลี่ยนจะล้างมันทิ้ง:
+
+```ts
+// src/lib/derived-writable.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('a $derived value can be reassigned (writable derived, since Svelte 5.25) for optimistic UI', () => {
+  const destroy = $effect.root(() => {
+    let serverLikes = $state(10);
+    let likes = $derived(serverLikes);
+
+    expect(likes).toBe(10);
+
+    // Optimistic bump: reassign the derived value directly, ahead of the server.
+    likes += 1;
+    expect(likes).toBe(11); // the override is visible immediately
+
+    // The override holds ONLY until a real dependency change forces a recompute.
+    serverLikes = 20; // server eventually reports the real count
+    flushSync();
+    expect(likes).toBe(20); // the manual override is gone — back to deriving from source
+  });
+  destroy();
+});
+```
+
+```text
+✓ a $derived value can be reassigned (writable derived, since Svelte 5.25) for optimistic UI
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`const $derived` reassign ไม่ได้ — เป็น compile error จริง ไม่ใช่แค่ lint warning:
+
+```ts
+test('a $derived declared with `const` cannot be reassigned (compile error)', async () => {
+  const { compile } = await import('svelte/compiler');
+  const source = `
+<script>
+  let count = $state(0);
+  const double = $derived(count * 2);
+  function bump() { double += 1; }
+</script>
+<button onclick={bump}>{double}</button>
+`;
+  expect(() => compile(source, { generate: 'client' })).toThrowError();
+});
+```
+
+```text
+✓ a $derived declared with `const` cannot be reassigned (compile error)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## Derived ใน class
+
+เหมือน `$state`, `$derived` ใช้เป็น class field ได้ คำนวณจาก field อื่นบน instance เดียวกัน:
+
+```svelte
+<script>
+  class Cart {
+    items = $state([]);
+    total = $derived(this.items.reduce((sum, i) => sum + i.price * i.qty, 0));
+
+    add(price, qty) {
+      this.items.push({ price, qty });
+    }
+  }
+
+  const cart = new Cart();
+</script>
+
+<p>Total: {cart.total}</p>
+```
+
+พิสูจน์แล้ว คำนวณใหม่ถูกต้องตอนเพิ่ม item:
+
+```ts
+// src/lib/derived-in-class.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+class Cart {
+  items = $state<{ price: number; qty: number }[]>([]);
+  total = $derived(this.items.reduce((sum, i) => sum + i.price * i.qty, 0));
+
+  add(price: number, qty: number) {
+    this.items.push({ price, qty });
+  }
+}
+
+test('$derived works as a class field, recomputing from other reactive fields on the same instance', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    const cart = new Cart();
+    $effect(() => {
+      log.push(cart.total);
+    });
+    flushSync();
+    cart.add(10, 2);
+    flushSync();
+    cart.add(5, 1);
+    flushSync();
+  });
+  destroy();
+  expect(log).toEqual([0, 20, 25]);
+});
+```
+
+```text
+✓ $derived works as a class field, recomputing from other reactive fields on the same instance
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## Derive อย่าไป sync ด้วย effect
+
+ความผิดพลาดที่พบบ่อยของคนที่มาจาก React คือคำนวณค่าใน effect แล้วเขียนลง state:
 
 ```svelte
 <script>
@@ -68,7 +271,7 @@ export const derivedDiagram = `flowchart LR
 </script>
 ```
 
-แบบนี้แย่กว่าในทุกทาง: มี state ตัวเกิน, มี update cycle เกิน, มีโอกาสที่ `double` จะ out of sync ชั่วขณะ และ data flow ตามยากขึ้น เครื่องมือที่ถูกคือ `$derived`:
+แบบนี้แย่กว่าทุกทาง: มี state variable เกิน, มี update cycle เกิน, มีโอกาสที่ `double` จะ out of sync ชั่วขณะ และ data flow ตามยากขึ้น บท [Effect Rune](/svelte/th/reactivity/effect-rune) พิสูจน์ส่วน "out of sync ชั่วขณะ" ด้วย test จริงที่รันได้ — เวอร์ชันที่ mirror ผ่าน effect ล้าหลังจริงหนึ่งจังหวะ เครื่องมือที่ถูกต้องคือ `$derived`:
 
 ```svelte
 <script>
@@ -77,10 +280,56 @@ export const derivedDiagram = `flowchart LR
 </script>
 ```
 
-กฎง่าย ๆ: **ถ้าค่าหนึ่งคำนวณได้จาก state อื่น ให้ derive ค่านั้นออกมา — อย่าเก็บแล้ว sync** derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า เก็บ `$effect` ไว้ใช้กับ side effect จริง ๆ (บทหน้า) ไม่ใช่คำนวณค่า
+กฎง่าย ๆ: **ถ้าค่าคำนวณจาก state อื่นได้ ให้ derive มัน — อย่าเก็บแล้ว sync** ใช้ `$effect` เฉพาะ side effect จริง ๆ (บทถัดไป) ไม่ใช่สำหรับคำนวณค่า
 
-<Callout title="สรุปบรรทัดเดียว">
-`$derived(expression)` (หรือ **`$derived.by(() => { … })`** สำหรับ logic หลาย statement) ประกาศ **ค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น** recompute อัตโนมัติเมื่อ dependency ที่ track เปลี่ยน — ไม่ต้อง list dependency เอง เลือก derive ค่าดีกว่าเก็บใน `$state` แล้ว sync ด้วย `$effect`: derived state คือ source of truth เดียว สอดคล้องเสมอ และง่ายกว่า
+## Mental Model
+
+มอง `$derived` เป็น **สูตรที่ถูก cache** ไม่ใช่ subscription การประกาศมันไม่ได้รันอะไร dependency ที่เปลี่ยนก็ไม่ได้รันอะไรเช่นกัน — มันแค่พลิก flag ภายในว่า "stale" สูตรจะรันแค่ครั้งเดียว แบบ lazy ตอนที่มีคนถามหาค่าครั้งถัดไป แล้วคำตอบจะถูก cache ไว้จนกว่า flag จะพลิกอีกครั้ง นี่คือเหตุผลที่ derived ที่ไม่เคยถูกอ่านฟรี, ทำไมมันต้องบริสุทธิ์ (พึ่งพา*เมื่อไร*หรือ*กี่ครั้ง*ที่มันรันไม่ได้) และทำไม "การ override" มัน (writable derived) จริง ๆ แล้วก็แค่แทนที่คำตอบที่ cache ไว้จนกว่าการคำนวณใหม่ตัวจริงครั้งถัดไปจะล้างมันทิ้ง
+
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ได้อะไร | เสียอะไร |
+| --- | --- | --- |
+| `$derived` แทน `$state` + `$effect` | Source of truth เดียว สม่ำเสมอเสมอ ไม่มี render cycle เกิน | ไม่มีข้อเสียเมื่อค่าคือฟังก์ชันบริสุทธิ์ของ reactive state อื่น |
+| `$derived.by` แทน `$derived` | รองรับ logic หลาย statement (loop, branch) | พิธีการมากกว่า expression เดียวนิดหน่อย |
+| Writable derived (optimistic override) | Feedback ทันทีก่อน round-trip ไป server | คงอยู่แค่จนกว่า dependency ตัวจริงจะเปลี่ยน — อย่าพึ่งมันเป็น storage ถาวร |
+| `$derived` ที่มี side effect | — | ไม่มีข้อดี — side effect ใน `$derived` ไม่น่าเชื่อถือโดยธรรมชาติ: laziness แปลว่าคุณทำนายไม่ได้ว่ามันจะ fire กี่ครั้งหรือเมื่อไร |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`$derived` คำนวณใหม่ทันทีที่ dependency เปลี่ยน"** ไม่จริง — พิสูจน์แล้วข้างบน dependency ที่เปลี่ยนแค่ mark ว่า dirty การคำนวณจริงเกิดแบบ lazy ตอนอ่านครั้งถัดไป
+- **"`$derived` ที่ไม่เคยถูกอ่านยังมีต้นทุนเพราะ dependency ของมันเปลี่ยน"** พิสูจน์แล้วว่าไม่จริง: evaluation เป็นศูนย์ตลอดการเปลี่ยน dependency ห้าครั้งเมื่อไม่มีใครอ่านค่าเลย
+- **"ใส่ `console.log` หรือเรียก API ใน `$derived` ก็โอเค เหมือน effect นั่นแหละ"** ไม่เหมือนกัน — derived รันได้ตั้งแต่ศูนย์ครั้งไปจนถึงคำนวณใหม่ตอนที่คุณควบคุมไม่ได้ ขึ้นอยู่กับจังหวะการอ่านล้วน ๆ side effect ต้องอยู่ใน `$effect`
+- **คุณอาจเห็น `state_referenced_locally` จาก compiler** ("This reference only captures the initial value...") ตอนอ่านตัวแปร `$state`/`$derived` ตรง ๆ ในโค้ดสไตล์ test หลังจาก reassign มันใน scope เดียวกัน มันเป็น warning ที่มีประโยชน์จริงสำหรับ closure ที่เก็บไว้ใช้ทีหลัง (อย่าง `setContext`) แต่การอ่าน-แล้ว-assert แบบ synchronous ใน tick เดียวกัน — แบบใน test ในหน้านี้ — ยังคงเห็นค่าที่ live และถูกต้อง
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อเจอ `$derived` ให้เช็คสิ่งเหล่านี้ก่อนเชื่อมัน:
+
+- expression ของ derived **mutate state** หรือเรียกอะไรที่มี side effect หรือเปล่า (เรียก API, `console.log` ที่ใช้เกินกว่า debug, push เข้า array ที่ประกาศนอกมัน)? Svelte ห้าม mutate state ใน `$derived` แต่ side effect ที่ไม่ใช่ state จะ compile ผ่านแล้วพังทีหลัง
+- ค่าถูกคำนวณใน `$effect` แล้วเขียนลง `$state` แยกต่างหาก ทั้งที่ทำเป็น `$derived` ตรง ๆ จาก input ของมันได้เลย?
+- ค่า `$derived` ถูก reassign ที่ไหนสักที่โดยคาดว่า override จะ**อยู่ถาวร** แทนที่จะเข้าใจว่ามันอยู่แค่จนกว่าจะมีการคำนวณใหม่ตัวจริงครั้งถัดไป?
+- `$derived.by` ถูกใช้แค่ห่อ expression เดียว (ไม่ได้ประโยชน์อะไรเหนือ `$derived` ธรรมดา) หรือ `$derived` ธรรมดาถูกใช้ผิดกับ logic ที่ต้องการหลาย statement จริง ๆ?
+- class ผสม field `$derived` แบบ reactive กับ getter คำนวณธรรมดาที่ไม่ reactive แบบไม่สม่ำเสมอ?
+
+<SpotTheBug code={`function useAnalytics(events) {
+  let count = $state(0);
+
+  // "Track every time the filtered list changes" — logs a side effect
+  // inside the derived computation itself.
+  let filtered = $derived.by(() => {
+    const result = events.filter((e) => e.type === 'click');
+    trackAnalytics('filtered-recomputed', result.length); // side effect!
+    return result;
+  });
+
+  return { get filtered() { return filtered; } };
+}`}>
+`trackAnalytics(...)` รันอยู่ภายใน callback ของ `$derived.by` ซึ่งผู้เขียนสมมติว่ามัน fire พอดีหนึ่งครั้งต่อการเปลี่ยนของ `events` — แต่ `$derived` เป็น push-pull และ lazy: มันคำนวณใหม่ก็ต่อเมื่อมีคน**อ่าน** `filtered` จริง ๆ ในครั้งถัดไป และไม่คำนวณเลยถ้าไม่มีใครอ่าน พิสูจน์ในโปรบแล้ว: การเปลี่ยน dependency ห้าครั้งโดยไม่มีการอ่านคั่นกลางทำให้ derived function evaluate **ศูนย์**ครั้ง และการอ่านครั้งเดียวถัดมาทำให้ evaluate แค่**หนึ่ง**ครั้งซึ่งสะท้อนแค่ state ล่าสุด — การเปลี่ยนแปลงระหว่างกลางถูกข้ามไปเงียบ ๆ ดังนั้น `trackAnalytics` ตรงนี้ fire จำนวนครั้งที่คาดเดาไม่ได้ — อาจไม่ fire เลย หรือ fire แค่ครั้งเดียวสำหรับการเปลี่ยนหลายครั้งที่ถูกรวมกัน — ใช้ไม่ได้กับอะไรก็ตามที่ต้องนับ state transition จริง ทางแก้คือย้ายการเรียก tracking ไปไว้ใน `$effect` ที่อ่าน `filtered` เพราะ `$effect` คือ rune ที่รับประกัน "รันเมื่อสิ่งนี้เปลี่ยน" ไม่ใช่ `$derived`
+</SpotTheBug>
+
+<Callout title="สรุปหนึ่งบรรทัด">
+`$derived(expression)` (หรือ **`$derived.by(() => { … })`** สำหรับ logic หลาย statement) ประกาศค่า **push-pull ที่ถูก cache**: dependency ที่เปลี่ยนแค่ mark ว่า dirty และการคำนวณจริงเกิดแบบ lazy ตอนอ่านครั้งถัดไป — พิสูจน์ด้วยการนับ evaluation ตั้งแต่ **Svelte 5.25** deriveds เป็น **writable**: การ reassign จะ override ค่าที่ cache ไว้จนกว่า dependency ตัวจริงครั้งถัดไปจะคำนวณใหม่ (มีประโยชน์กับ optimistic UI) `$derived` ยังใช้เป็น **class field** ได้ด้วย เลือก derive ค่าแทนการเก็บใน `$state` แล้ว sync ด้วย `$effect`: derived state คือ source of truth เดียว สม่ำเสมอเสมอ และ — เพราะความ lazy ของมัน — ต้องปราศจาก side effect
 </Callout>
 
 export const quizDerived = [
@@ -88,41 +337,67 @@ export const quizDerived = [
     q: '`$derived` ทำอะไร?',
     options: [
       'สร้าง writable state',
-      'ประกาศค่าแบบ cache read-only ที่คำนวณจากค่า reactive อื่น recompute เมื่อค่าต้นทางเปลี่ยน',
-      'ทำ side effect',
-      'fetch data',
+      'ประกาศค่าที่ read-only โดย default ถูก cache คำนวณจากค่า reactive อื่น และคำนวณใหม่เมื่อค่าเหล่านั้นเปลี่ยน',
+      'รัน side effect',
+      'ดึงข้อมูล',
     ],
     answer: 1,
+    explain: '$derived ประกาศค่าที่ Svelte คำนวณใหม่จาก dependency ที่ track ไว้ — ถูก cache และ (ตั้งแต่ 5.25) reassign เป็น override ชั่วคราวได้ แต่ไม่ใช่ที่สำหรับ side effect',
   },
   {
-    q: 'เมื่อไรใช้ `$derived.by` แทน `$derived`?',
+    q: 'ใช้ `$derived.by` แทน `$derived` เมื่อไร?',
     options: [
-      'ไม่มีวัน — เหมือนกัน',
-      'เมื่อการคำนวณต้องใช้หลาย statement (loop, ตัวแปรชั่วคราว, branch) แทนที่จะเป็น expression เดียว',
-      'เฉพาะกับตัวเลข',
-      'เพื่อทำให้ writable',
+      'ไม่มีทางเลย — ทั้งสองเหมือนกัน',
+      'เมื่อการคำนวณต้องการหลาย statement (loop, ตัวแปรชั่วคราว, branch) แทนที่จะเป็น expression เดียว',
+      'สำหรับตัวเลขเท่านั้น',
+      'เพื่อให้มัน writable',
     ],
     answer: 1,
+    explain: '$derived(x) เป็น shorthand ของ $derived.by(() => x); ใช้ $derived.by ตรง ๆ เมื่อการคำนวณต้องการมากกว่า expression เดียว',
   },
   {
-    q: 'Svelte รู้ได้ยังไงว่าค่า `$derived` ขึ้นกับ `count`?',
+    q: '```ts\nlet evaluations = 0;\nlet count = $state(0);\nlet double = $derived.by(() => { evaluations++; return count * 2; });\ncount = 1;\ncount = 2;\ncount = 3;\nflushSync();\n// (nothing has read `double` yet)\n```\n`evaluations` ตอนนี้เป็นเท่าไร?',
     options: [
-      'คุณส่ง dependency array',
-      'compiler track ว่าการคำนวณ derived อ่าน `count`',
-      'คุณเรียก subscribe method',
-      'recompute ทุก render',
+      '3 ครั้งตามการเปลี่ยนแต่ละครั้ง',
+      '1 มันคำนวณใหม่ทุกครั้งที่ flush',
+      '0 — dependency ที่เปลี่ยนแค่ mark dirty ยังไม่มีใครอ่านมันเลย จึงยังไม่เคยรันจริง',
+      'มันจะ throw error',
     ],
-    answer: 1,
+    answer: 2,
+    explain: 'พิสูจน์ในโปรบแล้ว: evaluations ยังเป็น 0 หลัง dependency เปลี่ยนสามครั้งโดยไม่มีการอ่าน — "push" (mark dirty) กับ "pull" (คำนวณจริงตอนอ่าน) เป็นคนละขั้นตอนกัน',
   },
   {
-    q: 'ทำไมเลือก `$derived` แทน `$effect` ที่เขียน derived state?',
+    q: '```svelte\n<script>\n  let serverLikes = $state(10);\n  let likes = $derived(serverLikes);\n  likes += 1; // reassign the derived value\n</script>\n```\nบน Svelte 5.25+ เกิดอะไรขึ้นตอน `likes += 1` รัน?',
     options: [
-      'effect ถูก deprecated',
-      'การ derive คงไว้ซึ่ง source of truth เดียว sync เสมอ ไม่มี state หรือ update cycle เกิน',
-      'effect อ่าน state ไม่ได้',
-      'ไม่มีความต่าง',
+      'Compile error — deriveds เป็น read-only เสมอ',
+      'มันทำงาน: `likes` กลายเป็น 11 ทันที override ค่าที่ cache ไว้จนกว่า `serverLikes` จะเปลี่ยนอีกครั้ง',
+      'มันไม่ทำอะไรเลยเงียบ ๆ',
+      'มัน reassign `serverLikes` แทน',
     ],
     answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: การ reassign เห็นผลทันที (11) และคงอยู่จนกว่า dependency ตัวจริงจะเปลี่ยน (serverLikes = 20) ซึ่งบังคับคำนวณใหม่ที่ล้าง override ทิ้ง',
+  },
+  {
+    q: 'ทำไมถึงควรเลือก `$derived` แทน `$effect` ที่เขียน derived state?',
+    options: [
+      'Effect ถูก deprecate แล้ว',
+      'Deriving รักษา source of truth เดียว สม่ำเสมอเสมอ ไม่มี state หรือ update cycle เกิน — เวอร์ชันที่ mirror ผ่าน effect พิสูจน์แล้วว่าล้าหลังหนึ่ง flush',
+      'Effect อ่าน state ไม่ได้',
+      'ไม่มีความต่างกันเลย',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในบท Effect Rune แล้ว: อ่านค่าที่ mirror ผ่าน effect ทันทีหลัง state เปลี่ยน (ก่อน flushSync) เห็นค่า*เก่า* — ล้าหลังจริงที่พิสูจน์ได้ ซึ่ง $derived ไม่มีปัญหานี้',
+  },
+  {
+    q: 'การคำนวณใน `$derived.by` เรียกฟังก์ชัน tracking analytics เป็น side effect โดยคาดว่ามัน fire หนึ่งครั้งต่อการเปลี่ยนของ dependency มีอะไรผิดพลาด?',
+    options: [
+      'ไม่มีอะไรผิด — derived รันหนึ่งครั้งต่อการเปลี่ยนของ dependency เหมือน effect',
+      '$derived เป็น lazy (pull-based): มันอาจรันศูนย์ครั้งถ้าไม่เคยถูกอ่าน หรือรันครั้งเดียวสำหรับการเปลี่ยนหลายครั้งที่ถูกรวมกัน — นับจำนวนครั้งไม่ได้สำหรับอะไรที่ต้อง track ทุก transition',
+      '$derived เรียกฟังก์ชันไม่ได้เลย',
+      'การเรียก analytics ต้องอยู่ใน $effect.root เสมอ',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: $derived ที่ไม่เคยถูกอ่าน evaluate ศูนย์ครั้งแม้ dependency เปลี่ยนห้าครั้ง และการอ่านครั้งเดียวหลังจากนั้น trigger evaluation แค่หนึ่งครั้งสำหรับค่าล่าสุด ข้ามค่าระหว่างกลางไปหมด',
   },
 ];
 

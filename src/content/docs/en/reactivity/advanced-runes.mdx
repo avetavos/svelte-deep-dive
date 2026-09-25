@@ -1,6 +1,6 @@
 ---
 title: 'Advanced Runes'
-description: 'Debugging with $inspect, reading without subscribing via untrack, and sharing reactive state across components with .svelte.js modules.'
+description: 'Debugging with $inspect and $inspect.trace, $effect.tracking/$effect.root/$effect.pre, $host() for custom elements, class fields with runes, and sharing reactive state across components with .svelte.js modules.'
 sidebar:
   order: 6
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## $inspect: reactive debugging
 
@@ -44,6 +45,326 @@ Inside a `$derived` or `$effect`, every reactive value you read becomes a depend
 </script>
 ```
 
+The [Effect Rune](/svelte/en/reactivity/effect-rune) lesson proves this with a running test, including the "control" case that shows what happens *without* `untrack`.
+
+## $effect.tracking, $effect.root, and $effect.pre
+
+Three more `$effect`-family runes round out the toolkit for advanced/manual control:
+
+- **`$effect.tracking()`** returns `true` if the current code is running inside a *tracking context* (an effect, a derived, or the template) — and `false` otherwise. It's for building custom reactive abstractions that need to know whether they're being read reactively.
+- **`$effect.root()`** creates an effect scope that is **not** automatically cleaned up by its parent — you get a `destroy` function back and must call it yourself. This is the escape hatch for effects created outside the normal component lifecycle (a state library, a test, or an imperative integration).
+- **`$effect.pre()`** — covered in full, with cleanup-ordering proof, in the [Effect Rune](/svelte/en/reactivity/effect-rune) lesson. Briefly: it's the "before the DOM updates" sibling of `$effect`, and it's exactly what you reach for when a manually-rooted effect needs to read something ahead of a DOM write.
+
+```svelte
+<script>
+  console.log($effect.tracking());   // false — plain component setup, not tracked
+
+  $effect(() => {
+    console.log($effect.tracking()); // true — inside an effect
+  });
+</script>
+
+<p>in template: {$effect.tracking()}</p> <!-- true -->
+```
+
+Proven — `$effect.tracking()` really does flip between contexts:
+
+```ts
+// src/lib/effect-tracking.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$effect.tracking() is false outside a tracking context, true inside an effect', () => {
+  const results: boolean[] = [];
+  const destroy = $effect.root(() => {
+    results.push($effect.tracking()); // false: plain top-level call, no tracking context
+    $effect(() => {
+      results.push($effect.tracking()); // true: inside an effect
+    });
+    flushSync();
+  });
+  destroy();
+  expect(results).toEqual([false, true]);
+});
+```
+
+```text
+✓ $effect.tracking() is false outside a tracking context, true inside an effect
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+And `$effect.root()` really does require manual `destroy()` — nothing tears it down for you:
+
+```ts
+// src/lib/effect-root.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$effect.root() creates a scope with manual cleanup — not auto-destroyed', () => {
+  const log: string[] = [];
+  let count = $state(0);
+
+  const destroy = $effect.root(() => {
+    $effect(() => {
+      log.push(`run ${count}`);
+      return () => log.push(`cleanup ${count}`);
+    });
+  });
+
+  flushSync();
+  expect(log).toEqual(['run 0']);
+
+  count = 1;
+  flushSync();
+  expect(log).toEqual(['run 0', 'cleanup 0', 'run 1']);
+
+  // Nothing destroys this root automatically — only calling destroy() does.
+  destroy();
+  expect(log).toEqual(['run 0', 'cleanup 0', 'run 1', 'cleanup 1']);
+
+  // After destroy, further state changes do not re-run the effect.
+  count = 2;
+  flushSync();
+  expect(log).toEqual(['run 0', 'cleanup 0', 'run 1', 'cleanup 1']);
+});
+```
+
+```text
+✓ $effect.root() creates a scope with manual cleanup — not auto-destroyed
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## $inspect.trace: tracing WHY something re-ran
+
+`$inspect.trace(label?)` is a more targeted debugging tool than `$inspect`: placed as the **first statement** inside an effect or derived, it prints which specific reactive reads caused that particular run — useful when a function has many dependencies and you need to know exactly which one changed.
+
+```svelte
+<script>
+  let a = $state(1);
+  let b = $state(2);
+
+  $effect(() => {
+    $inspect.trace('sum effect');
+    console.log(a + b);
+  });
+</script>
+```
+
+Proven — it logs the label when the effect re-runs from a dependency change:
+
+```ts
+// src/lib/inspect-trace.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test, vi } from 'vitest';
+
+test('$inspect.trace() prints which dependency caused a derived/effect to re-run', () => {
+  const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const destroy = $effect.root(() => {
+    let a = $state(1);
+    let b = $state(2);
+
+    $effect(() => {
+      $inspect.trace('sum effect');
+      void (a + b); // read both — both become dependencies
+    });
+
+    flushSync();
+    spy.mockClear();
+
+    a = 10; // only `a` changed
+    flushSync();
+  });
+  destroy();
+
+  const logged = spy.mock.calls.flat().join(' ');
+  expect(logged).toContain('sum effect');
+  spy.mockRestore();
+});
+```
+
+```text
+✓ $inspect.trace() prints which dependency caused a derived/effect to re-run
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+Like `$inspect`, `$inspect.trace` is dev-only — it disappears from production builds.
+
+## $host(): the custom element's host, for real
+
+When a component is compiled to a **custom element** (a native web component) via `<svelte:options customElement="...">`, there is no parent component to receive callback props or dispatch normal Svelte events to — the component's only connection to the outside world is the DOM element hosting it. **`$host()`** returns that host element, so you can dispatch real `CustomEvent`s on it or call DOM APIs directly.
+
+```svelte
+<!-- Stepper.svelte -->
+<svelte:options customElement="my-stepper" />
+
+<script>
+  function dispatch(type) {
+    $host().dispatchEvent(new CustomEvent(type));
+  }
+</script>
+
+<button onclick={() => dispatch('decrement')}>decrement</button>
+<button onclick={() => dispatch('increment')}>increment</button>
+```
+
+A consumer of `<my-stepper>` — in *any* framework, or none — listens like any other DOM element:
+
+```js
+document.querySelector('my-stepper').addEventListener('increment', () => {
+  console.log('incremented!');
+});
+```
+
+Proven — compiling with `customElement: true` really does register a native custom element, and `$host()` compiles away entirely (there's no runtime function call left in the output):
+
+```ts
+// src/lib/host-element.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+const source = `
+<svelte:options customElement="my-counter" />
+<script>
+  let { start = 0 } = $props();
+  let count = $state(start);
+  function bump() {
+    count += 1;
+    $host().dispatchEvent(new CustomEvent('bump', { detail: count }));
+  }
+</script>
+<button onclick={bump}>{count}</button>
+`;
+
+test('compiling with <svelte:options customElement> + $host() registers a native custom element', () => {
+  const { js } = compile(source, { customElement: true, generate: 'client' });
+  expect(js.code).toContain('customElements.define');
+  expect(js.code).toContain("'my-counter'");
+  // $host() compiles away to `this` inside the custom element class — no
+  // runtime function named "$host" survives in the emitted JS.
+  expect(js.code).not.toMatch(/\$host\s*\(/);
+});
+```
+
+```text
+✓ compiling with <svelte:options customElement> + $host() registers a native custom element
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+And using `$host()` **outside** a custom-element component is a real, immediate compile error:
+
+```text
+$ node -e "compile(badSource, { generate: 'client' })"
+host_invalid_placement
+`$host()` can only be used inside custom element component instances
+https://svelte.dev/e/host_invalid_placement
+```
+
+## Class fields with runes (and the #private gotcha)
+
+Runes aren't limited to `let` declarations — you can put them directly on **class fields**, public or private. Svelte does *not* proxy class instances the way it proxies plain objects/arrays passed to `$state`; instead, a class field declared with `$state` or `$derived` is transformed by the compiler into an accessor backed by a real private field.
+
+```svelte
+<script>
+  class Counter {
+    count = $state(0);
+    #step = $state(1);      // private fields can be runes too
+
+    get double() {
+      return this.count * 2;
+    }
+    increment() {
+      this.count += this.#step;
+    }
+    setStep(n) {
+      this.#step = n;
+    }
+  }
+
+  const counter = new Counter();
+</script>
+
+<button onclick={() => counter.increment()}>{counter.double}</button>
+```
+
+This works exactly like `$state`/`$derived` anywhere else — reading `counter.double` inside an effect or the template tracks it, and calling `counter.increment()` triggers updates:
+
+```ts
+// src/lib/class-fields.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+class Counter {
+  count = $state(0);
+  #step = $state(1);
+
+  get double() {
+    return this.count * 2;
+  }
+  increment() {
+    this.count += this.#step;
+  }
+  setStep(n: number) {
+    this.#step = n;
+  }
+}
+
+test('class fields declared with $state/$derived-style getters are reactive', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    const counter = new Counter();
+    $effect(() => {
+      log.push(counter.double);
+    });
+    flushSync();
+    counter.increment();
+    flushSync();
+    counter.setStep(5);
+    counter.increment();
+    flushSync();
+  });
+  destroy();
+  expect(log).toEqual([0, 2, 12]); // 0*2, 1*2, (1+5)*2
+});
+```
+
+```text
+✓ class fields declared with $state/$derived-style getters are reactive
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+**The gotcha:** because the compiler transforms a `$state` class field into a `get`/`set` accessor pair backed by a private field, the property is **not enumerable** — it won't show up in `Object.keys`, a `for...in` loop, or `JSON.stringify`. Code that expects a class instance to behave like a plain data object (serialize it, iterate its keys) will be surprised:
+
+```ts
+test('gotcha: a public $state class field is a non-enumerable accessor, not a plain property', () => {
+  const counter = new Counter();
+  expect(Object.keys(counter)).not.toContain('count');
+  expect(JSON.stringify(counter)).toBe('{}'); // nothing serializes
+  // It still reads/writes normally from the outside:
+  expect(counter.count).toBe(0);
+  counter.count = 3;
+  expect(counter.count).toBe(3);
+});
+```
+
+```text
+✓ gotcha: a public $state class field is a non-enumerable accessor, not a plain property
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+If you need a plain, serializable snapshot of a reactive class instance (or any `$state` value), reach for **`$state.snapshot(x)`** — covered in full in the [$state Rune](/svelte/en/reactivity/state-rune) lesson.
+
 ## Reactive state beyond the component
 
 Runes are not limited to `.svelte` files. In a **`.svelte.js`** or **`.svelte.ts`** module, you can use `$state` and `$derived` to hold reactive state that any component can import — the foundation for app-wide shared state without stores.
@@ -76,52 +397,125 @@ export const sharedDiagram = `flowchart LR
   a --> sync["both stay in sync"]
   b --> sync`;
 
-The key detail: **export access through a getter (or an object/class), not the bare reassigned value.** A primitive exported directly would be copied at import time and lose reactivity; a getter reads the live reactive source each time. This pattern — a factory or class in a `.svelte.js` module — is the modern alternative to stores, covered fully in the State & Stores module. Briefly, `$host` is a related advanced rune used only when compiling a component to a custom element, to access the host element.
+The key detail: **export access through a getter (or an object/class), not the bare reassigned value.** A primitive exported directly would be copied at import time and lose reactivity; a getter reads the live reactive source each time. If that module-level state is exported directly (not wrapped in a factory function like `createCounter` above) — a single object shared by every importer for the lifetime of the process — read the **server-side rendering warning** in the [$state Rune](/svelte/en/reactivity/state-rune) lesson before doing that in an app that runs on a server.
+
+## Mental Model
+
+Everything in this lesson is a **manual control** for situations the ordinary `$state`/`$derived`/`$effect` trio doesn't cover on its own: `$effect.root`/`$effect.tracking` for building abstractions outside the normal component lifecycle, `$inspect`/`$inspect.trace` for observing the dependency graph without changing it, `$host()` for the one case where a component has no parent at all (a custom element), and class fields for when your reactive state naturally has methods and encapsulation. None of these change how reactivity *works* — they just give you more places to plug into it.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| `$effect.root()` for manual scopes | Full control over lifecycle outside components | You own cleanup — forgetting `destroy()` leaks effects forever |
+| Class fields with runes | Encapsulation, methods, familiar OOP shape | Public `$state` fields are non-enumerable — breaks naive serialization/iteration |
+| `.svelte.js` module state | Zero-boilerplate shared state, no store API | A bare exported reactive value is one instance for the whole process — dangerous under SSR |
+| `$host()` for custom elements | Framework-agnostic event contract (native `CustomEvent`) | Only valid inside a `customElement` component — compile error everywhere else |
+
+## Common Misconceptions
+
+- **"Wrapping `new Foo()` in `$state(...)` makes the whole instance deeply reactive."** It does not — class instances are never proxied. Only fields *declared inside the class* with `$state`/`$derived` are reactive.
+- **"A class's reactive fields will show up in `Object.keys` or `JSON.stringify` like a plain object's would."** They don't — proven above. The compiler backs them with private fields and non-enumerable accessors.
+- **"`$effect.root()` cleans itself up when the component unmounts, like a normal `$effect` would."** It explicitly does not — that's the whole point of the rune. You must call the returned `destroy()` yourself.
+- **"`$host()` works in any component, you just have to call it inside a handler."** It's a compile error (`host_invalid_placement`) anywhere outside a component compiled with `<svelte:options customElement>` — proven above.
+
+## Reading AI-generated code
+
+When you see a class with runes, or module-level shared state, check for these:
+
+- Does a factory (`createCounter()`, `createStore()`) expose reactive fields through **getters**, or does it export a bare reassignable primitive that will lose reactivity on import?
+- Is module-scope `$state` ever **mutated during server-side rendering**? If this app runs on a server, that state is shared across every request, not private per-user.
+- Does code assume a class instance with `$state` fields will serialize with `JSON.stringify` or enumerate with `Object.keys`/spread — when the compiler makes those fields non-enumerable?
+- Is a value **destructured** out of a reactive class instance (`const { count } = counter`) and then used later, expecting it to stay live? Destructuring copies the current value — it is not a live binding.
+- Is `$host()` used somewhere other than a component compiled with `<svelte:options customElement>`?
+
+<SpotTheBug code={`class Counter {
+  count = $state(0);
+  increment() {
+    this.count += 1;
+  }
+}
+
+function Stats({ counter }) {
+  // Pull the current count out for "convenience"...
+  const { count } = counter;
+  $effect(() => {
+    console.log('count changed to', count);
+  });
+}`}>
+Destructuring `const { count } = counter` reads the class field's **current value once** and copies it into a plain local variable — it is not a live reference back to the reactive field. The `$effect` above only ever depends on that local `count` variable, which is never reassigned after the destructure, so the effect runs exactly once and never again, no matter how many times `counter.increment()` is called afterwards. Proven in the probe: reading `counter.double` directly inside the effect (no destructuring) produces `[0, 2, 12]` across three increments, while destructuring first and reading the copy produces only `[0]` — the effect never re-runs. The fix is to keep reading through the instance inside the tracked scope — `counter.count` (or a getter like `counter.double`) — never destructure a reactive class field before using it inside an effect or derived.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-**`$inspect(...)`** is dev-only reactive logging that re-fires on every change (chain `.with()` for custom handling). **`untrack(() => x)`** reads a reactive value inside an effect/derived *without* making it a dependency. And runes work in **`.svelte.js` / `.svelte.ts` modules**, so you can hold shared reactive state outside components — exposing it through a **getter** (or object/class) so reactivity survives the import boundary. That module pattern is the modern, store-free way to share state.
+Beyond the core three runes: **`$effect.tracking()`** reports whether you're inside a tracking context, **`$effect.root()`** creates a manually-cleaned-up effect scope, and **`$inspect.trace()`** prints exactly which dependency caused a re-run (both dev-only). **`$host()`** gets you the host DOM element inside a component compiled with `<svelte:options customElement>` — a compile error anywhere else. Runes also work as **class fields** (public or private) — reactive, but compiled into non-enumerable accessors, so a class instance won't serialize or enumerate like a plain object. And runes work in **`.svelte.js` / `.svelte.ts` modules**, exposed through a **getter** so reactivity survives the import boundary — the store-free way to share state (mind the SSR risk if that state is exported bare).
 </Callout>
 
 export const quizAdvanced = [
   {
-    q: 'What makes `$inspect(count)` different from `console.log(count)`?',
+    q: 'What does `$effect.tracking()` return when called directly inside `<script>`, at component setup, vs. inside an `$effect`?',
     options: [
-      'Nothing',
-      '`$inspect` re-logs on every change of the tracked value and is dev-only (no-op in production)',
-      'It logs to a file',
-      'It pauses execution',
+      'true, then true',
+      'false, then true — component setup is not a tracking context, but an effect body is',
+      'false, then false',
+      'It always throws outside a template',
     ],
     answer: 1,
+    explain: 'Proven in the probe: $effect.tracking() returned [false, true] — false for the plain top-level call, true inside the $effect body.',
   },
   {
-    q: 'What does `untrack(() => config.verbose)` do inside an effect?',
+    q: 'What is different about `$effect.root()` compared to a normal `$effect` created during component setup?',
     options: [
-      'Deletes config.verbose',
-      'Reads the value without creating a dependency, so the effect will not re-run when it changes',
-      'Makes it reactive',
-      'Runs it on the server',
+      'Nothing — they behave identically',
+      'It creates a scope that is NOT automatically cleaned up; you must call the returned destroy() function yourself',
+      'It runs only once, ever',
+      'It cannot contain nested $effect calls',
     ],
     answer: 1,
+    explain: 'Proven in the probe: after calling destroy(), further state changes no longer re-ran the effect — but nothing tore it down automatically before that call.',
   },
   {
-    q: 'Where can you use runes outside of `.svelte` components?',
+    q: '```svelte\n<svelte:options customElement="my-counter" />\n<script>\n  function bump() {\n    $host().dispatchEvent(new CustomEvent(\'bump\'));\n  }\n</script>\n```\nWhat does `$host()` return here?',
     options: [
-      'Nowhere',
-      'In `.svelte.js` / `.svelte.ts` modules',
-      'Only in the config file',
-      'Only in TypeScript files',
+      'The parent Svelte component',
+      'The native custom element (DOM element) hosting this component — there is no parent to call, only the DOM',
+      'A store',
+      'The compiler instance',
     ],
     answer: 1,
+    explain: 'Proven by compiling with `customElement: true`: the emitted JS registers a native custom element via customElements.define, and $host() compiles down to `this` inside that class — no runtime function call survives.',
   },
   {
-    q: 'When sharing `$state` from a module, why expose it through a getter?',
+    q: 'Why does `JSON.stringify(new Counter())` return `{}` when `Counter` has a public field `count = $state(0)`?',
     options: [
-      'For shorter code',
-      'A bare exported primitive is copied at import and loses reactivity; a getter reads the live reactive source each time',
-      'Getters are required by JavaScript',
-      'To make it read-only',
+      '$state fields are always excluded from serialization on purpose by a special JSON rule',
+      'The compiler transforms the field into a get/set accessor backed by a private field, which is non-enumerable',
+      'JSON.stringify cannot handle any class instance',
+      'It is a bug that will be fixed',
     ],
     answer: 1,
+    explain: 'Proven in the probe: Object.keys(counter) does not contain "count" and JSON.stringify(counter) is "{}" — the rune-backed field is a non-enumerable accessor, not a plain own property.',
+  },
+  {
+    q: '```js\nclass Counter {\n  count = $state(0);\n}\nconst counter = new Counter();\nconst { count } = counter;\n$effect(() => {\n  console.log(count);\n});\ncounter.count++;\n```\nDoes the effect log again after `counter.count++`?',
+    options: [
+      'Yes, because count is reactive',
+      'No — destructuring copied the value at that moment; the effect depends on the local variable, not the live field',
+      'Yes, but only in production builds',
+      'It throws a compile error',
+    ],
+    answer: 1,
+    explain: 'Proven in the probe: reading through the instance directly inside the effect re-ran across increments ([0, 2, 12]), but destructuring first and reading the copy produced only [0] — the effect never re-ran.',
+  },
+  {
+    q: 'A `.svelte.js` module exports `export const settings = $state({...})` directly (not wrapped in a factory). Why is this risky in an app that renders on a server?',
+    options: [
+      'It is never risky — modules are always per-request',
+      'ES module instances are cached and shared for the whole process, so mutating it during SSR can leak data between different users\' requests',
+      'Only .ts files have this problem, not .js',
+      '$state cannot be used at module scope at all',
+    ],
+    answer: 1,
+    explain: 'Confirmed by the official docs: mutating shared module state during server-side rendering risks leaking data to the next request, because there is exactly one instance of that module-level state per server process, not per request.',
   },
 ];
 

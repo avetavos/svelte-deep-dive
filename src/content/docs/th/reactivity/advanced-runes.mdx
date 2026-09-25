@@ -1,6 +1,6 @@
 ---
 title: 'Advanced Runes'
-description: 'debug ด้วย $inspect, อ่านโดยไม่ subscribe ด้วย untrack และ share reactive state ข้าม component ด้วย .svelte.js module'
+description: 'debug ด้วย $inspect และ $inspect.trace, $effect.tracking/$effect.root/$effect.pre, $host() สำหรับ custom element, class field ที่เป็น rune และ share reactive state ข้าม component ด้วย .svelte.js module'
 sidebar:
   order: 6
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## $inspect: debug แบบ reactive
 
@@ -44,9 +45,329 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </script>
 ```
 
-## reactive state นอก component
+บท [Effect Rune](/svelte/th/reactivity/effect-rune) พิสูจน์เรื่องนี้ด้วย test จริงที่รันได้ รวมถึงเคส "control" ที่โชว์ว่าถ้า *ไม่* ใช้ `untrack` จะเกิดอะไรขึ้น
 
-runes ไม่ได้จำกัดแค่ไฟล์ `.svelte` ใน module แบบ **`.svelte.js`** หรือ **`.svelte.ts`** คุณใช้ `$state` และ `$derived` เพื่อเก็บ reactive state ที่ component ไหนก็ import ได้ — เป็นรากฐานของ shared state ทั้งแอปโดยไม่ต้องใช้ store
+## $effect.tracking, $effect.root และ $effect.pre
+
+rune ตระกูล `$effect` อีกสามตัวเติมเต็มชุดเครื่องมือสำหรับควบคุมแบบ manual/advanced:
+
+- **`$effect.tracking()`** คืนค่า `true` ถ้าโค้ดตอนนี้กำลังรันอยู่ใน *tracking context* (effect, derived หรือ template) — และ `false` ถ้าไม่ใช่ มีไว้สำหรับสร้าง reactive abstraction เองที่ต้องรู้ว่ากำลังถูกอ่านแบบ reactive อยู่หรือเปล่า
+- **`$effect.root()`** สร้าง effect scope ที่ **ไม่** ถูกเก็บกวาดอัตโนมัติโดย parent — คุณจะได้ฟังก์ชัน `destroy` กลับมาและต้องเรียกเองมันคือทางออกสำหรับ effect ที่สร้างนอก component lifecycle ปกติ (state library, test หรือการ integrate แบบ imperative)
+- **`$effect.pre()`** — อธิบายเต็มพร้อมพิสูจน์ลำดับ cleanup ในบท [Effect Rune](/svelte/th/reactivity/effect-rune) สั้น ๆ: มันคือฝาแฝดของ `$effect` ที่รัน "ก่อน DOM update" และเป็นสิ่งที่ต้องใช้พอดีเมื่อ effect ที่ root เองต้องอ่านอะไรบางอย่างก่อน DOM จะเขียน
+
+```svelte
+<script>
+  console.log($effect.tracking());   // false — plain component setup, not tracked
+
+  $effect(() => {
+    console.log($effect.tracking()); // true — inside an effect
+  });
+</script>
+
+<p>in template: {$effect.tracking()}</p> <!-- true -->
+```
+
+พิสูจน์แล้ว — `$effect.tracking()` สลับค่าระหว่าง context จริง:
+
+```ts
+// src/lib/effect-tracking.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$effect.tracking() is false outside a tracking context, true inside an effect', () => {
+  const results: boolean[] = [];
+  const destroy = $effect.root(() => {
+    results.push($effect.tracking()); // false: plain top-level call, no tracking context
+    $effect(() => {
+      results.push($effect.tracking()); // true: inside an effect
+    });
+    flushSync();
+  });
+  destroy();
+  expect(results).toEqual([false, true]);
+});
+```
+
+```text
+✓ $effect.tracking() is false outside a tracking context, true inside an effect
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+และ `$effect.root()` ต้องเรียก `destroy()` เองจริง ๆ — ไม่มีอะไรมาเก็บกวาดให้:
+
+```ts
+// src/lib/effect-root.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('$effect.root() creates a scope with manual cleanup — not auto-destroyed', () => {
+  const log: string[] = [];
+  let count = $state(0);
+
+  const destroy = $effect.root(() => {
+    $effect(() => {
+      log.push(`run ${count}`);
+      return () => log.push(`cleanup ${count}`);
+    });
+  });
+
+  flushSync();
+  expect(log).toEqual(['run 0']);
+
+  count = 1;
+  flushSync();
+  expect(log).toEqual(['run 0', 'cleanup 0', 'run 1']);
+
+  // Nothing destroys this root automatically — only calling destroy() does.
+  destroy();
+  expect(log).toEqual(['run 0', 'cleanup 0', 'run 1', 'cleanup 1']);
+
+  // After destroy, further state changes do not re-run the effect.
+  count = 2;
+  flushSync();
+  expect(log).toEqual(['run 0', 'cleanup 0', 'run 1', 'cleanup 1']);
+});
+```
+
+```text
+✓ $effect.root() creates a scope with manual cleanup — not auto-destroyed
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## $inspect.trace: สืบว่าทำไมถึงรันใหม่
+
+`$inspect.trace(label?)` เป็นเครื่องมือ debug ที่เจาะจงกว่า `$inspect`: วางเป็น **statement แรก** ในตัว effect หรือ derived มันจะ print ว่าการอ่าน reactive ตัวไหนที่ทำให้รอบนี้รันใหม่ — มีประโยชน์เมื่อฟังก์ชันมี dependency เยอะและคุณต้องรู้เป๊ะ ๆ ว่าตัวไหนเปลี่ยน
+
+```svelte
+<script>
+  let a = $state(1);
+  let b = $state(2);
+
+  $effect(() => {
+    $inspect.trace('sum effect');
+    console.log(a + b);
+  });
+</script>
+```
+
+พิสูจน์แล้ว — มัน log label ออกมาตอน effect รันใหม่จาก dependency ที่เปลี่ยน:
+
+```ts
+// src/lib/inspect-trace.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test, vi } from 'vitest';
+
+test('$inspect.trace() prints which dependency caused a derived/effect to re-run', () => {
+  const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const destroy = $effect.root(() => {
+    let a = $state(1);
+    let b = $state(2);
+
+    $effect(() => {
+      $inspect.trace('sum effect');
+      void (a + b); // read both — both become dependencies
+    });
+
+    flushSync();
+    spy.mockClear();
+
+    a = 10; // only `a` changed
+    flushSync();
+  });
+  destroy();
+
+  const logged = spy.mock.calls.flat().join(' ');
+  expect(logged).toContain('sum effect');
+  spy.mockRestore();
+});
+```
+
+```text
+✓ $inspect.trace() prints which dependency caused a derived/effect to re-run
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+เหมือน `$inspect`, `$inspect.trace` เป็น dev-only — หายไปจาก production build
+
+## $host(): host element ของ custom element ตัวจริง
+
+เมื่อ component ถูก compile เป็น **custom element** (native web component) ผ่าน `<svelte:options customElement="...">` จะไม่มี parent component คอยรับ callback prop หรือรับ Svelte event ปกติ — การเชื่อมต่อเดียวของ component กับโลกภายนอกคือ DOM element ที่ host มันอยู่ **`$host()`** คืนค่า host element ตัวนั้น ทำให้คุณ dispatch `CustomEvent` จริงหรือเรียก DOM API ได้ตรง ๆ
+
+```svelte
+<!-- Stepper.svelte -->
+<svelte:options customElement="my-stepper" />
+
+<script>
+  function dispatch(type) {
+    $host().dispatchEvent(new CustomEvent(type));
+  }
+</script>
+
+<button onclick={() => dispatch('decrement')}>decrement</button>
+<button onclick={() => dispatch('increment')}>increment</button>
+```
+
+ผู้ใช้ `<my-stepper>` — ใน framework ไหนก็ได้ หรือไม่ใช้ framework เลย — ฟัง event แบบเดียวกับ DOM element อื่น ๆ:
+
+```js
+document.querySelector('my-stepper').addEventListener('increment', () => {
+  console.log('incremented!');
+});
+```
+
+พิสูจน์แล้ว — compile ด้วย `customElement: true` จะ register custom element จริง และ `$host()` compile หายไปหมด (ไม่มี runtime function call เหลืออยู่ใน output):
+
+```ts
+// src/lib/host-element.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+const source = `
+<svelte:options customElement="my-counter" />
+<script>
+  let { start = 0 } = $props();
+  let count = $state(start);
+  function bump() {
+    count += 1;
+    $host().dispatchEvent(new CustomEvent('bump', { detail: count }));
+  }
+</script>
+<button onclick={bump}>{count}</button>
+`;
+
+test('compiling with <svelte:options customElement> + $host() registers a native custom element', () => {
+  const { js } = compile(source, { customElement: true, generate: 'client' });
+  expect(js.code).toContain('customElements.define');
+  expect(js.code).toContain("'my-counter'");
+  // $host() compiles away to `this` inside the custom element class — no
+  // runtime function named "$host" survives in the emitted JS.
+  expect(js.code).not.toMatch(/\$host\s*\(/);
+});
+```
+
+```text
+✓ compiling with <svelte:options customElement> + $host() registers a native custom element
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+และการใช้ `$host()` **นอก** component ที่เป็น custom element คือ compile error จริงทันที:
+
+```text
+$ node -e "compile(badSource, { generate: 'client' })"
+host_invalid_placement
+`$host()` can only be used inside custom element component instances
+https://svelte.dev/e/host_invalid_placement
+```
+
+## Class field ที่เป็น rune (และกับดัก #private)
+
+rune ไม่ได้ผูกอยู่กับการประกาศ `let` เท่านั้น — คุณวางมันตรง ๆ บน **class field** ได้เลย ทั้ง public และ private Svelte **ไม่** proxy class instance แบบที่ proxy plain object/array ที่ส่งเข้า `$state`; แทนที่จะเป็นแบบนั้น class field ที่ประกาศด้วย `$state` หรือ `$derived` ถูก compiler แปลงเป็น accessor ที่ backed ด้วย private field จริง
+
+```svelte
+<script>
+  class Counter {
+    count = $state(0);
+    #step = $state(1);      // private fields can be runes too
+
+    get double() {
+      return this.count * 2;
+    }
+    increment() {
+      this.count += this.#step;
+    }
+    setStep(n) {
+      this.#step = n;
+    }
+  }
+
+  const counter = new Counter();
+</script>
+
+<button onclick={() => counter.increment()}>{counter.double}</button>
+```
+
+มันทำงานเหมือน `$state`/`$derived` ที่อื่นทุกอย่าง — อ่าน `counter.double` ในเอฟเฟกต์หรือ template จะ track มัน และเรียก `counter.increment()` จะ trigger update:
+
+```ts
+// src/lib/class-fields.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+class Counter {
+  count = $state(0);
+  #step = $state(1);
+
+  get double() {
+    return this.count * 2;
+  }
+  increment() {
+    this.count += this.#step;
+  }
+  setStep(n: number) {
+    this.#step = n;
+  }
+}
+
+test('class fields declared with $state/$derived-style getters are reactive', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    const counter = new Counter();
+    $effect(() => {
+      log.push(counter.double);
+    });
+    flushSync();
+    counter.increment();
+    flushSync();
+    counter.setStep(5);
+    counter.increment();
+    flushSync();
+  });
+  destroy();
+  expect(log).toEqual([0, 2, 12]); // 0*2, 1*2, (1+5)*2
+});
+```
+
+```text
+✓ class fields declared with $state/$derived-style getters are reactive
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+**กับดัก:** เพราะ compiler แปลง class field ที่เป็น `$state` เป็น accessor แบบ get/set ที่ backed ด้วย private field, property นี้จึง **ไม่ enumerable** — ไม่โผล่ใน `Object.keys`, loop `for...in` หรือ `JSON.stringify` โค้ดที่คาดว่า class instance จะทำตัวเหมือน plain data object (serialize มัน, iterate key ของมัน) จะเจอเซอร์ไพรส์:
+
+```ts
+test('gotcha: a public $state class field is a non-enumerable accessor, not a plain property', () => {
+  const counter = new Counter();
+  expect(Object.keys(counter)).not.toContain('count');
+  expect(JSON.stringify(counter)).toBe('{}'); // nothing serializes
+  // It still reads/writes normally from the outside:
+  expect(counter.count).toBe(0);
+  counter.count = 3;
+  expect(counter.count).toBe(3);
+});
+```
+
+```text
+✓ gotcha: a public $state class field is a non-enumerable accessor, not a plain property
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+ถ้าต้องการ snapshot แบบ plain และ serialize ได้ของ reactive class instance (หรือค่า `$state` ใด ๆ) ให้ใช้ **`$state.snapshot(x)`** — อธิบายเต็มในบท [$state Rune](/svelte/th/reactivity/state-rune)
+
+## Reactive state ที่ไปไกลกว่า component
+
+rune ไม่ได้ผูกอยู่กับไฟล์ `.svelte` เท่านั้น ใน module **`.svelte.js`** หรือ **`.svelte.ts`** คุณใช้ `$state` และ `$derived` เก็บ reactive state ที่ component ไหนก็ import ได้ — รากฐานของ shared state ทั้งแอปโดยไม่ต้องใช้ store
 
 ```js
 // counter.svelte.js
@@ -68,60 +389,133 @@ export function createCounter() {
 <button onclick={counter.increment}>{counter.count}</button>
 ```
 
-<Mermaid title="shared reactive state อยู่ใน .svelte.js module" code={sharedDiagram} />
+<Mermaid title="Shared reactive state อยู่ใน .svelte.js module" code={sharedDiagram} />
 
 export const sharedDiagram = `flowchart LR
-  mod[".svelte.js module: $state + getter"] --> a["Component A import มัน"]
-  mod --> b["Component B import มัน"]
-  a --> sync["ทั้งคู่ sync กัน"]
+  mod[".svelte.js module: $state + getters"] --> a["Component A imports it"]
+  mod --> b["Component B imports it"]
+  a --> sync["both stay in sync"]
   b --> sync`;
 
-จุดสำคัญ: **expose การเข้าถึงผ่าน getter (หรือ object/class) ไม่ใช่ค่า primitive ที่ reassign ตรง ๆ** primitive ที่ export ตรง ๆ จะถูก copy ตอน import และเสีย reactivity; getter อ่าน reactive source ตัวจริงทุกครั้ง pattern นี้ — factory หรือ class ใน `.svelte.js` module — คือทางเลือกยุคใหม่แทน store ซึ่งครอบคลุมเต็มในโมดูล State & Stores สั้น ๆ `$host` เป็น advanced rune ที่เกี่ยวข้อง ใช้เฉพาะตอน compile component เป็น custom element เพื่อเข้าถึง host element
+จุดสำคัญ: **export ผ่าน getter (หรือ object/class) ไม่ใช่ค่าที่ reassign เปล่า ๆ** primitive ที่ export ตรง ๆ จะถูกก็อปปี้ตอน import และเสีย reactivity; getter อ่าน reactive source ตัวจริงทุกครั้ง ถ้า module-level state นั้น export ตรง ๆ (ไม่ห่อด้วย factory function แบบ `createCounter` ข้างบน) — object เดียวที่ทุกคน import ใช้ร่วมกันตลอดอายุของ process — อ่าน **คำเตือนเรื่อง server-side rendering** ในบท [$state Rune](/svelte/th/reactivity/state-rune) ก่อนทำแบบนั้นในแอปที่รันบน server
 
-<Callout title="สรุปบรรทัดเดียว">
-**`$inspect(...)`** คือ dev-only reactive logging ที่ fire ใหม่ทุกการเปลี่ยน (chain `.with()` เพื่อจัดการเอง) **`untrack(() => x)`** อ่านค่า reactive ภายใน effect/derived *โดยไม่* ทำให้เป็น dependency และ runes ทำงานใน **`.svelte.js` / `.svelte.ts` module** ดังนั้นคุณเก็บ shared reactive state นอก component ได้ — expose ผ่าน **getter** (หรือ object/class) เพื่อให้ reactivity รอดข้าม import boundary pattern module นั้นคือวิธี share state ยุคใหม่แบบไม่ต้องใช้ store
+## Mental Model
+
+ทุกอย่างในบทนี้คือ **manual control** สำหรับสถานการณ์ที่ trio `$state`/`$derived`/`$effect` ปกติเองยังไม่ครอบคลุม: `$effect.root`/`$effect.tracking` สำหรับสร้าง abstraction เองนอก component lifecycle ปกติ, `$inspect`/`$inspect.trace` สำหรับสังเกต dependency graph โดยไม่แก้มัน, `$host()` สำหรับเคสเดียวที่ component ไม่มี parent เลย (custom element), และ class field สำหรับตอนที่ reactive state ของคุณมี method และ encapsulation ตามธรรมชาติ ไม่มีตัวไหนเปลี่ยนวิธี*ทำงาน*ของ reactivity — มันแค่ให้จุดเสียบเพิ่มเข้าไปในระบบเดิม
+
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ได้อะไร | เสียอะไร |
+| --- | --- | --- |
+| `$effect.root()` สำหรับ scope แบบ manual | คุมชีวิตของ effect เต็มที่นอก component | คุณต้องดูแล cleanup เอง — ลืม `destroy()` แล้ว effect leak ตลอดไป |
+| Class field ที่เป็น rune | Encapsulation, method, รูปแบบ OOP ที่คุ้นเคย | Public `$state` field ไม่ enumerable — พัง serialization/iteration แบบ naive |
+| `.svelte.js` module state | Shared state แบบไม่ต้องมี boilerplate หรือ store API | Reactive value ที่ export ตรง ๆ คือ instance เดียวทั้ง process — อันตรายภายใต้ SSR |
+| `$host()` สำหรับ custom element | Event contract ที่ไม่ขึ้นกับ framework (native `CustomEvent`) | ใช้ได้เฉพาะใน component ที่เป็น `customElement` — ที่อื่น compile error |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ห่อ `new Foo()` ด้วย `$state(...)` จะทำให้ instance ทั้งก้อน reactive แบบ deep"** ไม่จริง — class instance ไม่เคยถูก proxy มีแค่ field ที่*ประกาศในตัว class*ด้วย `$state`/`$derived` เท่านั้นที่ reactive
+- **"reactive field ของ class จะโผล่ใน `Object.keys` หรือ `JSON.stringify` เหมือน plain object"** ไม่โผล่ — พิสูจน์แล้วข้างบน compiler backed มันด้วย private field และ accessor ที่ไม่ enumerable
+- **"`$effect.root()` เก็บกวาดตัวเองตอน component unmount เหมือน `$effect` ปกติ"** ไม่จริงเลย — นั่นคือประเด็นทั้งหมดของ rune ตัวนี้ คุณต้องเรียก `destroy()` ที่ได้กลับมาเอง
+- **"`$host()` ใช้ได้ใน component ไหนก็ได้ ขอแค่เรียกใน handler"** มันคือ compile error (`host_invalid_placement`) ทุกที่ที่ไม่ใช่ component ที่ compile ด้วย `<svelte:options customElement>` — พิสูจน์แล้วข้างบน
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อเจอ class ที่มี rune หรือ shared state ระดับ module ให้เช็คสิ่งเหล่านี้:
+
+- factory (`createCounter()`, `createStore()`) expose reactive field ผ่าน **getter** หรือ export primitive แบบ reassign เปล่า ๆ ที่จะเสีย reactivity ตอน import?
+- module-scope `$state` ถูก **mutate ระหว่าง server-side rendering** หรือเปล่า? ถ้าแอปนี้รันบน server state นั้นถูกแชร์ข้ามทุก request ไม่ได้ private ต่อ user
+- โค้ดคาดว่า class instance ที่มี `$state` field จะ serialize ด้วย `JSON.stringify` หรือ enumerate ด้วย `Object.keys`/spread ได้ — ทั้งที่ compiler ทำให้ field พวกนั้นไม่ enumerable?
+- ค่าถูก **destructure** ออกจาก reactive class instance (`const { count } = counter`) แล้วเอาไปใช้ทีหลัง โดยคาดว่ามันจะ live? destructure ก็อปปี้ค่า ณ ตอนนั้น ไม่ใช่ live binding
+- `$host()` ถูกใช้ที่อื่นนอกจาก component ที่ compile ด้วย `<svelte:options customElement>` หรือเปล่า?
+
+<SpotTheBug code={`class Counter {
+  count = $state(0);
+  increment() {
+    this.count += 1;
+  }
+}
+
+function Stats({ counter }) {
+  // Pull the current count out for "convenience"...
+  const { count } = counter;
+  $effect(() => {
+    console.log('count changed to', count);
+  });
+}`}>
+การ destructure `const { count } = counter` อ่าน **ค่าปัจจุบันครั้งเดียว** ของ class field แล้วก็อปปี้ลงตัวแปร local ธรรมดา — มันไม่ใช่ live reference กลับไปหา field ที่ reactive `$effect` ข้างบนจึง depend อยู่กับตัวแปร local `count` นั้นเท่านั้น ซึ่งไม่มีการ reassign อีกเลยหลังจาก destructure ดังนั้น effect รันแค่ครั้งเดียวแล้วไม่รันอีกเลย ไม่ว่าจะเรียก `counter.increment()` อีกกี่ครั้งหลังจากนั้น พิสูจน์ในโปรบแล้ว: อ่าน `counter.double` ตรง ๆ ในเอฟเฟกต์ (ไม่ destructure) ได้ผลลัพธ์ `[0, 2, 12]` ตลอดสาม increment ในขณะที่ destructure ก่อนแล้วอ่านค่าที่ก็อปปี้ได้แค่ `[0]` — effect ไม่รันซ้ำเลย ทางแก้คืออ่านผ่าน instance ต่อภายใน tracked scope เสมอ — `counter.count` (หรือ getter อย่าง `counter.double`) — อย่า destructure reactive class field ก่อนใช้ใน effect หรือ derived
+</SpotTheBug>
+
+<Callout title="สรุปหนึ่งบรรทัด">
+นอกเหนือจาก rune หลักสามตัว: **`$effect.tracking()`** บอกว่าตอนนี้อยู่ใน tracking context หรือเปล่า, **`$effect.root()`** สร้าง effect scope ที่ต้องเก็บกวาดเอง และ **`$inspect.trace()`** print ว่า dependency ตัวไหนทำให้รันใหม่ (ทั้งคู่ dev-only) **`$host()`** เอา host DOM element ในตัว component ที่ compile ด้วย `<svelte:options customElement>` — compile error ที่อื่น rune ยังใช้เป็น **class field** ได้ (public หรือ private) — reactive แต่ compile เป็น accessor ที่ไม่ enumerable ดังนั้น class instance จะไม่ serialize หรือ enumerate เหมือน plain object และ rune ทำงานใน **`.svelte.js` / `.svelte.ts` module** ได้ expose ผ่าน **getter** เพื่อให้ reactivity รอดข้าม import boundary — วิธี share state แบบไม่ต้องมี store (ระวังความเสี่ยง SSR ถ้า state นั้น export ตรง ๆ)
 </Callout>
 
 export const quizAdvanced = [
   {
-    q: 'อะไรทำให้ `$inspect(count)` ต่างจาก `console.log(count)`?',
+    q: '`$effect.tracking()` คืนค่าอะไรตอนเรียกตรง ๆ ใน `<script>` ระหว่าง component setup เทียบกับตอนอยู่ใน `$effect`?',
     options: [
-      'ไม่มีอะไรต่าง',
-      '`$inspect` log ใหม่ทุกการเปลี่ยนของค่าที่ track และเป็น dev-only (no-op ใน production)',
-      'log ลงไฟล์',
-      'หยุดการทำงาน',
+      'true แล้ว true',
+      'false แล้ว true — component setup ไม่ใช่ tracking context แต่ body ของ effect ใช่',
+      'false แล้ว false',
+      'มันจะ throw เสมอถ้าไม่ได้อยู่ใน template',
     ],
     answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: $effect.tracking() คืนค่า [false, true] — false สำหรับการเรียกตรง ๆ ระดับบนสุด, true ภายใน body ของ $effect',
   },
   {
-    q: '`untrack(() => config.verbose)` ทำอะไรภายใน effect?',
+    q: '`$effect.root()` ต่างจาก `$effect` ปกติที่สร้างตอน component setup อย่างไร?',
     options: [
-      'ลบ config.verbose',
-      'อ่านค่าโดยไม่สร้าง dependency ดังนั้น effect จะไม่รันซ้ำตอนค่านั้นเปลี่ยน',
-      'ทำให้ค่านั้นเป็น reactive',
-      'รันบน server',
+      'ไม่ต่างกันเลย',
+      'มันสร้าง scope ที่ **ไม่** ถูกเก็บกวาดอัตโนมัติ — คุณต้องเรียกฟังก์ชัน destroy ที่ได้กลับมาเอง',
+      'มันรันแค่ครั้งเดียวตลอดไป',
+      'มันมี nested $effect ข้างในไม่ได้',
     ],
     answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: หลังเรียก destroy() การเปลี่ยน state เพิ่มเติมไม่ทำให้ effect รันใหม่อีก — แต่ก่อนหน้านั้นไม่มีอะไรมาเก็บกวาดให้อัตโนมัติเลย',
   },
   {
-    q: 'ใช้ runes นอก component แบบ `.svelte` ได้ที่ไหน?',
+    q: '```svelte\n<svelte:options customElement="my-counter" />\n<script>\n  function bump() {\n    $host().dispatchEvent(new CustomEvent(\'bump\'));\n  }\n</script>\n```\n`$host()` ในโค้ดนี้คืนค่าอะไร?',
     options: [
-      'ไม่ได้เลย',
-      'ใน `.svelte.js` / `.svelte.ts` module',
-      'เฉพาะในไฟล์ config',
-      'เฉพาะในไฟล์ TypeScript',
+      'Parent Svelte component',
+      'Custom element (DOM element) ตัวจริงที่ host component นี้อยู่ — ไม่มี parent ให้เรียก มีแค่ DOM',
+      'Store',
+      'Instance ของ compiler',
     ],
     answer: 1,
+    explain: 'พิสูจน์ด้วยการ compile ด้วย customElement: true: JS ที่ได้ออกมา register custom element จริงผ่าน customElements.define และ $host() compile ลงไปเป็น `this` ในตัว class นั้น — ไม่มี runtime function call เหลืออยู่เลย',
   },
   {
-    q: 'ตอน share `$state` จาก module ทำไมต้อง expose ผ่าน getter?',
+    q: 'ทำไม `JSON.stringify(new Counter())` ถึงคืน `{}` ทั้งที่ `Counter` มี public field `count = $state(0)`?',
     options: [
-      'เพื่อ code สั้นลง',
-      'primitive ที่ export ตรง ๆ จะถูก copy ตอน import และเสีย reactivity; getter อ่าน reactive source ตัวจริงทุกครั้ง',
-      'JavaScript บังคับให้ใช้ getter',
-      'เพื่อทำให้ read-only',
+      '$state field ถูกตัดออกจาก serialization โดย rule พิเศษของ JSON เสมอ',
+      'compiler แปลง field นั้นเป็น accessor get/set ที่ backed ด้วย private field ซึ่งไม่ enumerable',
+      'JSON.stringify จัดการ class instance ไม่ได้เลยไม่ว่าแบบไหน',
+      'เป็นบั๊กที่กำลังจะถูกแก้',
     ],
     answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: Object.keys(counter) ไม่มี "count" และ JSON.stringify(counter) ได้ "{}" — field ที่ backed ด้วย rune เป็น accessor ที่ไม่ enumerable ไม่ใช่ own property ธรรมดา',
+  },
+  {
+    q: '```js\nclass Counter {\n  count = $state(0);\n}\nconst counter = new Counter();\nconst { count } = counter;\n$effect(() => {\n  console.log(count);\n});\ncounter.count++;\n```\n`$effect` จะ log ใหม่หลัง `counter.count++` หรือไม่?',
+    options: [
+      'ใช่ เพราะ count reactive',
+      'ไม่ — destructure ก็อปปี้ค่า ณ ตอนนั้น effect depend กับตัวแปร local ไม่ใช่ field ตัวจริง',
+      'ใช่ แต่เฉพาะใน production build',
+      'มันจะ compile error',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: อ่านผ่าน instance ตรง ๆ ในเอฟเฟกต์รันใหม่ตลอด ([0, 2, 12]) แต่ destructure ก่อนแล้วอ่านค่าที่ก็อปปี้ได้แค่ [0] — effect ไม่รันซ้ำเลย',
+  },
+  {
+    q: 'module `.svelte.js` export `export const settings = $state({...})` ตรง ๆ (ไม่ห่อด้วย factory) ทำไมถึงเสี่ยงในแอปที่ render บน server?',
+    options: [
+      'ไม่เสี่ยงเลย — module เป็น per-request เสมอ',
+      'instance ของ ES module ถูก cache และแชร์ทั้ง process ดังนั้น mutate ระหว่าง SSR อาจทำ data รั่วไปให้ request ถัดไป',
+      'ปัญหานี้มีแค่ไฟล์ .ts ไม่ใช่ .js',
+      '$state ใช้ที่ module scope ไม่ได้เลย',
+    ],
+    answer: 1,
+    explain: 'ยืนยันจาก official docs: การ mutate module state ที่แชร์กันระหว่าง server-side rendering เสี่ยง leak ข้อมูลไปให้ request ถัดไป เพราะมี state ระดับ module นั้นแค่ instance เดียวต่อหนึ่ง server process ไม่ใช่ต่อ request',
   },
 ];
 
