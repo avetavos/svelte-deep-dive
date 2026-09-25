@@ -213,7 +213,7 @@ request ที่ไม่เคย login เลยและไม่มี cook
 declare global {
 	namespace App {
 		interface Locals {
-			user: string | null;
+			username: string | null;
 		}
 	}
 }
@@ -300,7 +300,7 @@ export const load: PageLoad = async ({ data }) => {
 <!-- src/routes/wr3/settings/+page.svelte -->
 <script lang="ts">
 	import { page } from '$app/state'; // FIX: $app/state, not the deprecated $app/stores
-	let { data }: { data: { user: string | null; appName: string } } = $props();
+	let { data }: { data: { username: string | null; appName: string } } = $props();
 </script>
 <h1>Settings — {data.appName}</h1>
 <p data-testid="user">Logged in as: {data.user ?? 'nobody'}</p>
