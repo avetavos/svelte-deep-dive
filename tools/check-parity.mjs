@@ -305,7 +305,8 @@ for (const enPath of files) {
   // must be Thai. Exempt titles that read as a proper name ("Svelte vs SvelteKit"):
   // every word capitalised or a connector. ponytail: word heuristic, allowlist if it misfires.
   const TITLE_RE = /<(Callout|Mermaid|SpotTheBug)\b[^>]*?\btitle="([^"]*)"/g;
-  for (const m of thSrc.matchAll(TITLE_RE)) {
+  const thProse = stripQuizArrays(thSrc).replace(/```[\s\S]*?```/g, '');
+  for (const m of thProse.matchAll(TITLE_RE)) {
     const title = m[2];
     if (THAI_RE.test(title)) continue;
     const properName = title.split(/\s+/).every((w) => /^[A-Z0-9]/.test(w) || /[a-z][A-Z]|[._()<>$]/.test(w) || /^(vs|&|and|or|of|in|to|a)$/.test(w));
