@@ -1,0 +1,371 @@
+---
+title: 'Hydration & SSR'
+description: 'ค่าจริงที่ render() จาก svelte/server คืนกลับมา (hydration marker <!--[--> จริง) hydrate() เดินมันยังไง จริง ๆ เกิดอะไรขึ้นตอน mismatch (พิสูจน์แล้ว — ไม่ใช่สิ่งที่คุณจะเดา) และ request pipeline เต็มของ SvelteKit เป็น Mermaid sequence diagram เดียว'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+บท [Fine-Grained DOM](/svelte/th/svelte-internals/fine-grained-dom/) พูดถึงการ mount เข้า target ที่**ว่างเปล่า** บทนี้พูดถึงอีกกรณี: DOM ที่มีอยู่แล้ว ส่งลงมาจาก server ซึ่ง Svelte ต้องต่อ signal graph ของมันเข้าไปโดย*ไม่*ทิ้งแล้วสร้างใหม่ — แล้วจริง ๆ เกิดอะไรขึ้นเมื่อทั้งสองฝั่งไม่ตรงกัน
+
+## `render()` จาก `svelte/server`: marker จริง ไม่ใช่คำเปรียบเทียบ
+
+```ts
+// src/lib/render-markers.test.ts
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndImport(src: string, generate: 'client' | 'server', tag: string) {
+  const result = compile(src, { generate, runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `${tag}-${generate}-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const mod = await import(/* @vite-ignore */ file);
+  return mod.default;
+}
+
+test('render() from svelte/server produces real hydration marker comments', async () => {
+  const Server = await compileAndImport(
+    `<script>
+      let count = $state(0);
+    </script>
+    <button onclick={() => count++}>clicks: {count}</button>`,
+    'server',
+    'markers',
+  );
+  const { body } = render(Server);
+  expect(body).toBe('<!--[--><button>clicks: 0</button><!--]-->');
+});
+```
+
+```text
+✓ render() from svelte/server produces real hydration marker comments
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`<!--[-->`/`<!--]-->` ไม่ใช่คำย่อของ documentation — มันคือ HTML comment node จริงที่ Svelte emit รอบ output ของทุก component/block เพื่อให้ client หาจุดเริ่มและจุดจบของ block ได้เป๊ะโดยไม่ต้องรู้อะไรเลยเกี่ยวกับเนื้อหาระหว่างกลาง `hydrate_node` ของ `dom/hydration.js` เป็น pointer ตัวเดียวที่ mutate ได้ เริ่มที่ comment เปิดนั้นแล้วเดินหน้าด้วย `get_next_sibling` ตามที่ compiled client code เรียก `$.child(...)`/`$.sibling(...)` — ฟังก์ชันตัวเดียวกันเป๊ะกับที่มันจะเรียกตอนเดิน template ที่**เพิ่ง clone ใหม่** (ดู `from_html` ใน [Fine-Grained DOM](/svelte/th/svelte-internals/fine-grained-dom/)) `hydrating` เป็น boolean ระดับ module ที่สลับฟังก์ชันพวกนั้นจาก "clone node ใหม่" เป็น "เดิน node ที่มีอยู่แล้ว":
+
+```js
+// packages/svelte/src/internal/client/dom/template.js — from_html, the hydrating branch
+return () => {
+	if (hydrating) {
+		assign_nodes(hydrate_node, null);
+		return hydrate_node; // reuse what the server sent, don't clone anything
+	}
+	// ...cloneNode(true) path, covered in Fine-Grained DOM
+};
+```
+
+## `hydrate()`: reuse node ของ server ไม่ mount ใหม่
+
+```ts
+// src/lib/hydrate-reuse.test.ts
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import { hydrate, flushSync } from 'svelte';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test, vi } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndImport(src: string, generate: 'client' | 'server', tag: string) {
+  const result = compile(src, { generate, runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `${tag}-${generate}-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const mod = await import(/* @vite-ignore */ file);
+  return mod.default;
+}
+
+const SRC = `<script>
+  let count = $state(0);
+</script>
+<button onclick={() => count++}>clicks: {count}</button>`;
+
+test('hydrate() reuses the SAME node the server sent, and it is immediately interactive', async () => {
+  const Server = await compileAndImport(SRC, 'server', 'reuse');
+  document.body.innerHTML = render(Server).body;
+  const serverButton = document.querySelector('button')!;
+
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const Client = await compileAndImport(SRC, 'client', 'reuse');
+  hydrate(Client, { target: document.body });
+
+  expect(document.querySelector('button')).toBe(serverButton); // same node, not replaced
+  expect(warn).not.toHaveBeenCalled();
+
+  serverButton.click();
+  flushSync();
+  expect(serverButton.textContent).toBe('clicks: 1');
+  warn.mockRestore();
+});
+```
+
+```text
+✓ hydrate() reuses the SAME node the server sent, and it is immediately interactive
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## Mismatch: สิ่งที่*เกิดขึ้นจริง*น่าประหลาดใจกว่า "มัน warn แล้ว re-render"
+
+การเดาตามธรรมชาติคือ "Svelte เทียบ HTML ของ server กับสิ่งที่ client จะ render แล้ว warn ถ้าต่างกัน" พฤติกรรมจริง — พิสูจน์สามแบบข้างล่าง — แคบกว่าและน่าสนใจกว่านั้น
+
+**1. Mismatch ข้างใน reactive block (`{#if}`/`{#each}`) ถูกแก้ไขแบบเงียบ ๆ โดย reactivity ธรรมดา — ไม่มี warning เลย** Server render `{#if}` branch `true`; state จริงของ client บอกว่า `false`:
+
+```ts
+// src/lib/hydrate-if-mismatch.test.ts
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import { hydrate } from 'svelte';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test, vi } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndImport(src: string, generate: 'client' | 'server', tag: string) {
+  const result = compile(src, { generate, runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `${tag}-${generate}-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const mod = await import(/* @vite-ignore */ file);
+  return mod.default;
+}
+
+test('{#if} branch mismatch: no warning — the block\'s own reactivity switches to the correct branch', async () => {
+  const trueSrc = `<script>let flag = $state(true);</script>\n{#if flag}<p>yes</p>{:else}<p>no</p>{/if}`;
+  const falseSrc = `<script>let flag = $state(false);</script>\n{#if flag}<p>yes</p>{:else}<p>no</p>{/if}`;
+
+  const Server = await compileAndImport(trueSrc, 'server', 'ifm');
+  const { body } = render(Server);
+  expect(body).toBe('<!--[--><!--[0--><p>yes</p><!--]--><!--]-->'); // server committed to the "yes" branch
+  document.body.innerHTML = body;
+
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const Client = await compileAndImport(falseSrc, 'client', 'ifm'); // client's real flag is false
+  hydrate(Client, { target: document.body });
+
+  expect(warn).not.toHaveBeenCalled(); // no hydration warning fires
+  expect(document.body.textContent).toBe('no'); // {#if}'s own reactivity corrected the branch
+  warn.mockRestore();
+});
+```
+
+```text
+✓ {#if} branch mismatch: no warning — the block's own reactivity switches to the correct branch
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+**2. เรื่องเดียวกันสำหรับ `{#each}`: server render 2 item, array จริงของ client มี 1 — DOM node ส่วนเกินถูกลบแบบเงียบ ๆ โดย reconciliation ของ each block เอง ไม่มี warning อีกเช่นกัน** (บท [Fine-Grained DOM](/svelte/th/svelte-internals/fine-grained-dom/) พูดถึง reconciliation นั้นอย่างละเอียด)
+
+**3. Mismatch แบบ*static*(ไม่เคย reassign) ไม่เคยถูกแก้ และไม่เคยถูก warn — output ผิดของ server อยู่ตลอดไป:**
+
+```ts
+// src/lib/hydrate-static-mismatch.test.ts
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import { hydrate } from 'svelte';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test, vi } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndImport(src: string, generate: 'client' | 'server', tag: string) {
+  const result = compile(src, { generate, runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `${tag}-${generate}-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const mod = await import(/* @vite-ignore */ file);
+  return mod.default;
+}
+
+test('static text mismatch: no warning, and the WRONG server text survives forever', async () => {
+  // Simulating something like `typeof window === 'undefined'` baked into static markup
+  // differently on each side.
+  const Server = await compileAndImport(`<p>rendered on: server</p>`, 'server', 'statictext');
+  document.body.innerHTML = render(Server).body;
+
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const Client = await compileAndImport(`<p>rendered on: client</p>`, 'client', 'statictext');
+  hydrate(Client, { target: document.body });
+
+  expect(warn).not.toHaveBeenCalled();
+  expect(document.querySelector('p')!.textContent).toBe('rendered on: server'); // never fixed
+  warn.mockRestore();
+});
+```
+
+```text
+✓ static text mismatch: no warning, and the WRONG server text survives forever
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+เหตุผลที่ทั้งสามกรณีทำงานแบบนี้คือเหตุผลเดียวกับ [Fine-Grained DOM](/svelte/th/svelte-internals/fine-grained-dom/): hydration ไม่ได้ "เทียบ" output ของ server กับ output ของ client เลย — hydrating branch ของ `from_html` แค่ส่ง node ที่อยู่ตรงนั้นกลับไป (`assign_nodes(hydrate_node, null); return hydrate_node;`) โดย**ไม่มีการเช็คว่า tag เนื้อหา หรือ shape ตรงกับที่ client จะ produce เลย** ถ้าเนื้อหาที่ mismatch อยู่ข้างในอะไรที่ reactive path การ update ปกติของสิ่งนั้น (`$.set_text`/`{#if}`/`{#each}` reconciliation ตัวเดียวกับที่โมดูลนี้พิสูจน์ไปแล้ว) จะแก้ไขมันในรอบ flush ถัดไป เป็น side effect ธรรมดาของการเป็น reactive — ไม่ใช่เพราะ hydration ตรวจจับอะไรได้ ถ้าเนื้อหาที่ mismatch เป็น static ไม่มีอะไรถูก schedule ให้แตะมันเลย มันเลยผิดอยู่แบบนั้น
+
+มี hydration mismatch warning ที่ชัดเจนจริงอยู่ใน source — `w.hydration_mismatch()` ใน `packages/svelte/src/internal/client/warnings.js` ที่ `console.warn` ข้อความ `[svelte] hydration_mismatch` ใน dev — แต่มันจะ fire แค่ตอนที่**การเดิน hydration เองพังในเชิงโครงสร้าง** (`set_hydrate_node(null)` เช่น comment sibling ที่คาดไว้ไม่มีอยู่จริง) ไม่ใช่ตอนเนื้อหาไม่ตรงกันแต่ shape เดียวกันข้างใน block:
+
+```js
+// packages/svelte/src/internal/client/warnings.js — hydration_mismatch (trimmed)
+export function hydration_mismatch(location) {
+	console.warn(
+		`[svelte] hydration_mismatch\nHydration failed because the initial UI does not match what was rendered on the server` +
+		(location ? ` The error occurred near ${location}` : ''),
+	);
+}
+```
+
+และเมื่อการ throw เชิงโครงสร้างนั้น*เกิดขึ้นจริง* try/catch ของ `hydrate()` เอง (`packages/svelte/src/internal/client/render.js`) จะกู้คืนด้วยการล้าง target แล้วทำ `mount()` ธรรมดาแบบปกติ:
+
+```js
+// packages/svelte/src/internal/client/render.js — hydrate's recovery path (trimmed)
+} catch (error) {
+	if (error !== HYDRATION_ERROR) {
+		console.warn('Failed to hydrate: ', error);
+	}
+	clear_text_content(target);
+	set_hydrating(false);
+	return mount(component, options); // fresh client-side mount, server DOM discarded
+}
+```
+
+## Request pipeline ของ SvelteKit ตั้งแต่ต้นจนจบ
+
+Hydration คือครึ่งฝั่ง client ของ request หนึ่งอัน โมดูล [SvelteKit](/svelte/th/sveltekit/) พูดถึงแต่ละชิ้นไปแล้ว นี่คือ diagram เดียวที่ผูกทุกอย่างเข้าด้วยกัน อ้างอิง slug จริง:
+
+<Mermaid title="หนึ่ง SvelteKit request ตั้งแต่ต้นจนจบ" code={pipelineDiagram} />
+
+export const pipelineDiagram = `sequenceDiagram
+  participant B as Browser
+  participant H as hooks.server: handle
+  participant L as load functions
+  participant R as render (SSR)
+  participant C as Client: hydrate()
+
+  B->>H: GET /route
+  H->>H: sequence(...) middleware\n(server-and-api)
+  H->>L: resolve(event)
+  L->>L: universal + server load\n(loading-data)
+  L->>R: data
+  R->>R: render() -> HTML + hydration markers\n(this lesson)
+  R-->>B: streamed HTML response
+  B->>C: parse + hydrate()\nwalk <!--[--> markers, reuse DOM\n(this lesson)
+  C-->>B: interactive page
+
+  Note over B,C: later, a link click:
+  B->>B: client-side navigation\n$app/navigation (loading-data)
+  Note over B,C: a form submit:
+  B->>H: POST /route (form action)
+  H->>H: action runs, fail\`()\`/redirect\`()\`\n(forms-and-actions)
+  H-->>B: re-render or redirect`;
+
+ทุกกล่องใน diagram นี้เป็นบทเรียนจริง: [Hooks: `handle`/`sequence`](/svelte/th/sveltekit/server-and-api/#hooks-the-full-surface-verified-against-the-installed-kit), [universal เทียบ server `load`](/svelte/th/sveltekit/loading-data/#universal-vs-server-only-load), [streaming promise ที่ไม่ await](/svelte/th/sveltekit/loading-data/#streaming-returning-a-promise-you-dont-await), [`$app/navigation`](/svelte/th/sveltekit/loading-data/#appstate-vs-the-deprecated-appstores) และ [form action](/svelte/th/sveltekit/forms-and-actions/#forms-post-to-actions) — บทนี้คือสอง arrow เจาะจงที่ข้าม server/client boundary: `render()` ที่ผลิต marker และ `hydrate()` ที่กินมัน
+
+## อ่านโค้ดที่ AI เขียน
+
+- comment สมมติว่า Svelte "จะ warn ถ้า server กับ client ไม่ตรงกัน" หรือเปล่า? พิสูจน์ข้างบน: content mismatch ข้างใน reactive block ถูกแก้ไขแบบเงียบ ๆ โดยไม่มี warning เลย และ mismatch ใน static content ก็ไม่เคยถูกแก้และไม่เคยถูก warn เช่นกัน อย่าพึ่ง console warning เพื่อจับบั๊กประเภทนี้
+- ข้อมูลที่ควรมีแค่ฝั่ง server (random ID, `Date.now()`, `typeof window`) ถูกใช้ตรง ๆ ใน template output โดยไม่ถูกส่งลงมาเป็น `load` data ที่ serialize ได้ด้วยหรือเปล่า? นี่คือ shape เดียวกับการพิสูจน์ static-mismatch ข้างบนเป๊ะ — ค่าของ server ชนะแบบเงียบ ๆ และถาวรบน client เพราะไม่มีอะไร schedule การแก้ไขสำหรับเนื้อหาที่ไม่ reactive
+- โค้ดสมมติว่า `hydrate()` จะสำเร็จเต็มที่หรือ fallback ไป mount ใหม่เต็มที่เสมอสองแบบนี้เท่านั้นหรือเปล่า? ทั้งสองแบบเป็นจริง (พิสูจน์ข้างบน) แต่ก็มีกรณีที่สามที่พบบ่อยกว่า: มัน "สำเร็จ" (ไม่ throw error) แต่แอบ reuse branch/count ผิดจนกว่า reactivity จะบังเอิญแก้ให้ — หรือไม่เคยแก้เลยสำหรับ static content
+- `throw redirect(...)`/`error(...)` ข้างใน `load` หรือ action ถูกห่อด้วย `try/catch` ที่ log "unexpected error" แล้วกลืนมันไปหรือเปล่า? นี่คือ[บั๊กคลาสสิก](/svelte/th/sveltekit/server-and-api/#a-classic-bug-throw-redirecterror-swallowed-by-trycatch)ที่ `server-and-api` พิสูจน์ด้วย `curl` — redirect/error ของ SvelteKit เป็น throw ที่ต้อง propagate ไม่ใช่ถูกจับเป็น failure
+
+<SpotTheBug code={`<script>
+  // "the user's timezone offset, computed once, server or client, same result"
+  const offsetLabel = \`UTC\${new Date().getTimezoneOffset() > 0 ? '-' : '+'}\${Math.abs(new Date().getTimezoneOffset() / 60)}\`;
+</script>
+
+<p>Your timezone: {offsetLabel}</p>`}>
+`offsetLabel` คำนวณด้วย `const` ธรรมดา ไม่ใช่ `$state`/`$derived` — มันเป็น static ในสายตาของ reactivity graph บน server `new Date().getTimezoneOffset()` รันในไทม์โซนที่ server process อยู่ (ส่วนใหญ่คือ UTC) ในเบราว์เซอร์มันรันในไทม์โซนจริงของผู้เยี่ยมชม สองอย่างนี้จะไม่ตรงกันบ่อยมาก เพราะค่านี้เป็น static hydration จึงไม่เทียบมันกับอะไรเลย และไม่มีอะไรถูก schedule ให้แก้มัน — พิสูจน์ข้างบนด้วย shape เดียวกันเป๊ะ (static mismatch อยู่รอดโดยไม่มี warning ตลอดไป) — หน้านี้จึงโชว์ label ไทม์โซนของ**server**ให้ทุกคนเห็นถาวร ไม่ว่าไทม์โซนจริงของเขาจะเป็นอะไร โดยไม่มี error หรือ warning ที่ไหนเลย ทางแก้คือคำนวณค่านี้แค่ฝั่ง client เท่านั้น (ข้างใน `$effect`/`onMount` ให้มันรันหลัง hydration ด้วยข้อมูลเบราว์เซอร์จริง) หรือส่งค่าที่ถูกต้องลงมาตรง ๆ เป็น `load` data แทนที่จะคำนวณต่างกันคนละฝั่ง
+</SpotTheBug>
+
+<Callout title="สรุปหนึ่งบรรทัด">
+`render()` จาก `svelte/server` emit comment marker `<!--[-->`/`<!--]-->` จริงรอบทุก block — พิสูจน์ข้างบน ไม่ใช่คำเปรียบเทียบ — และ `hydrate()` เดินมันด้วย `$.child`/`$.sibling` ตัวเดียวกันเป๊ะกับที่การ mount ใหม่ใช้ แค่ reuse node เดิมแทนการ clone ใหม่ Hydration **ไม่** เทียบ output ของ server กับ client เลย: mismatch ข้างใน reactive block (`{#if}`/`{#each}`) ถูกแก้ไขแบบเงียบ ๆ โดย reactivity ธรรมดาของ block นั้นในรอบ flush ถัดไป โดยไม่มี warning; mismatch ใน static content ไม่เคยถูกแก้และไม่เคยถูก warn เลย อยู่ถาวร — ทั้งสองอย่างพิสูจน์ข้างบน และทั้งสองน่าประหลาดใจ (และสำคัญกว่าที่จะรู้) มากกว่า "Svelte warn เวลา mismatch" การพังเชิงโครงสร้างจริงในตัวการเดิน hydration เองต่างหากที่ throw แล้ว trigger recovery path จริง — ล้าง target, `console.warn('Failed to hydrate: ', ...)` แล้ว `mount()` ใหม่ทั้งหมด
+</Callout>
+
+export const quizHydration = [
+  {
+    q: '```js\nconst { body } = render(Server);\n// body === ?\n```\n`render()` จาก `svelte/server` ใส่อะไรจริง ๆ ไว้รอบ output ของคอมโพเนนต์ใน HTML ที่คืนกลับมา?',
+    options: [
+      'Nothing extra — just the rendered tags',
+      'Real `<!--[-->`/`<!--]-->` HTML comment nodes marking the start/end of the block — proven above with an exact string match',
+      'A `<script>` tag containing JSON state',
+      'A `data-svelte-hydrate` attribute on every element',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย exact-match assertion บน output ของ render() ข้างบน: `<!--[--><button>clicks: 0</button><!--]-->`',
+  },
+  {
+    q: 'Server render `{#if flag}` เป็น branch `true`; ค่า `flag` จริงของ client คือ `false` เกิดอะไรขึ้นตอน `hydrate()` รัน?',
+    options: [
+      'It throws a hydration error immediately',
+      'No warning is logged — the `{#if}` block\'s own ordinary reactivity switches to the correct ("no") branch on the next flush, exactly as it would for any other reactive update',
+      'It permanently shows the server\'s ("yes") branch',
+      'It shows both branches at once',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ ข้างบน: `warn` ไม่เคยถูกเรียก และ document.body.textContent ลงเอยที่ "no" — block แก้ไขตัวเองผ่าน reactivity ธรรมดา ไม่ใช่ผ่านการเช็ค hydration-mismatch',
+  },
+  {
+    q: '```svelte\n<script>\n  const staticLabel = \'server\'; // or \'client\', per build\n</script>\n<p>{staticLabel}</p>\n```\nถ้า `staticLabel` ต่างกันระหว่าง server build กับ client build เกิดอะไรขึ้นหลัง `hydrate()`?',
+    options: [
+      'Svelte detects the difference and updates the DOM to the client\'s value',
+      'Nothing ever corrects it — no dependency is ever marked dirty for static content, so the WRONG (server\'s) text stays in the DOM permanently, and no warning is logged',
+      'A hydration_mismatch warning fires, but the content is left as-is',
+      'The page throws a runtime error',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ข้างบน: หลัง hydrate() ข้อความของ paragraph ยังเป็น "rendered on: server" — ไม่มีอะไรถูก schedule ให้เช็คหรือ update สำหรับค่าที่ไม่มี reactive dependency เลย',
+  },
+  {
+    q: 'console warning `hydration_mismatch` ตัวจริงที่ชัดเจนนั้น fire ตอนไหนกันแน่?',
+    options: [
+      'On any text content difference between server and client',
+      'When the hydration walk itself breaks structurally — set_hydrate_node encounters null where a sibling node was expected to exist — not for a same-shape content disagreement inside a reactive block',
+      'It never fires in any real version of Svelte',
+      'Only when using TypeScript',
+    ],
+    answer: 1,
+    explain: 'ยกมาตรง ๆ จาก warnings.js และ catch block ของ render.js: explicit warning path ผูกกับการพังเชิงโครงสร้างจริงในตัวเดิน node ซึ่งแคบกว่า "mismatch ใด ๆ" มาก',
+  },
+  {
+    q: 'ใน diagram ของ SvelteKit request pipeline ลำดับที่ถูกต้องสำหรับ page request ปกติคืออะไร?',
+    options: [
+      'hydrate() -> load -> handle -> render()',
+      'handle (hooks.server) -> load functions -> render() (server, with hydration markers) -> browser parses + hydrate()',
+      'render() -> handle -> hydrate() -> load',
+      'load -> render() -> hydrate() -> handle',
+    ],
+    answer: 1,
+    explain: 'นี่คือลำดับจริงของ diagram: handle ของ hooks.server resolve request ก่อน แล้ว load function รัน แล้ว render() ผลิต HTML ที่มี marker แล้วเบราว์เซอร์ถึงจะ hydrate มัน',
+  },
+];
+
+<Quiz client:visible id="svelte-internals/hydration-and-ssr" questions={quizHydration} />
+
+<ProgressTracker client:visible id="internals-hydration" />

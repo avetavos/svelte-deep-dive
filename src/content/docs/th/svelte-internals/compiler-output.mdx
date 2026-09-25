@@ -1,0 +1,510 @@
+---
+title: 'Compiler Output'
+description: 'ค่าจริงที่ $state, $derived, $effect, template และ event คอมไพล์ออกมาใน Svelte 5.57.1 — พิสูจน์ด้วย compile() จริง ไม่ใช่ paraphrase — พร้อม generate: "server", dev: true และ legacy (ไม่ใช้ rune) output'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
+
+## หน้าที่ของ compiler ในหนึ่งประโยค
+
+`compile()` ของ `svelte/compiler` แปลงไฟล์ `.svelte` เป็น JavaScript module ธรรมดาที่เรียกฟังก์ชันที่ export มาจาก `svelte/internal/client` (หรือ `svelte/internal/server` สำหรับ SSR) ไม่มี framework runtime ไหน "ตีความ" component ของคุณตอน render เลย — การตีความเกิดขึ้นไปแล้วครั้งเดียวใน compiler ทุก claim ข้างล่างนี้มาจากการรัน `compile()` จริงด้วยเวอร์ชันที่คอร์สนี้อ้างอิงตรง ๆ (`node_modules/svelte` ใน harness ของ repo นี้คือ **5.57.1** เวอร์ชันเดียวกับที่ [`SveltePlayground`](/svelte/th/reactivity/state-rune/) โหลดจาก esm.sh) — กด **คอมไพล์** บน embed ข้างล่างเพื่อลองทำซ้ำเองได้เลย
+
+## `$state` กลายเป็น `$.state`, `count++` กลายเป็น `$.update`
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+```
+
+export const stateCounterCode = `<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+
+<SveltePlayground code={stateCounterCode} id="compiler-output-state" />
+
+คอมไพล์อันนี้ (client target, runes mode, `dev: false`) ได้:
+
+```js
+import 'svelte/internal/disclose-version';
+import * as $ from 'svelte/internal/client';
+
+var root = $.from_html(`<button> </button>`);
+
+export default function Playground($$anchor) {
+	let count = $.state(0);
+	var button = root();
+	var text = $.only_child(button, true);
+
+	$.template_effect(() => $.set_text(text, $.get(count)));
+	$.delegated('click', button, () => $.update(count));
+	$.append($$anchor, button);
+}
+
+$.delegate(['click']);
+```
+
+การ map rune ไปยัง call จริงของ compiler เป็น `switch` ตรง ๆ บนชื่อ rune ที่จำได้ — นี่คือ handler จริง ตัดมาจาก `packages/svelte/src/compiler/phases/3-transform/client/visitors/CallExpression.js`:
+
+```js
+// packages/svelte/src/compiler/phases/3-transform/client/visitors/CallExpression.js — CallExpression (trimmed)
+export function CallExpression(node, context) {
+	const rune = get_rune(node, context.state.scope);
+
+	switch (rune) {
+		case '$state':
+		case '$state.raw': {
+			// ...
+			const callee = b.id('$.state', node.callee.loc);
+			return b.call(callee, value);
+		}
+		case '$derived':
+		case '$derived.by': {
+			let fn = context.visit(node.arguments[0]);
+			return b.call('$.derived', rune === '$derived' ? b.thunk(fn) : fn);
+		}
+		case '$effect':
+		case '$effect.pre': {
+			const callee = rune === '$effect' ? '$.user_effect' : '$.user_pre_effect';
+			// ...
+		}
+	}
+}
+```
+
+ส่วน `count++` — เป็น `UpdateExpression` ไม่ใช่ call — ไปผ่าน visitor คนละตัว คือ `.../visitors/UpdateExpression.js` ซึ่งเช็คว่า identifier ที่ถูก update มี `transform` แบบ reactive ที่ลงทะเบียนไว้หรือเปล่า (ตั้งไว้ตอนวิเคราะห์ binding ว่าเป็น `$state`) ถ้ามีก็จะใช้ transform นั้นแทนการปล่อย `++` เฉย ๆ สำหรับ `$state` binding ผลลัพธ์คือ `$.update(count)` — พิสูจน์ตรง ๆ ใน compiled output ข้างบน และด้วย `compile()` assertion จริง:
+
+```ts
+// src/lib/compiler-state.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): $state becomes $.state, count++ becomes $.update, template read becomes $.get inside $.template_effect/$.set_text', () => {
+  const src = `<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+  const result = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' });
+  const js = result.js.code;
+
+  expect(js).toContain('let count = $.state(0);');
+  expect(js).toContain('$.template_effect(() => $.set_text(text, $.get(count)));');
+  expect(js).toContain("$.delegated('click', button, () => $.update(count));");
+  expect(js).toContain("$.delegate(['click']);");
+});
+```
+
+```text
+✓ compile(): $state becomes $.state, count++ becomes $.update, template read becomes $.get inside $.template_effect/$.set_text
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`$.state(0)` (นิยามใน `packages/svelte/src/internal/client/reactivity/sources.js`) คือ constructor จริงของ reactive cell — ตัดมาเฉพาะส่วนที่สำคัญ:
+
+```js
+// packages/svelte/src/internal/client/reactivity/sources.js — source / state (trimmed)
+export function source(v, stack) {
+	var signal = { f: 0, v, reactions: null, equals, rv: 0, wv: 0 };
+	return signal;
+}
+
+/*#__NO_SIDE_EFFECTS__*/
+export function state(v, stack) {
+	const s = source(v, stack);
+	push_reaction_value(s);
+	return s;
+}
+```
+
+ค่า `$state` คือ plain object ที่มีค่าปัจจุบัน (`v`) รายชื่อสิ่งที่ขึ้นกับมัน (`reactions`) และตัวนับเวอร์ชัน (`rv`/`wv`) — ไม่มีอะไร exotic ไปกว่านี้ บท [Signals & Scheduling](/svelte/th/svelte-internals/signals-and-scheduling/) จะพูดถึงว่า `reactions`, `rv`/`wv` และ field `f` (flags) ทำอะไรจริง ๆ
+
+## `$derived` กลายเป็น `$.derived` และยังคง lazy
+
+```svelte
+<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{doubled}</button>
+```
+
+คอมไพล์ได้:
+
+```js
+let count = $.state(0);
+let doubled = $.derived(() => $.get(count) * 2);
+var button = root();
+var text = $.only_child(button, true);
+
+$.template_effect(() => $.set_text(text, $.get(doubled)));
+$.delegated('click', button, () => $.update(count));
+```
+
+มีสองจุดที่ควรสังเกต: rune `$derived(expr)` ห่อ expression ด้วย thunk (`b.thunk(fn)` ใน compiler source ข้างบน) ก่อนเรียก `$.derived` — expression **ยังไม่ถูก evaluate ตอนนี้** มีแค่ฟังก์ชันที่จะ evaluate มันทีหลังถูกสร้างขึ้นมาเท่านั้น และทุกการ *อ่าน* `count` หรือ `doubled` ที่อื่นใน compiled output จะผ่าน `$.get(...)` เสมอ — การอ่านไม่เคยเป็น property access เฉย ๆ เพราะ `$.get` คือจุดที่ dependency ถูกลงทะเบียนด้วย (ดู [Signals & Scheduling](/svelte/th/svelte-internals/signals-and-scheduling/))
+
+```ts
+// src/lib/compiler-derived.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): $derived becomes $.derived(() => ...), reading it elsewhere is $.get(derivedName)', () => {
+  const src = `<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+</script>
+<button onclick={() => count++}>{doubled}</button>
+`;
+  const js = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain('let doubled = $.derived(() => $.get(count) * 2);');
+  expect(js).toContain('$.template_effect(() => $.set_text(text, $.get(doubled)));');
+});
+```
+
+```text
+✓ compile(): $derived becomes $.derived(() => ...), reading it elsewhere is $.get(derivedName)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## `$effect` กลายเป็น `$.user_effect`; `$effect.pre` กลายเป็น `$.user_pre_effect`
+
+```ts
+// src/lib/compiler-effect.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): $effect becomes $.user_effect', () => {
+  const src = `<script>
+  let count = $state(0);
+  $effect(() => { console.log('count is', count); });
+</script>
+<button onclick={() => count++}>{count}</button>
+`;
+  const js = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain('$.user_effect(() => {');
+});
+```
+
+```text
+✓ compile(): $effect becomes $.user_effect
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+compiled body เต็มของ snippet นั้นคือ:
+
+```js
+let count = $.state(0);
+
+$.user_effect(() => {
+	console.log('count is', $.get(count));
+});
+
+var button = root();
+var text = $.only_child(button, true);
+
+$.template_effect(() => $.set_text(text, $.get(count)));
+$.delegated('click', button, () => $.update(count));
+```
+
+สังเกตว่าฟังก์ชันที่สร้าง component ทั้งตัวถูกห่อด้วย `$.push($$props, true)` / `$.pop(...)` (ตัดออกข้างบนเพื่อความกระชับ) ทันทีที่มี `$effect` อยู่ — compiler ต้องการ component context เพื่อรู้ว่าจะรัน top-level `$effect` เมื่อไหร่ (deferred จนกว่าจะ mount; ดู `user_effect` ใน `packages/svelte/src/internal/client/reactivity/effects.js`) ส่วน `$effect.pre` คอมไพล์เป็น `$.user_pre_effect` ซึ่งเป็น `RENDER_EFFECT | USER_EFFECT` (รันช่วง render phase ก่อน DOM ถูก update) แทนที่จะเป็น `EFFECT | USER_EFFECT` ธรรมดา — ความต่างของ flag ตรงนี้แหละที่ [Signals & Scheduling](/svelte/th/svelte-internals/signals-and-scheduling/) ใช้พิสูจน์ลำดับการรันจริง
+
+## Template: การ clone, การเดิน child/sibling และ `$.set_text`
+
+string `<button> </button>` ที่ส่งเข้า `$.from_html` คือ template — ถูก parse และ clone ครั้งเดียวต่อการ mount ไม่เคย parse ซ้ำ `$.only_child(button, true)` หยิบ text-node child ตัวเดียวของ button (`true` หมายถึง "เอา child เป็น text") และทุกค่าที่ dynamic จะมี `$.template_effect` ของตัวเองที่เขียนลงใน node นั้นด้วย `$.set_text` ลองดูด้วยสองค่าที่เป็นอิสระต่อกัน:
+
+export const twoStateCode = `<script>
+  let a = $state('a0');
+  let b = $state('b0');
+</script>
+
+<p>{a}</p>
+<p>{b}</p>
+`;
+
+<SveltePlayground code={twoStateCode} id="compiler-output-two-state" />
+
+ดู compiled output: มี `$.template_effect` แยกกันสองอัน อันละ `<p>` แต่ละอันเรียก `$.set_text` บน text node ของตัวเอง บท [Fine-Grained DOM](/svelte/th/svelte-internals/fine-grained-dom/) พิสูจน์ตรง ๆ ว่าการเปลี่ยน `a` ไม่มีวันไปแตะ text node ของ `b` — ไม่ใช่แค่ "ได้ text ที่มองเห็นเหมือนกัน" แต่คือไม่เคยเรียก setter ของ `nodeValue` เลยจริง ๆ
+
+## Event: `$.event` เทียบกับ `$.delegated` แบบ delegated
+
+`onclick={...}` บน element ธรรมดาคอมไพล์เป็น handler แบบ **delegated** ไม่ใช่การเรียก `addEventListener` ตรง ๆ event visitor ของ compiler (`packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/events.js`, ฟังก์ชัน `build_event`) เลือกระหว่างสองแบบนี้:
+
+```js
+// .../visitors/shared/events.js — build_event (trimmed)
+export function build_event(context, event_name, handler, capture, passive, delegated) {
+	// ...
+	return b.call(
+		delegated ? '$.delegated' : '$.event',
+		b.literal(event_name),
+		context.state.node,
+		fn,
+		capture && b.true,
+		passive === undefined ? undefined : b.literal(passive),
+	);
+}
+```
+
+สำหรับ event ที่ delegate ได้ (`click` เป็นหนึ่งในนั้น) ฟังก์ชัน `delegated()` ของ runtime — `packages/svelte/src/internal/client/dom/elements/events.js` — **ไม่** attach listener เข้า element เลย:
+
+```js
+// packages/svelte/src/internal/client/dom/elements/events.js — delegated (trimmed)
+export function delegated(event_name, element, handler) {
+	(element[event_symbol] ??= {})[event_name] = handler;
+}
+```
+
+มันแค่เก็บ handler ไว้บน element เอง ภายใต้ symbol key `addEventListener` จริงเกิดขึ้น **ครั้งเดียวต่อ event type ที่ root** ลงทะเบียนโดย `$.delegate(['click'])` (ถูก emit ที่ module scope — ดู compiled output ข้างบน) เมื่อมีคลิกเกิดขึ้นที่ไหนก็ตามในแอป listener ตัวเดียวที่ root (`handle_event_propagation`) จะเดิน `event.composedPath()` หา ancestor ที่ใกล้ที่สุดที่มี handler สำหรับ event type นั้นภายใต้ `event_symbol` แล้วเรียกมัน นี่คือ **event delegation** จริงและตั้งใจ: N ปุ่มมีต้นทุน listener ที่ root แค่ตัวเดียว ไม่ใช่ N ตัว
+
+## `generate: 'server'`: ไม่มี reactivity graph เลย
+
+```ts
+// src/lib/compiler-server.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): generate: "server" produces svelte/internal/server output with a plain string template, no reactivity graph', () => {
+  const src = `<script>
+  let count = $state(0);
+</script>
+<button onclick={() => count++}>clicks: {count}</button>
+`;
+  const js = compile(src, { generate: 'server', runes: true, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain("import * as $ from 'svelte/internal/server';");
+  expect(js).toContain('let count = 0;'); // NOT $.state — server output has no reactivity graph
+  expect(js).toContain('$$renderer.push(`<button>clicks: ${$.escape(count)}</button>`);');
+});
+```
+
+```text
+✓ compile(): generate: "server" produces svelte/internal/server output with a plain string template, no reactivity graph
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+server output เต็ม ๆ สั้นพอที่จะโชว์ทั้งหมด:
+
+```js
+import * as $ from 'svelte/internal/server';
+
+export default function Playground($$renderer) {
+	let count = 0;
+
+	$$renderer.push(`<button>clicks: ${$.escape(count)}</button>`);
+}
+```
+
+ไม่มี `$.state` ไม่มี signal graph ไม่มี event delegation — `count` เป็นตัวแปรธรรมดา render ครั้งเดียวเข้าไปใน string แบบ template literal (บท [Hydration & SSR](/svelte/th/svelte-internals/hydration-and-ssr/) จะพูดถึงว่า `render()` จาก `svelte/server` คืนอะไรจริง ๆ รวมถึง hydration marker `<!--[-->` ที่ snippet นี้ไม่โชว์เพราะไม่มี block-level content)
+
+## `dev: true` เพิ่ม call จริงของ runtime
+
+```ts
+// src/lib/compiler-dev.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): dev: true adds $.tag()/$.add_locations()/component-name tracking that dev: false omits', () => {
+  const src = `<script>
+  let count = $state(0);
+</script>
+<button onclick={() => count++}>{count}</button>
+`;
+  const dev = compile(src, { generate: 'client', runes: true, dev: true, filename: 'Playground.svelte' }).js.code;
+  const prod = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' }).js.code;
+
+  expect(dev).toContain("$.tag($.state(0), 'count')");
+  expect(dev).toContain('$.add_locations(');
+  expect(dev).toContain('Playground[$.FILENAME]');
+  expect(prod).not.toContain('$.tag(');
+  expect(prod).not.toContain('$.add_locations(');
+});
+```
+
+```text
+✓ compile(): dev: true adds $.tag()/$.add_locations()/component-name tracking that dev: false omits
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`dev: true` ห่อ `$.state(0)` ด้วย `$.tag(..., 'count')` (เพื่อให้ devtools และ error message โชว์ชื่อตัวแปรจริงได้) บันทึก source location ของทุก template ด้วย `$.add_locations(...)` (สำหรับ browser extension แบบ "คลิกเพื่อเปิดใน editor") และ stamp `Playground[$.FILENAME] = 'Playground.svelte'` ลงบนฟังก์ชัน component ไม่มีสิ่งเหล่านี้อยู่ใน production build เลย — มันคือ development ergonomics ล้วน ๆ ควบคุมด้วย option `dev` ตัวเดียว — ตรงกับ checkbox ที่ embed `SveltePlayground` ข้างบนให้คุณสลับได้
+
+## โหมด Legacy (ไม่ใช้ rune): `$:` คอมไพล์ต่างจาก `$derived` มาก
+
+```ts
+// src/lib/compiler-legacy.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): legacy mode ($: reactive statement, runes: false) compiles to $.legacy_pre_effect, not $.derived', () => {
+  const src = `<script>
+  export let x = 1;
+  $: doubled = x * 2;
+</script>
+<p>{doubled}</p>
+`;
+  const js = compile(src, { generate: 'client', runes: false, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain('$.legacy_pre_effect(');
+  expect(js).toContain('$.legacy_pre_effect_reset();');
+  expect(js).not.toContain('$.derived(');
+});
+```
+
+```text
+✓ compile(): legacy mode ($: reactive statement, runes: false) compiles to $.legacy_pre_effect, not $.derived
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+legacy-mode output เต็ม ๆ:
+
+```js
+import 'svelte/internal/disclose-version';
+import 'svelte/internal/flags/legacy';
+import * as $ from 'svelte/internal/client';
+
+var root = $.from_html(`<p> </p>`);
+
+export default function Playground($$anchor, $$props) {
+	$.push($$props, false);
+
+	const doubled = $.mutable_source();
+	let x = $.prop($$props, 'x', 8, 1);
+
+	$.legacy_pre_effect(() => ($.deep_read_state(x())), () => {
+		$.set(doubled, x() * 2);
+	});
+
+	$.legacy_pre_effect_reset();
+
+	var p = root();
+	var text = $.only_child(p, true);
+
+	$.template_effect(() => $.set_text(text, $.get(doubled)));
+	$.append($$anchor, p);
+	$.pop();
+}
+```
+
+`$: doubled = x * 2` **ไม่ใช่** `$.derived` — มันคือ **effect** ชนิดพิเศษ (`$.legacy_pre_effect`) ที่ recompute แล้ว `$.set` ลงใน `mutable_source` ทุกครั้งที่ dependency ที่ประกาศไว้ (`$.deep_read_state(x())`) เปลี่ยน นี่คือความต่างจริงและมีความหมายจาก `$derived`: legacy reactive statement เป็น effect ที่ re-run แบบ eager แล้ว assign ค่าเข้าไป ในขณะที่ `$derived` เป็น computation แบบ lazy pull-based จริง ๆ (บท [Signals & Scheduling](/svelte/th/svelte-internals/signals-and-scheduling/) พิสูจน์ความ lazy ด้วย test นับจำนวนครั้งที่เรียก) สองอย่างนี้ *ดู* เหมือนใช้แทนกันได้ในตัวอย่างง่าย ๆ ซึ่งนี่แหละคือเหตุผลว่าทำไม migration จาก legacy ไป runes ที่ AI ทำบางครั้งถึงได้ semantics ผิดเพี้ยนไปนิดหน่อย
+
+## อ่านโค้ดที่ AI เขียน
+
+- คำอธิบายว่า "ทำไม Svelte ถึงเร็ว" พูดถึง virtual DOM diff หรือเปล่า? ไม่มี virtual DOM อยู่ใน compiled output นี้เลย — compiler สร้าง call `$.set_text`/`$.set_attribute` ที่แต่ละค่าต้องใช้ไว้แล้ว
+- โค้ดสมมติว่า `$derived(expr)` evaluate `expr` ทันที เหมือนการเรียกฟังก์ชันธรรมดาหรือเปล่า? compiled output ข้างบนห่อมันด้วย thunk — มันเป็น lazy ไม่ใช่ eager (พิสูจน์อย่างละเอียดใน [Signals & Scheduling](/svelte/th/svelte-internals/signals-and-scheduling/))
+- การ migrate จาก `$: doubled = x * 2` ไป `let doubled = $derived(x * 2)` ถูกมองว่าเป็นแค่การสลับ syntax หรือเปล่า? สองอย่างนี้คอมไพล์เป็น runtime construct ที่ต่างกันจริง (effect ที่ re-run แบบ eager กับ computation แบบ lazy) — ส่วนใหญ่เท่ากัน แต่ไม่เสมอไป โดยเฉพาะถ้าใน expression มี side effect
+- comment อ้างว่า `onclick` handler "attach ตรงเข้ากับปุ่มโดยตรง" หรือเปล่า? สำหรับ event ที่ delegate ได้ ไม่ใช่แบบนั้น — handler ถูกเก็บไว้บน element แล้วถูกเรียกโดย listener ที่ root ตัวเดียว (`$.delegate([...])`) ซึ่งมีผลถ้าโค้ดพยายาม `removeEventListener` handler "ตัวเดิม" ออกจาก DOM node ในภายหลัง
+
+<SpotTheBug code={`<script>
+  let count = $state(0);
+</script>
+
+<!-- calling the handler through a spread should be identical to a literal onclick -->
+<button {...{ onclick: () => { count += 1; } }}>{count}</button>`}>
+เรื่องนี้ไม่ใช่บั๊กใน reactivity — `count += 1` ก็ยังผ่าน transform แบบ `$.update` เหมือนเดิมและ update text ของปุ่มได้ปกติ ปัญหาจริงอยู่ที่สมมติฐานใน comment: การ spread `onclick` ผ่าน `{...{ onclick: ... }}` (spread/computed attribute) ถูกคอมไพล์ผ่านคนละ code path จาก `onclick={...}` แบบ literal — spread attribute ถูก apply ด้วย `$.set_attributes`/`$.event` ไม่ใช่คู่ `$.delegated`/`$.delegate` ที่ compiled output ของบทนี้โชว์สำหรับ handler แบบ literal มันยังทำงานได้ปกติ แต่ทำให้ handler ตัวนี้หลุดออกจาก event delegation แบบเงียบ ๆ (มี `addEventListener` จริงที่ไม่ delegate ถูก attach เข้าปุ่มนี้โดยเฉพาะ แทนที่จะถูกจัดการโดย listener ที่ root ตัวเดียว) ซึ่งมองไม่เห็นจาก rendered output เลย และจะโผล่ให้เห็นก็ต่อเมื่อมีอะไรพึ่งพา delegation โดยเฉพาะ (เช่น โค้ดที่คาดว่ามี click listener ที่ root แค่ตัวเดียว หรือพึ่งพา registered-events set ของ `$.delegate`)
+</SpotTheBug>
+
+## Mental Model
+
+Compiler คือนักแปลครั้งเดียว ไม่ใช่ runtime interpreter: ทุก rune, ทุก `{expression}` ใน template และทุก event handler กลายเป็น call ของ JavaScript ธรรมดาที่เจาะจงไปที่ `svelte/internal/client` (หรือ `/server`) — ตัดสินใจครั้งเดียวตอน walk AST ไม่เคยตัดสินใจใหม่ตอน render การอ่าน compiled output คือการอ่านโปรแกรมจริงที่รันอยู่ ไม่มี layer ที่สองซ่อนอยู่ข้างใต้
+
+## ข้อแลกเปลี่ยน
+
+| ทางเลือก | ข้อดี | ต้นทุน |
+|---|---|---|
+| การ resolve rune ตอนคอมไพล์ (เทียบกับ reactivity library แบบ runtime) | runtime ไม่ต้องมานั่งคิดว่า "ค่านี้ reactive ไหม" "ค่านี้แตะ node ไหน" — ตัดสินใจไว้แล้ว; runtime เล็กและคาดเดาได้มากกว่า | compiler ต้องเข้าใจ shape ของโค้ดคุณเต็มที่ (destructuring, pattern การ reassign); pattern แปลก ๆ อาจเจอ compiler error จริงแทนที่จะ "ทำงานเฉย ๆ" ตอน runtime |
+| Event delegation เป็นค่า default (`$.delegated`/`$.delegate`) | listener ที่ root ตัวเดียวแทนที่จะเป็นหนึ่งต่อ element — ถูกกว่าสำหรับ list แถวแบบ interactive ขนาดใหญ่ | handler ที่ attach ผ่าน spread/computed attribute จะหลุดออกจาก delegation แบบเงียบ ๆ — มองไม่เห็นถ้าไม่เช็คโดยเฉพาะ |
+| `dev`/`generate` เป็น compile option ไม่ใช่ runtime flag | production build ต้นทุนศูนย์ (ไม่ ship `$.tag`/`$.add_locations`); source เดียวคอมไพล์เป็น server/client code ที่ต่างกันจริง | ไฟล์ `.svelte` เดียวกันเป๊ะ ๆ ให้ output ที่ต่างกันอย่างมีนัยสำคัญได้สามแบบ (client/server/legacy) — "โค้ดนี้ทำอะไร" ขึ้นกับว่า compile target ไหนสร้าง JS ที่คุณกำลังอ่านอยู่เสมอ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`$derived(expr)` รัน `expr` ทันที เหมือน assignment ธรรมดา"** พิสูจน์แล้วว่าผิด: compiler ห่อมันด้วย thunk (`() => ...`) และไม่มีอะไรเรียก thunk นั้นจนกว่าจะมีการอ่านค่า derived จริง ๆ
+- **"`$: x = ...` กับ `let x = $derived(...)` คือของเดียวกัน แค่ syntax เก่ากับใหม่"** สองอย่างนี้คอมไพล์เป็น runtime primitive คนละตัว — effect ที่ re-run แบบ eager (`$.legacy_pre_effect`) กับ computation แบบ lazy pull-based (`$.derived`) — พิสูจน์ด้วย compiled body สองแบบที่ต่างกันมากข้างบน
+- **"`onclick` ทุกตัวได้ `addEventListener` ของตัวเอง"** `onclick={...}` แบบ literal บน element ธรรมดาถูก delegate: handler ถูกเก็บไว้บน element และ listener ตัวเดียวที่ root เป็นคน dispatch ให้ — พิสูจน์ตรง ๆ จาก compiled output และ runtime source ของ `delegated()`
+
+<Callout title="สรุปหนึ่งบรรทัด">
+`compile()` แปลง `$state` เป็น `$.state`, แปลง `$derived(expr)` เป็น `$.derived(() => expr)` แบบ **lazy**, แปลง `$effect`/`$effect.pre` เป็น `$.user_effect`/`$.user_pre_effect` และแปลงทุกค่า dynamic ใน template เป็น `$.template_effect` ที่เรียก `$.set_text`/`$.set_attribute` บน node **ตัวเดียว** ที่ compiler รู้อยู่แล้วว่ามันเป็นของใคร — พิสูจน์ทุกขั้นด้วย `compile()` จริงข้างบน `onclick` ถูก delegate (listener ที่ root ตัวเดียว ไม่ใช่ต่อ element) เว้นแต่มันมาผ่าน spread `generate: 'server'` ตัด reactivity graph ทั้งหมดเหลือแค่ string template ธรรมดา; `dev: true` เพิ่ม call `$.tag`/`$.add_locations` ที่ production build ไม่ ship; และ legacy `$:` คอมไพล์เป็น construct ที่ต่างจาก `$derived` จริง ๆ (effect แบบ eager) ไม่ใช่แค่ syntax เก่าของของเดียวกัน
+</Callout>
+
+export const quizCompilerOutput = [
+  {
+    q: '`let count = $state(0);` คอมไพล์เป็นอะไร (client target, runes mode)?',
+    options: [
+      'It stays exactly as written — `$state` is a real JavaScript function at runtime',
+      '`let count = $.state(0);` — a call into `svelte/internal/client`\'s `state()`, which returns a plain signal object',
+      'A `useState`-style array destructure',
+      'It is removed entirely and replaced with a Proxy on `window`',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ ด้วย compile() ข้างบน: $state เป็น rune ที่ compiler จำได้ ถูกแปลงเป็น call ไปที่ internal client runtime ไม่ใช่ฟังก์ชันจริงที่ export ออกมา',
+  },
+  {
+    q: '```js\nlet doubled = $.derived(() => $.get(count) * 2);\n```\nจาก compiled output นี้ `count * 2` ถูก evaluate ตอนที่บรรทัดนี้รันเลยไหม?',
+    options: [
+      'Yes, immediately, like any other assignment',
+      'No — the compiler wraps it in a thunk (`() => count * 2`); nothing calls it until the derived value is actually read',
+      'Only in dev mode',
+      'Only if it has no dependencies',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย compiled output: `$.derived(() => $.get(count) * 2)` — ส่งฟังก์ชันเข้าไป ไม่ใช่ค่า บท Signals & Scheduling พิสูจน์ความ lazy ต่อด้วย test นับจำนวนครั้งที่เรียก',
+  },
+  {
+    q: '```svelte\n<button onclick={() => count++}>{count}</button>\n```\ncompiler emit อะไรออกมาสำหรับ click handler นี้?',
+    options: [
+      'A direct `button.addEventListener(\'click\', ...)`',
+      '`$.delegated(\'click\', button, ...)` plus a module-level `$.delegate([\'click\'])` — the handler is stashed on the element and dispatched by one shared root listener',
+      'Nothing — click handlers only work with `use:` actions',
+      'An inline `onclick` HTML attribute string',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ จาก compiled output จริงและ source ของ delegated() ซึ่งเก็บ handler ไว้ใต้ symbol key บน element แทนที่จะเรียก addEventListener',
+  },
+  {
+    q: '`generate: \'server\'` output ต่างจาก client target ยังไง สำหรับ `let count = $state(0)`?',
+    options: [
+      'Nothing — the server target still uses `$.state` for hydration purposes',
+      '`count` compiles to a plain variable (`let count = 0`) — there is no reactivity graph at all in server output, only a one-time string render',
+      'It throws a compiler error — $state cannot be used with generate: \'server\'',
+      'It becomes a Node.js `EventEmitter`',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย server output จริงข้างบน: ไม่มี $.state ไม่มี signal graph มีแค่ $$renderer.push กับ template literal และ $.escape',
+  },
+  {
+    q: 'legacy `$: doubled = x * 2` (คอมไพล์ด้วย `runes: false`) ต่างจาก `let doubled = $derived(x * 2)` ยังไงในระดับ runtime construct?',
+    options: [
+      'They are identical — only the syntax differs',
+      '`$:` compiles to `$.legacy_pre_effect`, an eagerly re-run effect that `$.set`s a `mutable_source`; `$derived` compiles to `$.derived`, a lazy, pull-based computation — genuinely different runtime primitives',
+      '`$:` only works with numbers',
+      '`$derived` is only available in legacy mode',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย compiled body สองแบบในบทนี้: แบบหนึ่งเป็น effect แบบ eager ที่ assign เข้า mutable source อีกแบบเป็น derived แบบ lazy ที่ไม่เคยถูกเรียกแบบ eager เลย',
+  },
+];
+
+<Quiz client:visible id="svelte-internals/compiler-output" questions={quizCompilerOutput} />
+
+<ProgressTracker client:visible id="internals-compiler" />

@@ -1,0 +1,211 @@
+---
+title: 'How Svelte Works'
+description: 'Why the compiler output, the signal graph, fine-grained DOM updates, and hydration are what let you actually judge unfamiliar or AI-generated Svelte code — a module map plus one end-to-end diagram from source to DOM.'
+sidebar:
+  order: 1
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+## What this module is for
+
+Every earlier module in this course taught you to *use* Svelte: runes, components, bindings, stores, SvelteKit. None of it required knowing what the compiler does with your `.svelte` file after you write it, or what actually runs in the browser once it's compiled. You can write a working `$state`, a correct keyed `{#each}`, a `<svelte:boundary>` — without ever asking what `$state(0)` becomes, why mutating one object updates one DOM node and nothing else, or what "hydration" is actually doing to the HTML the server sent down.
+
+That gap is exactly where AI-generated Svelte fails in ways that look fine on the surface: a `$derived` value mutated as if it were a plain object, an `{#each}` with no key on a list of components that carry their own local state, a `$state` read inside a `setTimeout` with the expectation that it's still "reactive" there, server and client markup that quietly disagree. None of these are syntax errors. None of them are caught by `svelte-check`. All of them are facts about the runtime.
+
+This module has one job: give you the four pieces of runtime knowledge that let you look at **someone else's Svelte code** — not run it, not profile it, just read it — and answer:
+
+1. **What does this rune actually become?** (the compiler output — `$state`, `$derived`, `$effect`, templates, events)
+2. **Will writing this value re-run anything, and when?** (the signal graph — sources, deriveds, effects, dirty flags, microtask batching)
+3. **How much DOM work does this update really cost?** (fine-grained updates — template cloning, `$.set_text`, keyed reconciliation)
+4. **What happens the instant this page becomes interactive — and what happens if the server and client disagree?** (hydration and SvelteKit's request pipeline)
+
+Every claim in this module is backed by one of three things: [svelte.dev](https://svelte.dev/docs/svelte), the actual Svelte source shipped in `node_modules/svelte` (this course pins **5.57.1** — the same version [`SveltePlayground`](/svelte/en/reactivity/state-rune/) loads from esm.sh in your browser), cited by file and function name; or a vitest test in this course's harness whose real output is pasted below it — never a guess about internals.
+
+<Callout title="The one-line takeaway">
+This module doesn't add new Svelte APIs — it explains the four things every rune, template, and SvelteKit request actually runs through: the **compiler** (turns `.svelte` into plain JS calls against `svelte/internal/client`), the **signal graph** (sources, deriveds, and effects wired together with dirty flags, flushed in a microtask batch), **fine-grained DOM updates** (the compiler already knows exactly which text node or attribute a value touches, so there is no tree to diff), and **hydration** (attaching that same graph to HTML the server already sent, using comment markers to find the right nodes). Every one of the four is on svelte.dev or directly readable in the installed package — unfamiliar, not undocumented.
+</Callout>
+
+## What this module covers
+
+| Lesson | Answers the question |
+|---|---|
+| [Compiler Output](/svelte/en/svelte-internals/compiler-output/) | What does `$state`/`$derived`/`$effect`/a template/an event actually compile to — and how does that change with `generate: 'server'`, `dev: true`, or legacy (non-runes) mode? |
+| [Signals & Scheduling](/svelte/en/svelte-internals/signals-and-scheduling/) | How does Svelte know what to re-run, and when — the dependency graph, `DIRTY`/`MAYBE_DIRTY`, and microtask batching? |
+| [Fine-Grained DOM](/svelte/en/svelte-internals/fine-grained-dom/) | Why does changing one `$state` value touch exactly one DOM node, and how does keyed `{#each}` decide to move a node instead of recreating it? |
+| [Hydration & SSR](/svelte/en/svelte-internals/hydration-and-ssr/) | How does `hydrate()` attach behavior to HTML the server already rendered, and what actually happens when server and client disagree? |
+
+The [Why Svelte: The Compiler](/svelte/en/foundations/why-svelte-the-compiler/) lesson already introduced "Svelte is a compiler, not a runtime library" from the outside. This module goes past that framing into the actual compiled output and the runtime it calls into.
+
+## A runnable question: how little DOM work does one `$state` write actually cost?
+
+Before any of the deeper mechanism, here is the fact this whole module orbits: the compiler already knows, at compile time, exactly which DOM text node depends on which value — so updating one `$state` never touches anything else, and there is no tree to diff.
+
+```ts
+// src/lib/module-preview.svelte.test.ts
+import { mount, flushSync, unmount } from 'svelte';
+import { compile } from 'svelte/compiler';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndMount(src: string, target: HTMLElement) {
+  const result = compile(src, { generate: 'client', runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `preview-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const { default: Component } = await import(/* @vite-ignore */ file);
+  return mount(Component, { target });
+}
+
+test('changing ONE $state value writes to exactly one text node — the other is never touched', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+
+  const instance = await compileAndMount(
+    `<script>
+      let a = $state('a0');
+      let b = $state('b0');
+      export function setA(v) { a = v; }
+    </script>
+    <p id="pa">{a}</p>
+    <p id="pb">{b}</p>`,
+    target,
+  );
+
+  const pb = target.querySelector('#pb')!;
+  const bTextNode = pb.firstChild as Text;
+  let bWrites = 0;
+  const setter = Object.getOwnPropertyDescriptor(Node.prototype, 'nodeValue')!.set!;
+  Object.defineProperty(bTextNode, 'nodeValue', {
+    set(v) { bWrites++; setter.call(this, v); },
+    get() { return bTextNode.data; },
+    configurable: true,
+  });
+
+  (instance as any).setA('a1');
+  flushSync();
+
+  expect(target.querySelector('#pa')!.textContent).toBe('a1');
+  expect(bWrites).toBe(0); // b's text node was never written to, at all
+  unmount(instance);
+});
+```
+
+```text
+✓ changing ONE $state value writes to exactly one text node — the other is never touched
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+[Fine-Grained DOM](/svelte/en/svelte-internals/fine-grained-dom/) proves exactly why this works: the template is cloned once, and the compiler already generated a `$.template_effect` that calls `$.set_text` on that one specific text node — there is no virtual tree, no diff, nothing to walk.
+
+<Mermaid title="One update, source to DOM" code={bigDiagram} />
+
+export const bigDiagram = `flowchart TD
+  src["\`.svelte\` source"] --> compile["svelte/compiler compile\`()\`\n(3-transform/client visitors)"]
+  compile --> js["Compiled JS: \`$.state\`/\`$.derived\`/\`$.user_effect\`\n\`$.template\` + \`$.template_effect\`\n(Compiler Output)"]
+  js --> mount["\`mount()\` builds the signal graph\nSource / Derived / Effect objects\n(Signals & Scheduling)"]
+  ssr["Server: \`render()\`\nHTML + \`<!--[-->\` markers"] --> hydrate["\`hydrate()\` walks the markers\nreuses the server's DOM\n(Hydration & SSR)"]
+  hydrate --> mount
+  mount --> write["a write: \`set\`\`(\`source, value\`)\`\nmark_reactions: DIRTY / MAYBE_DIRTY"]
+  write --> batch["Batch.ensure\`()\`.schedule\`(\`effect\`)\`\nqueued for the next microtask"]
+  batch --> flush["batch flush: is_dirty -> update_effect\n(Signals & Scheduling)"]
+  flush --> dom["\`$.set_text\` / keyed \`{#each}\` reconcile\nexactly the changed node, nothing else\n(Fine-Grained DOM)"]`;
+
+## Mental Model
+
+Reading unfamiliar Svelte well means running a small machine in your head while your eyes only see the component source: *what does this rune compile to, what does writing it mark dirty, and what DOM call does that dirty flag eventually trigger.* The four lessons here are exactly those three questions plus one more: what happens when the DOM already exists before any of this runs (hydration). Nothing here is exotic — the compiler's output is plain, readable JavaScript, and the signal graph is a few hundred lines you can read in `node_modules/svelte/src/internal/client/`.
+
+## Common Misconceptions
+
+- **"Internals are for people who want to contribute to Svelte."** You need enough of this to *read* a diff, not to reimplement the compiler. Every fact in this module is something you can point to in someone else's pull request.
+- **"Svelte's speed comes from a faster virtual DOM diff."** There is no virtual DOM to diff. [Fine-Grained DOM](/svelte/en/svelte-internals/fine-grained-dom/) proves the compiler already knows which node a value touches, at compile time — the "diffing" work a VDOM framework does at runtime, Svelte does once, ahead of time, in the compiler.
+- **"If it compiles and renders correctly once, the code is fine."** A `$derived` value mutated instead of recomputed, an unkeyed `{#each}` over components with their own local state, a `$state.raw` value mutated expecting a UI update — all of these render correctly on the *first* pass. The bug only shows up on the update that follows, exactly the pass a quick manual test skips.
+
+## Reading AI-generated code
+
+The whole point of this module is this section, four times over — one per lesson. As a preview, here is the survey-level version: a snippet that renders correctly the first time and is still wrong.
+
+<SpotTheBug code={`<script>
+  let todos = $state([
+    { id: 1, text: 'Buy milk', expanded: false },
+    { id: 2, text: 'Walk the dog', expanded: false },
+  ]);
+</script>
+
+{#each todos as todo}
+  <li>
+    {todo.text}
+    <button onclick={() => (todo.expanded = !todo.expanded)}>
+      {todo.expanded ? 'Hide' : 'Show'} details
+    </button>
+  </li>
+{/each}`}>
+This `{#each}` has no key (`(todo.id)` is missing). Svelte's default keying is purely **positional** — the each block's default key function is the index, not the item's identity. As long as items are only appended or the whole list is replaced, this looks fine. The bug appears the moment an item is **removed from the middle or the list is reordered**: the DOM node at position 2 keeps its own local toggle state (`expanded`, tracked per rendered node, not per todo) while the *data* rendered into it shifts to whatever item now occupies that position — so the wrong todo's "details" stay expanded. [Fine-Grained DOM](/svelte/en/svelte-internals/fine-grained-dom/) proves the exact mechanism: with a real key, reordering **moves** the existing DOM nodes (and their local state) to match the value; without one, the nodes stay in place and only their *content* updates, silently reattaching per-node state to the wrong value.
+</SpotTheBug>
+
+<Callout title="The one-line takeaway">
+Four mechanisms decide what happens after you write a `.svelte` file: the **compiler** (turns runes and markup into plain calls against `svelte/internal/client` — proven with `compile()` throughout this module), the **signal graph** (`Source`/`Derived`/`Effect` objects linked by `deps`/`reactions`, marked `DIRTY`/`MAYBE_DIRTY`, flushed once per microtask), **fine-grained DOM updates** (the compiler already knows which node a value touches — no tree, no diff), and **hydration** (reusing the server's DOM by walking `<!--[-->`/`<!--]-->` comment markers instead of throwing it away). None of these are exotic — they're on svelte.dev and in the `svelte` package you already have installed — but almost no AI-generated code is written with them in mind, which is exactly why they're worth having in your head when you review one.
+</Callout>
+
+export const quizInternalsIndex = [
+  {
+    q: "What is this module's central goal?",
+    options: [
+      'Teach you to reimplement the Svelte compiler',
+      'Let you judge, by reading unfamiliar Svelte source, what a rune compiles to, when it re-runs dependents, and how much DOM work an update actually costs',
+      'Replace the need for the Svelte devtools browser extension',
+      'Cover every internal Svelte source file line by line',
+    ],
+    answer: 1,
+    explain: 'The module is scoped deliberately to reading skill: given someone else\'s Svelte code, can you predict what the compiler and runtime will actually do, from the source alone.',
+  },
+  {
+    q: '```svelte\n<script>\n  let a = $state(\'a0\');\n  let b = $state(\'b0\');\n</script>\n<p>{a}</p>\n<p>{b}</p>\n```\nAfter changing only `a`, why does `b`\'s DOM node never get touched at all?',
+    options: [
+      'Svelte runs a very fast virtual DOM diff against the previous render',
+      'The compiler already generated a `$.template_effect` that calls `$.set_text` on that specific text node — there is no tree to diff, because the dependency was known at compile time',
+      'Svelte re-renders the whole component but batches the DOM writes',
+      'It only works because the component is small',
+    ],
+    answer: 1,
+    explain: 'Proven by the module preview test above: writing to one $state value produced zero writes to an unrelated text node\'s nodeValue setter — Fine-Grained DOM goes into the exact compiled call that does this.',
+  },
+  {
+    q: '```svelte\n{#each todos as todo}\n  <li>{todo.text}</li>\n{/each}\n```\nWhat is the default key Svelte uses for this each block, since none is given?',
+    options: [
+      'The item\'s object identity',
+      'The item\'s position (index) in the array — proven in Fine-Grained DOM: reordering the array without a key leaves nodes in place and only updates their content',
+      'A random UUID generated per item',
+      'Svelte requires a key and this is a compile error',
+    ],
+    answer: 1,
+    explain: 'Without `(expr)`, Svelte\'s each block keys by position. This is a real, common source of the "wrong node keeps the wrong local state after a reorder" bug this module\'s SpotTheBug demonstrates.',
+  },
+  {
+    q: 'True or false: every internals claim in this module is either stated on svelte.dev, quoted from the installed Svelte source with a file and function name, or proven by a vitest test whose real output is shown.',
+    options: ['True', 'False — some internals had to be guessed', 'Only the compiler-output lesson follows this rule', 'Only true for Svelte 4'],
+    answer: 0,
+    explain: 'This is the module\'s explicit sourcing rule, stated in the intro — no invented field names or numbers anywhere in these four lessons.',
+  },
+  {
+    q: 'Which lesson explains what happens when a page\'s server-rendered HTML and the client\'s first render disagree?',
+    options: ['Compiler Output', 'Signals & Scheduling', 'Fine-Grained DOM', 'Hydration & SSR'],
+    answer: 3,
+    explain: 'Hydration & SSR proves — with a real server render() followed by a real hydrate() — exactly what Svelte does and does not check when reusing server-sent HTML.',
+  },
+];
+
+<Quiz client:visible id="svelte-internals/index" questions={quizInternalsIndex} />
+
+<ProgressTracker client:visible id="internals-index" />

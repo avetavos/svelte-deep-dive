@@ -1,0 +1,354 @@
+---
+title: 'Fine-Grained DOM'
+description: 'ทำไมถึงไม่มี virtual DOM ให้ diff — template cloning, $.set_text ที่แตะ node เดียวเป๊ะ (พิสูจน์ด้วย spy), keyed เทียบ unkeyed {#each} reconciliation (พิสูจน์ด้วย node identity จริง) และ {#if} branch effects'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
+
+บท [Signals & Scheduling](/svelte/th/svelte-internals/signals-and-scheduling/) พูดถึง *เมื่อไหร่* effect รัน บทนี้พูดถึง *มันทำอะไรกับ DOM จริง ๆ* — และทำไมมันถึงเป็น operation ที่เล็กที่สุดเท่าที่จะเป็นไปได้เสมอ ตัดสินใจไว้ตอนคอมไพล์ ไม่เคยเป็นการเปรียบเทียบ tree ตอน runtime
+
+## Template cloning: parse ครั้งเดียว clone ต่อการ mount
+
+`$.from_html(content, flags)` (`packages/svelte/src/internal/client/dom/template.js`) parse template string เป็น `<template>` element จริง **ครั้งเดียว** ตอนที่ template function ของ component ถูกเรียกครั้งแรก แล้ว cache ไว้ใน closure variable:
+
+```js
+// packages/svelte/src/internal/client/dom/template.js — from_html (trimmed)
+export function from_html(content, flags) {
+	var node; // parsed once, cached in this closure
+	return () => {
+		if (node === undefined) {
+			node = create_fragment_from_html(content);
+			if (!(flags & TEMPLATE_FRAGMENT)) node = get_first_child(node);
+		}
+		var clone = use_import_node || is_firefox ? document.importNode(node, true) : node.cloneNode(true);
+		assign_nodes(clone, clone);
+		return clone;
+	};
+}
+```
+
+ทุกการ mount ครั้งถัดไปของ component เดียวกันคือ `cloneNode(true)` ของ node ที่ cache ไว้และ parse แล้ว — เบราว์เซอร์ parse HTML string แค่ครั้งเดียวไม่ว่าจะมีกี่ instance ก็ตาม และก็ไม่มี "virtual node tree" ที่อธิบาย template ด้วย — `clone` **คือ** DOM จริงทันที
+
+## `$.set_text` แตะ node เดียวเป๊ะ — พิสูจน์ด้วย spy ไม่ใช่แค่ output ที่เท่ากัน
+
+```svelte
+<script>
+  let a = $state('a0');
+  let b = $state('b0');
+</script>
+
+<p>{a}</p>
+<p>{b}</p>
+```
+
+export const twoTextCode = `<script>
+  let a = $state('a0');
+  let b = $state('b0');
+</script>
+
+<p>{a}</p>
+<p>{b}</p>
+`;
+
+<SveltePlayground code={twoTextCode} id="fine-grained-two-text" />
+
+`{a}`/`{b}` แต่ละตัวได้ `$.template_effect(() => $.set_text(text, $.get(a)))` ของตัวเอง การเทียบ output ที่เป็น text เฉย ๆ ก่อน/หลังพิสูจน์ได้แค่ว่า *ผลลัพธ์ที่มองเห็น* ถูกต้อง — มันจะจับไม่ได้เลยถ้า framework แอบ re-render ทุกอย่างใหม่แล้วบังเอิญได้ string เดียวกัน เพื่อพิสูจน์จริง ๆ ว่า**มี node เดียวเท่านั้นที่ถูกแตะ** เทสต์นี้แทนที่ setter ของ `nodeValue` ของ text node `b` ด้วย spy ก่อนเปลี่ยน `a` แล้ว assert ว่ามันไม่เคยถูกเรียกเลย:
+
+```ts
+// src/lib/set-text-granularity.svelte.test.ts
+import { mount, flushSync, unmount } from 'svelte';
+import { compile } from 'svelte/compiler';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndMount(src: string, target: HTMLElement) {
+  const result = compile(src, { generate: 'client', runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `settext-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const { default: Component } = await import(/* @vite-ignore */ file);
+  return mount(Component, { target });
+}
+
+test('$.set_text touches only the ONE text node whose $state actually changed', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+
+  const instance = await compileAndMount(
+    `<script>
+      let a = $state('a0');
+      let b = $state('b0');
+      export function setA(v) { a = v; }
+    </script>
+    <p id="pa">{a}</p>
+    <p id="pb">{b}</p>`,
+    target,
+  );
+
+  const pb = target.querySelector('#pb')!;
+  const bTextNode = pb.firstChild as Text;
+  let bWrites = 0;
+  const setter = Object.getOwnPropertyDescriptor(Node.prototype, 'nodeValue')!.set!;
+  Object.defineProperty(bTextNode, 'nodeValue', {
+    set(v) { bWrites++; setter.call(this, v); },
+    get() { return bTextNode.data; },
+    configurable: true,
+  });
+
+  (instance as any).setA('a1');
+  flushSync();
+
+  expect(target.querySelector('#pa')!.textContent).toBe('a1');
+  expect(target.querySelector('#pb')!.textContent).toBe('b0');
+  expect(bWrites).toBe(0); // b's text node nodeValue setter was NEVER invoked
+  expect(pb.firstChild).toBe(bTextNode); // and it's the exact same node object, never recreated
+
+  unmount(instance);
+  target.remove();
+});
+```
+
+```text
+✓ $.set_text touches only the ONE text node whose $state actually changed
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## Keyed `{#each}`: การสลับลำดับ **ย้าย** node; unkeyed สลับ **เนื้อหา**
+
+`{#each items as item (item.id)}` และ `{#each items as item}` คอมไพล์เป็น call `$.each(node, flags, get_collection, get_key, render_fn)` เดียวกัน (บท [Compiler Output](/svelte/th/svelte-internals/compiler-output/) โชว์ทั้งสองแบบ) — ความต่างมีแค่ `get_key` เป็นอะไร ถ้าไม่มี `(expr)` compiler จะส่งฟังก์ชัน `index` ของ Svelte เองเข้าไป:
+
+```js
+// packages/svelte/src/internal/client/dom/blocks/each.js — the default (positional) key
+export function index(_, i) { return i; }
+```
+
+ภายใน `each()` เก็บ `Map<key, EachItem>` (`items`) ไว้ การ reconcile array ใหม่จะเดินตาม key ใหม่: entry เดิมใน map ถูก **ย้าย** (`move()`/`link()` เชื่อม linked list ของ item-effect ใหม่แล้วย้าย DOM node จริงด้วย `dest.before(node)`); key ที่ไม่มี entry เดิมจะได้ `EachItem` **ใหม่เอี่ยม** ผ่าน `create_item()` (effect `branch()` ใหม่และ DOM ใหม่) ถ้า `get_key = index` "key ที่ตำแหน่ง 2" จะเป็น `2` เสมอ ไม่ว่า array element ตัวไหนจะอยู่ตรงนั้นตอนนี้ก็ตาม — การสลับลำดับ array เลยไม่ trigger การย้ายเลย DOM node สามตัว*เดิม*อยู่ในตำแหน่งสามตำแหน่ง*เดิม* แล้วแค่เนื้อหา `$.set_text` เปลี่ยนแทน เหมือน section ก่อนหน้าเป๊ะ ถ้ามี key ต่อ item จริง การสลับลำดับ**คือ**การเปลี่ยน key เทียบกับตำแหน่ง ดังนั้น `each()` จะย้าย node เดิม (พร้อมทุกอย่างที่ reactive แนบอยู่กับมัน) ไปตำแหน่งใหม่แทน:
+
+```ts
+// src/lib/each-reconciliation.svelte.test.ts
+import { mount, flushSync, unmount } from 'svelte';
+import { compile } from 'svelte/compiler';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { expect, test } from 'vitest';
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const compiledDir = path.join(dir, '.compiled');
+mkdirSync(compiledDir, { recursive: true });
+
+async function compileAndMount(src: string, target: HTMLElement) {
+  const result = compile(src, { generate: 'client', runes: true, filename: 'Playground.svelte' });
+  const file = path.join(compiledDir, `each-${Date.now()}-${Math.random()}.mjs`);
+  writeFileSync(file, result.js.code);
+  const { default: Component } = await import(/* @vite-ignore */ file);
+  return mount(Component, { target });
+}
+
+const KEYED = `<script>
+  let items = $state([{ id: 1, text: 'one' }, { id: 2, text: 'two' }, { id: 3, text: 'three' }]);
+  export function reverse() { items = [...items].reverse(); }
+</script>
+{#each items as item (item.id)}<p>{item.text}</p>{/each}`;
+
+const UNKEYED = `<script>
+  let items = $state([{ id: 1, text: 'one' }, { id: 2, text: 'two' }, { id: 3, text: 'three' }]);
+  export function reverse() { items = [...items].reverse(); }
+</script>
+{#each items as item}<p>{item.text}</p>{/each}`;
+
+test('keyed {#each}: reversing the array MOVES the existing <p> nodes (same objects, new order)', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+  const instance = await compileAndMount(KEYED, target);
+
+  const before = Array.from(target.querySelectorAll('p'));
+  (instance as any).reverse();
+  flushSync();
+  const after = Array.from(target.querySelectorAll('p'));
+
+  expect(after.map((p) => p.textContent)).toEqual(['three', 'two', 'one']);
+  expect(after[0]).toBe(before[2]); // the SAME node that used to render "three" moved to the front
+  expect(after[2]).toBe(before[0]);
+  unmount(instance);
+  target.remove();
+});
+
+test('unkeyed {#each} (positional key): reversing the array does NOT move nodes — same nodes, only their text updates', async () => {
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+  const instance = await compileAndMount(UNKEYED, target);
+
+  const before = Array.from(target.querySelectorAll('p'));
+  (instance as any).reverse();
+  flushSync();
+  const after = Array.from(target.querySelectorAll('p'));
+
+  expect(after.map((p) => p.textContent)).toEqual(['three', 'two', 'one']);
+  expect(after[0]).toBe(before[0]); // the node at position 0 never moved — its CONTENT changed instead
+  expect(after[1]).toBe(before[1]);
+  expect(after[2]).toBe(before[2]);
+  unmount(instance);
+  target.remove();
+});
+```
+
+```text
+✓ keyed {#each}: reversing the array MOVES the existing <p> nodes (same objects, new order)
+✓ unkeyed {#each} (positional key): reversing the array does NOT move nodes — same nodes, only their text updates
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+นี่คือกลไกจริงเบื้องหลังบั๊กคลาสสิก "list ไม่มี key ที่มีแถวถือ state ของตัวเอง": state ของ node เอง (`$state` ของ component ตัวหนึ่ง, ค่า `<input>` แบบ uncontrolled, CSS transition state) อยู่บน DOM node/effect ไม่ใช่บน array item ถ้าย้าย node (มี key จริง) state นั้นจะเดินทางไปพร้อมค่าที่มันเป็นของอย่างถูกต้อง ถ้าปล่อย node อยู่กับที่ (positional key) state จะติดอยู่กับ *ตำแหน่ง* ในขณะที่ค่าที่ไหลผ่านมันเปลี่ยนไปข้างใต้
+
+Key ที่ซ้ำกันก็เป็นกรณีที่ถูกเช็คจริง ไม่ใช่ปล่อยผ่านเงียบ ๆ: `validate_each_keys` (ไฟล์เดียวกัน) เดิน array แล้ว throw error `each_key_duplicate` จริงทันทีที่ item สองตัวให้ key เดียวกัน — พิสูจน์ว่า "แค่ใช้ `(item.id)`" ยังไม่พอถ้า `id` ไม่ได้ unique จริง
+
+## `{#if}`: branch effect ที่ถูกสร้างและทำลาย ไม่ใช่แค่ซ่อน
+
+`{#if}` block (บท [Compiler Output](/svelte/th/svelte-internals/compiler-output/) โชว์ว่ามันคอมไพล์เป็น `$.if(node, ($$render) => { if (cond) $$render(consequent); else $$render(alternate, -1); })`) ไม่ได้ render ทั้งสอง branch แล้วสลับ `display: none` — มีแค่ template ของ branch ที่ active เท่านั้นที่ถูก clone เข้า DOM ในฐานะ **branch effect** ของตัวเองพร้อม lifecycle ของตัวเอง การสลับ branch ทำลาย branch effect เก่า (รัน cleanup ของ `$effect`/`onMount` ที่ลงทะเบียนไว้ข้างในนั้น) แล้วสร้างอันใหม่สำหรับ branch ใหม่ นี่คือเหตุผลว่าทำไม state ข้างใน `{#if}` branch (local `$state` ของ child component เช่น) ไม่รอดจากการสลับ branch — subtree ทั้งหมดถูกทำลายจริง ไม่ใช่แค่ซ่อน
+
+## `bind:` เป็นสอง effect โดยย่อ
+
+`bind:value` แบบสองทางไม่ใช่มายากลชิ้นเดียว — มันคือสอง effect อิสระที่ผูกกับ source เดียวกัน: effect หนึ่ง (template effect แบบเดียวกับ dynamic attribute อื่น ๆ) เขียนค่า `$state` **เข้า** DOM property ทุกครั้งที่ state เปลี่ยน และ event listener ธรรมดาอีกตัวเขียนค่าปัจจุบันของ DOM **กลับเข้า** `$state` source ทุกครั้งที่ DOM event ที่เกี่ยวข้องเกิดขึ้น ไม่มีอันไหนเป็น "binding primitive" พิเศษในระดับ signal graph เลย — มันคือ write-effect ธรรมดากับ event handler ธรรมดาที่บังเอิญเล็ง source เดียวกัน ซึ่งก็เป็นเหตุผลว่าทำไม `bind:value={get, set}` แบบ function form (พูดถึงใน [Bindings](/svelte/th/bindings-actions-transitions/bindings/)) ถึงใช้งานได้: มันแค่ส่ง read/write function คู่ต่างไปให้ effect สองตัวเดิมนั่นเอง
+
+## Fine-grained update เทียบกับ VDOM diff ในหนึ่งย่อหน้า
+
+VDOM framework re-run render function สร้าง tree description ใหม่แล้ว **diff** กับอันก่อนหน้าตอน runtime — คำถาม "อะไรเปลี่ยนไปบ้าง" ถูกตอบทุกครั้งที่ update โดยการเดิน (บางส่วนของ) tree Svelte ตอบคำถาม "อะไรเปลี่ยน" ครั้งเดียวใน compiler: ทุกค่า dynamic ใน template มี `$.template_effect` ของตัวเองที่ compiler สร้างไว้แล้วที่เรียก DOM API ที่ค่านั้นต้องการเป๊ะ (`$.set_text`, `$.set_attribute`, keyed `$.each` reconciliation) — ไม่มี tree ที่อธิบาย render ปัจจุบันให้ diff เพราะไม่มี "render ปัจจุบัน" ในรูป data structure เลย มีแค่ DOM จริงบวกกราฟของ effect ที่รู้เป๊ะว่าตัวเองเป็นเจ้าของส่วนไหน
+
+<Mermaid title="Fine-grained update เทียบกับ VDOM diff" code={compareDiagram} />
+
+export const compareDiagram = `flowchart LR
+  subgraph vdom["VDOM framework, every update"]
+    r1["re-run render\`()\`"] --> tree["new tree description"]
+    tree --> diff["diff against previous tree\n(runtime work, every time)"]
+    diff --> patch["apply the discovered patches"]
+  end
+  subgraph svelte["Svelte, every update"]
+    w["\`set(\`source\`)\`"] --> known["compiler already generated\nthe ONE effect that owns this value\n(Compiler Output)"]
+    known --> apply["\`$.set_text\`/\`$.set_attribute\`/keyed \`each\` move\n(no diff step — already known)"]
+  end`;
+
+## อ่านโค้ดที่ AI เขียน
+
+- คำอธิบายบอกว่า Svelte "diff DOM" หรือ "diff virtual tree" หรือเปล่า? ไม่มีทั้งสองอย่างเลย — ทุกค่า dynamic มี effect ที่คอมไพล์ไว้แล้วที่รู้เป๊ะว่าตัวเองเป็นเจ้าของ node ไหน พิสูจน์ข้างบนด้วย spy ที่โชว์ว่าไม่มีการเขียนไปที่ node ที่ไม่เกี่ยวเลย
+- `{#each}` บน list ของ**component ที่มี local state ของตัวเอง** (แถวฟอร์ม, การ์ดที่ขยายได้, animation) ไม่มี key หรือ key ด้วย index หรือเปล่า? พิสูจน์ข้างบน: ถ้าไม่มี key ต่อ item จริง การสลับลำดับจะปล่อย node อยู่กับที่แล้วสลับเนื้อหาแทน — local state ต่อ node ก็เลยไปติดกับค่าผิดตัว
+- โค้ดสมมติว่า state ของ `{#if}` branch (local `$state` ของ child component, `setTimeout` ที่ schedule ข้างใน) รอดจากการสลับ branch ที่มันไม่ได้ trigger เองหรือเปล่า? การสลับ branch ทำลาย branch effect เก่าทั้งหมด ไม่มีอะไรข้างในรอดเลยเว้นแต่จะถูกยกขึ้นไปที่ parent
+- comment review อ้างว่า `{#each}` สองตัวที่ key ด้วย `{item.id}` ที่ `id` เท่ากันโดยไม่ตั้งใจ "แค่ render ตามลำดับใดลำดับหนึ่ง" หรือเปล่า? มันจะ throw error `each_key_duplicate` จริง ไม่ถูกปล่อยผ่านเงียบ ๆ
+
+<SpotTheBug code={`<script>
+  let rows = $state([
+    { id: 1, label: 'First' },
+    { id: 2, label: 'Second' },
+    { id: 3, label: 'Third' },
+  ]);
+
+  function moveUp(i) {
+    if (i === 0) return;
+    // "swap the two rows"
+    [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]];
+  }
+</script>
+
+{#each rows as row, i}
+  <div>
+    <input placeholder={row.label} />
+    <button onclick={() => moveUp(i)}>Move up</button>
+  </div>
+{/each}`}>
+`{#each}` นี้ไม่มี key จึง key ด้วยตำแหน่ง (`i`) การสลับลำดับ array ข้างใต้ (การ swap ใน `moveUp`) ไม่ย้าย DOM node เลย — `<div>` ที่แต่ละตำแหน่งอยู่ตรงเดิม แล้วแค่ *ค่า* ที่ไหลผ่านมัน (แล้วก็ `placeholder`) เปลี่ยนแทน ดูเผิน ๆ ก็ไม่เป็นไรสำหรับ `placeholder` แต่ `<input>` ตรงนี้เป็นแบบ **uncontrolled** (ไม่มี `bind:value`): อะไรก็ตามที่ user พิมพ์เข้าไปใน `<input>` จริง ๆ จะยังอยู่บน DOM node ที่ไม่ได้ย้าย — "เลื่อนแถวขึ้น" จึงทิ้งข้อความที่พิมพ์ไว้แบบเงียบ ๆ ไว้ที่ตำแหน่งเดิม ในขณะที่ label สลับแถวไปข้างใต้มัน ทางแก้คือใส่ key ต่อ item จริง `{#each rows as row, i (row.id)}` ซึ่ง — พิสูจน์ข้างบน — ทำให้ Svelte ย้าย `<div>`/`<input>` node จริง (พร้อมสิ่งที่ user พิมพ์ไว้) ไปพร้อมแถวของมัน แทนที่จะย้าย label ผ่าน input ที่อยู่กับที่
+</SpotTheBug>
+
+## Mental Model
+
+ไม่มี tree ให้ diff จึงไม่มีอะไรต้อง "คิด" ตอน runtime — ทุกส่วน dynamic ของ template มี effect ที่ compiler สร้างไว้แล้วโดยเฉพาะซึ่งเป็นเจ้าของ DOM operation เดียวเป๊ะ การ update หมายถึง: effect นี้ dirty ไหม ถ้าใช่ก็รัน DOM call เดียวที่มันเป็นเจ้าของ การตัดสินใจจริงเดียวของ `{#each}` คือต่อ-key: key นี้มี node อยู่แล้วไหม (ย้ายมัน) หรือไม่มี (สร้างใหม่) — พิสูจน์ข้างบนด้วย node-identity assertion จริง ไม่ใช่แค่ text ที่ตรงกัน
+
+## ข้อแลกเปลี่ยน
+
+| ทางเลือก | ข้อดี | ต้นทุน |
+|---|---|---|
+| DOM effect ที่รู้ตั้งแต่ตอนคอมไพล์ (ไม่มีขั้นตอน diff) | update มีต้นทุนแค่ DOM operation ที่ค่าที่เปลี่ยนต้องการเป๊ะ — พิสูจน์ข้างบน ไม่มีการเขียนส่วนเกินเลย | compiler ต้องมองเห็น shape ของ template แบบ static ได้; markup ที่ dynamic/generate มากเกินไปไม่มี equivalent ใน model นี้ |
+| Keyed `{#each}` (`Map<key, EachItem>`, ย้ายหรือสร้าง) | การสลับลำดับ แทรก และลบ รักษา state และ DOM identity ต่อ item ไว้ตรงตำแหน่งที่ key บอกเป๊ะ | เลือก key ผิด (หรือไม่มี key) ทำให้ตกลงมาที่ positional reuse แบบเงียบ ๆ — ไม่มี error มีแค่ state ที่ติดกับค่าผิดตัว |
+| `{#if}` เป็นการสร้าง/ทำลาย branch effect เต็มรูปแบบ (ไม่ใช่การสลับการแสดงผล) | รัน cleanup (`onDestroy`, effect teardown) ถูกต้องบน branch ที่กำลังจะออกไปทุกครั้ง | state ข้างใน branch ที่แพ้หายไปจริง ๆ ไม่ใช่ "พัก" ไว้ — โค้ดที่คาดว่ามันจะอยู่รอดข้ามการสลับซ่อน/แสดงต้องยกมันขึ้นไปเก็บที่ parent |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"Svelte diff virtual DOM ที่เร็วมาก เร็วกว่า React"** ไม่มี virtual DOM diff เลย — พิสูจน์ข้างบนด้วย spy ที่โชว์ว่า `nodeValue` setter ของ node ที่ไม่เกี่ยวไม่เคยถูกเรียกเลย เพราะ compiler รู้ล่วงหน้าอยู่แล้วว่ามันไม่ต้อง
+- **"`{#each}` ที่ไม่มี key ก็ยังทำงานถูกต้อง แค่ performance แย่กว่านิดหน่อย"** พิสูจน์แล้วว่าผิดเมื่อ item มี state ของตัวเอง: การสลับลำดับ list ที่ไม่มี key สลับ*ค่า*ใต้ node ที่อยู่กับที่ ซึ่งเป็นบั๊กด้าน correctness (state ผิดตัวติดกับแถวผิด) ไม่ใช่แค่ทางช้าลง
+- **"`{#if}` แค่ show/hide เนื้อหา เหมือน `display: none`"** มันสร้างและทำลาย branch effect จริง — อะไรก็ตามที่มี lifecycle ของตัวเองข้างใน `{#if}` branch จะถูกรื้อและสร้างใหม่จริงทุกครั้งที่สลับ branch พิสูจน์โดยข้อเท็จจริงที่ per-item effect ของ `{#each}` เองก็ทำงานแบบเดียวกันเมื่อ key หายไป
+
+<Callout title="สรุปหนึ่งบรรทัด">
+Svelte ไม่เคย diff อะไรตอน runtime เลย: `$.from_html` parse template ครั้งเดียวแล้ว clone ต่อการ mount และทุกค่า dynamic มี effect ที่ compiler สร้างไว้ให้แล้วที่เรียก DOM API เดียวที่มันต้องการ — พิสูจน์ข้างบนด้วย spy ที่โชว์ว่าไม่มีการเขียนไปที่ node ที่ไม่เกี่ยวเลย Keyed `{#each}` reconcile ด้วย `Map<key, EachItem>` จริง: node ของ key เดิม**ถูกย้าย** node ของ key ใหม่**ถูกสร้าง** — พิสูจน์ด้วย node-identity assertion จริงข้ามการสลับลำดับ ถ้าไม่มี key (หรือใช้ positional key ที่เป็นค่า default) array สลับลำดับได้ในขณะที่ DOM node ทุกตัวอยู่ตำแหน่งเดิมเป๊ะ แอบเปลี่ยน local state ของ node ไปติดกับค่าอะไรก็ตามที่ไหลผ่านตำแหน่งนั้นตอนนี้ `{#if}` สร้างและทำลาย branch effect จริง ไม่ใช่แค่สลับการแสดงผล
+</Callout>
+
+export const quizFineGrainedDom = [
+  {
+    q: 'HTML string ของ template คอมโพเนนต์ถูกเบราว์เซอร์ parse กี่ครั้ง ไม่ว่าจะ mount กี่ instance ก็ตาม?',
+    options: ['Once per instance', 'Once, ever — $.from_html caches the parsed node and every mount is a cloneNode(true) of it', 'Once per update', 'It is never parsed — Svelte builds DOM nodes with document.createElement calls one at a time'],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย source ของ from_html ที่ยกมา: node ที่ parse แล้วถูกเก็บไว้ใน closure variable และถูกสร้างแค่ครั้งแรกเท่านั้น ทุกการเรียกหลังจากนั้นแค่ clone มันเท่านั้น',
+  },
+  {
+    q: '```svelte\n<p>{a}</p>\n<p>{b}</p>\n```\nหลังจากเปลี่ยนแค่ `a` อะไรคือสิ่งที่พิสูจน์ได้จริงเกี่ยวกับ text node ของ `b`?',
+    options: [
+      'Its textContent was reassigned to the same string it already had',
+      'Its nodeValue setter was never called at all — proven with a spy, not just equal output',
+      'It was removed and recreated with the same content',
+      'It depends on the size of the component',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ข้างบนด้วย nodeValue setter ที่ instrument ไว้: ไม่มีการเรียกเลยบน node ที่ไม่ถูกแตะ พิสูจน์ว่า update ไม่เคยแตะมันจริง ๆ ไม่ใช่แค่ผลิต visible text ที่เท่ากัน',
+  },
+  {
+    q: '```svelte\n{#each items as item (item.id)}\n  <p>{item.text}</p>\n{/each}\n```\nการ reverse array `$state` ที่ผูกอยู่ตรงนี้ — เกิดอะไรขึ้นกับ DOM node `<p>` จริง ๆ?',
+    options: [
+      'They are destroyed and three new ones are created',
+      'The exact same three node objects are MOVED to their new positions — proven above by comparing DOM node references before and after',
+      'Only their text is swapped; the nodes never move',
+      'Svelte throws an error because reordering keyed lists is unsupported',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ: `after[0] === before[2]` เป็นต้น — node ที่ render "three" คือ object เดิมที่ถูกย้ายมาไว้หน้าสุด ไม่ใช่ตัวใหม่',
+  },
+  {
+    q: 'reverse แบบเดียวกัน แต่บน `{#each items as item}` ที่ไม่มี key เกิดอะไรขึ้นกับ node `<p>`?',
+    options: [
+      'They move to match the new order, same as the keyed case',
+      'They stay in their original DOM positions — only their text content changes, because the default key is the position (index), which never changes on a reorder',
+      'Svelte throws a compile error requiring a key',
+      'All three nodes are destroyed and recreated',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ข้างบน: after[0] === before[0] ทุกตำแหน่ง — ไม่มี node ไหนย้ายเลย นี่คือกลไกจริงเบื้องหลังบั๊ก "list ไม่มี key ที่มีแถวถือ state"',
+  },
+  {
+    q: 'เกิดอะไรขึ้นจริง ๆ กับ local state ของคอมโพเนนต์ เมื่อ `{#if}` block ของ parent สลับไป branch อื่น?',
+    options: [
+      'It is preserved and simply hidden with display: none',
+      'The branch effect (and everything inside it, including that state) is genuinely destroyed; switching back creates a brand-new instance from scratch',
+      'It moves to the new branch automatically',
+      'It is serialized to sessionStorage and restored automatically',
+    ],
+    answer: 1,
+    explain: '{#if} สร้าง/ทำลาย branch effect จริงแทนที่จะสลับการแสดงผล — อะไรก็ตามที่มี lifecycle หรือ local state ข้างใน branch จะถูกรื้อจริงเมื่อ branch นั้นไม่ active แล้ว',
+  },
+];
+
+<Quiz client:visible id="svelte-internals/fine-grained-dom" questions={quizFineGrainedDom} />
+
+<ProgressTracker client:visible id="internals-dom" />

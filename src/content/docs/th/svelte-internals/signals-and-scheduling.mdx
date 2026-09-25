@@ -1,0 +1,407 @@
+---
+title: 'Signals & Scheduling'
+description: 'กราฟ Source/Derived/Effect จริงเบื้องหลัง rune — DIRTY เทียบ MAYBE_DIRTY, ทำไม derived ถึง lazy, microtask batching ผ่าน Batch.ensure()/queue_micro_task, flushSync, untrack และ error state_unsafe_mutation — พิสูจน์ด้วยผลลัพธ์ vitest จริง ไม่ใช่ paraphrase'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+
+บท [Compiler Output](/svelte/th/svelte-internals/compiler-output/) แสดงให้เห็นว่า `$state`, `$derived`, `$effect` ต่างก็กลายเป็น call ที่สร้าง plain object — `Source`, `Derived`, `Effect` บทนี้จะพูดถึงว่า object พวกนั้นคืออะไรจริง ๆ ต่อกันยังไง และเมื่อไหร่การเขียนค่าตัวหนึ่งถึงทำให้อีกตัวรัน ทุกฟังก์ชันที่ยกมาข้างล่างเป็น source จริง เวอร์ชันปัจจุบันจาก `node_modules/svelte@5.57.1`'s `packages/svelte/src/internal/client/` — ให้ชื่อไฟล์และชื่อฟังก์ชันไว้ เพื่อให้คุณ diff กับเวอร์ชันที่คุณกำลังอ่านอยู่ได้
+
+## Node สามชนิด กราฟเดียว
+
+`Source` (สิ่งที่ `$.state` คืนกลับมา) คือ object จากบท [Compiler Output](/svelte/th/svelte-internals/compiler-output/): `{ f, v, reactions, equals, rv, wv }` `Derived` ขยาย shape นั้นด้วย `deps` (สิ่งที่มันอ่านครั้งล่าสุดที่รัน) กับ `fn` (thunk ที่จะ re-run) `Effect` ก็มี `deps` เหมือนกัน บวกสิ่งที่ต้อง *ทำจริง* (`fn`) เมื่อมันรันใหม่ ทั้งสามชนิดมี field `f` (flags) เป็น bitmask นิยามไว้ใน `packages/svelte/src/internal/client/constants.js`:
+
+```js
+// packages/svelte/src/internal/client/constants.js (trimmed to this lesson's flags)
+export const DERIVED = 1 << 1;
+export const EFFECT = 1 << 2;
+export const RENDER_EFFECT = 1 << 3;
+export const CLEAN = 1 << 10;
+export const DIRTY = 1 << 11;
+export const MAYBE_DIRTY = 1 << 12;
+export const USER_EFFECT = 1 << 20;
+```
+
+`$effect(fn)` ตั้ง `EFFECT | USER_EFFECT`; `$effect.pre(fn)` ตั้ง `RENDER_EFFECT | USER_EFFECT`; ส่วน reactive binding ของ template เอง — `$.template_effect` จากบท [Compiler Output](/svelte/th/svelte-internals/compiler-output/) — เป็น `RENDER_EFFECT` เปล่า ๆ ไม่มี bit `USER_EFFECT` bit เดียวนี้แหละคือความต่างทั้งหมดระหว่าง "effect ของคุณ" กับ "effect ของ compiler เองที่ update DOM" และระหว่าง `$effect` กับ `$effect.pre`:
+
+```js
+// packages/svelte/src/internal/client/reactivity/effects.js (trimmed)
+export function create_user_effect(fn) {
+	return create_effect(EFFECT | USER_EFFECT, fn);
+}
+export function user_pre_effect(fn) {
+	return create_effect(RENDER_EFFECT | USER_EFFECT, fn);
+}
+export function template_effect(fn, sync = [], async = [], blockers = []) {
+	flatten(blockers, sync, async, (values) => {
+		create_effect(RENDER_EFFECT, () => { fn(...values.map(get)); });
+	});
+}
+```
+
+Render effect (`RENDER_EFFECT` — `$effect.pre` และทุก template binding) รันก่อน plain effect (`EFFECT` — `$effect`) เสมอในการ flush เดียวกัน พิสูจน์ตรง ๆ:
+
+```ts
+// src/lib/scheduling-order.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('effect order: $effect.pre (render effect) runs before $effect (user effect)', () => {
+  const log: string[] = [];
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+
+    $effect.pre(() => { log.push(`pre:${count}`); });
+    $effect(() => { log.push(`effect:${count}`); });
+
+    flushSync();
+    log.length = 0;
+
+    count = 1;
+    flushSync();
+  });
+  destroy();
+
+  expect(log).toEqual(['pre:1', 'effect:1']);
+});
+```
+
+```text
+✓ effect order: $effect.pre (render effect) runs before $effect (user effect)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## การเขียน source: `mark_reactions` กระจาย DIRTY ไม่ใช่ "re-run ตอนนี้เลย"
+
+`set(source, value)` (`reactivity/sources.js`) ไม่เรียกอะไรเลย — มันแค่บันทึกค่าใหม่แล้วเดินผ่าน `source.reactions` (ทุกอย่างที่เคยอ่าน source นี้) แล้ว mark แต่ละตัว นี่คือฟังก์ชัน propagate จริง:
+
+```js
+// packages/svelte/src/internal/client/reactivity/sources.js — mark_reactions (trimmed)
+function mark_reactions(signal, status, updated_during_traversal) {
+	var reactions = signal.reactions;
+	if (reactions === null) return;
+
+	for (var i = 0; i < reactions.length; i++) {
+		var reaction = reactions[i];
+		var flags = reaction.f;
+		var not_dirty = (flags & DIRTY) === 0;
+
+		if (not_dirty) set_signal_status(reaction, status);
+
+		if ((flags & DERIVED) !== 0) {
+			// deriveds propagate onward as MAYBE_DIRTY — they don't re-run yet
+			mark_reactions(/** @type {Derived} */ (reaction), MAYBE_DIRTY, updated_during_traversal);
+		} else if (not_dirty) {
+			// effects get scheduled for the next flush
+			schedule_effect(/** @type {Effect} */ (reaction));
+		}
+	}
+}
+```
+
+มีสองจุดที่ควรสังเกต: ผู้อ่านที่เป็น `Derived` จะถูก mark เป็น `MAYBE_DIRTY` แล้วการเดินจะ**ต่อผ่านมันไป**ยังสิ่งที่อ่าน derived *นั้น* ต่อ — derived ไม่เคยถูก "schedule" เอง เพราะมันไม่มี side effect ให้รัน มีแค่ค่าที่ต้อง recompute *ถ้าและเมื่อ* มีคนมาอ่านมัน ส่วนผู้อ่านที่เป็น `Effect` จะถูกเรียก `schedule_effect(effect)` — ซึ่งก็ไม่ได้รันมันเช่นกัน แค่เข้าคิว (ส่วนถัดไป) ไม่มีอะไรในฟังก์ชันนี้เรียกฟังก์ชันของ user แบบ synchronous เลย นี่คือเหตุผลทางกลไกที่ทำไมการรัน `$effect` แบบ synchronous ทันทีหลัง `set` ถึงไม่มีวันเกิดขึ้น
+
+## `$derived` เป็น lazy: `update_derived` รันแค่ตอนอ่าน ผ่าน `is_dirty`
+
+`Derived` ที่เพิ่งสร้างเริ่มต้นด้วย `DIRTY` และค่า `UNINITIALIZED` — `derived(fn)` (`reactivity/deriveds.js`) ไม่เคยเรียก `fn` เอง:
+
+```js
+// packages/svelte/src/internal/client/reactivity/deriveds.js — derived (trimmed)
+export function derived(fn) {
+	var flags = DERIVED | DIRTY;
+	const signal = { deps: null, effects: null, equals, f: flags, fn, reactions: null, rv: 0, v: UNINITIALIZED, wv: 0 };
+	return signal;
+}
+```
+
+สิ่งเดียวที่เรียก `fn` คือ `execute_derived` และสิ่งเดียวที่เรียก *นั่น* คือ `update_derived` และสิ่งเดียวที่เรียก `update_derived` คือ `is_dirty` — ซึ่งรันเมื่อ (และเฉพาะเมื่อ) มีคนอ่าน derived ผ่าน `$.get`:
+
+```js
+// packages/svelte/src/internal/client/runtime.js — is_dirty (trimmed)
+export function is_dirty(reaction) {
+	if ((reaction.f & DIRTY) !== 0) return true;
+
+	if ((reaction.f & MAYBE_DIRTY) !== 0) {
+		for (var dep of /** @type {Value[]} */ (reaction.deps)) {
+			if (is_dirty(/** @type {Derived} */ (dep))) {
+				update_derived(/** @type {Derived} */ (dep)); // <- only recomputed HERE, on read
+			}
+			if (dep.wv > reaction.wv) return true;
+		}
+		set_signal_status(reaction, CLEAN);
+	}
+	return false;
+}
+```
+
+พิสูจน์ด้วย test นับจำนวนครั้งที่เรียก — การเขียนค่าที่ derived ขึ้นกับไม่เคย evaluate มันเลย มีแค่การ *อ่าน* เท่านั้นที่ทำ และอ่านสองครั้งติดกัน (ไม่มีอะไรเปลี่ยนระหว่างนั้น) ก็ไม่ re-run ครั้งที่สอง:
+
+```ts
+// src/lib/derived-laziness.svelte.test.ts
+import { expect, test } from 'vitest';
+
+test('$derived is evaluated lazily: the callback does not run until the value is READ, and is cached after that', () => {
+  const calls: number[] = [];
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let doubled = $derived.by(() => { calls.push(count); return count * 2; });
+
+    count = 5; // write only — no read anywhere yet
+    expect(calls).toEqual([]); // NOT evaluated just from writing the source
+
+    function read() { return doubled; }
+    expect(read()).toBe(10); // first read
+    expect(calls).toEqual([5]); // exactly one evaluation
+
+    expect(read()).toBe(10); // second read, nothing changed since
+    expect(calls).toEqual([5]); // still one — cached, not re-run
+  });
+  destroy();
+});
+```
+
+```text
+✓ $derived is evaluated lazily: the callback does not run until the value is READ, and is cached after that
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+นี่คือเหตุผลจริงว่าทำไม `$derived` กับ legacy `$: x = ...` ถึงใช้แทนกันไม่ได้ (บท [Compiler Output](/svelte/th/svelte-internals/compiler-output/) แสดงว่า legacy statement คอมไพล์เป็น effect ที่ re-run แบบ eager): `$derived` ที่ไม่เคยถูกอ่านจะไม่รัน expression ของมันเลย ไม่ว่า dependency จะเปลี่ยนกี่ครั้งก็ตาม
+
+## Flush: `Batch`, microtask เดียว และ `flushSync`
+
+`schedule_effect` (ที่ถูกเรียกจาก `mark_reactions` ข้างบน) ทำแค่อย่างเดียว: `Batch.ensure().schedule(effect)` (`reactivity/batch.js`) การเขียนครั้งแรกในหนึ่ง tick สร้าง `Batch` แล้วเข้าคิว microtask **หนึ่ง** อันเพื่อ flush มัน:
+
+```js
+// packages/svelte/src/internal/client/reactivity/batch.js — Batch.ensure (trimmed)
+static ensure() {
+	if (current_batch === null) {
+		const batch = (current_batch = new Batch());
+		if (!is_processing && !is_flushing_sync) {
+			queue_micro_task(() => {
+				if (!batch.#started) batch.flush();
+			});
+		}
+	}
+	return current_batch;
+}
+```
+
+`queue_micro_task` (`dom/task.js`) เป็น wrapper ของ `queueMicrotask` จริง ที่ dedupe ไว้แล้ว ทำให้การเขียนหลาย ๆ ครั้งแบบ synchronous ติดกันเข้าคิว flush แค่ครั้งเดียว:
+
+```js
+// packages/svelte/src/internal/client/dom/task.js — queue_micro_task (trimmed)
+export function queue_micro_task(fn) {
+	if (micro_tasks.length === 0 && !is_flushing_sync) {
+		var tasks = micro_tasks;
+		queueMicrotask(() => { if (tasks === micro_tasks) run_micro_tasks(); });
+	}
+	micro_tasks.push(fn);
+}
+```
+
+นั่นคือเรื่องราวทั้งหมดของ batching: ทุก `set()` ในช่วง synchronous เดียวกันแชร์ `Batch` เดียวกันและ microtask ที่ต่อคิวไว้อันเดียวกัน — นี่คือเหตุผลว่าทำไม `count++` ห้าครั้งติดกันถึงเกิด flush แค่ครั้งเดียว ไม่ใช่ห้าครั้ง `flushSync(fn)` (ไฟล์เดียวกัน) รัน `fn` แล้ว drain microtask แบบ synchronous แล้ว flush batch ที่ค้างอยู่วนไปจนกว่าจะไม่มีอะไรค้าง — harness ของคอร์สนี้ใช้มันตลอดเพื่อให้ update เกิดขึ้น *ตอนนี้เลย* ในเทสต์ แทนที่จะรอ tick หนึ่งรอบ:
+
+```js
+// packages/svelte/src/internal/client/reactivity/batch.js — flushSync (trimmed)
+export function flushSync(fn) {
+	is_flushing_sync = true;
+	try {
+		var result;
+		if (fn) {
+			if (current_batch !== null && !current_batch.is_fork) current_batch.flush();
+			result = fn();
+		}
+		while (true) {
+			flush_tasks();
+			if (current_batch === null) return result;
+			current_batch.flush();
+		}
+	} finally { is_flushing_sync = false; }
+}
+```
+
+<Mermaid title="จาก set() ไปจนถึง effect ที่ flush แล้ว" code={flowDiagram} />
+
+export const flowDiagram = `flowchart TD
+  write["\`set(\`source, value\`)\`"] --> mark["mark_reactions\nDIRTY (effects) / MAYBE_DIRTY (through deriveds)"]
+  mark --> sched["schedule_effect\`(\`effect\`)\`\nBatch.ensure\`()\`.schedule\`(\`effect\`)\`"]
+  sched --> micro["queue_micro_task\nONE queueMicrotask per batch"]
+  micro --> flush["batch.flush\`()\`\nor flushSync\`()\` right now"]
+  flush --> dirty["is_dirty\`(\`effect\`)\`\nrecurses into MAYBE_DIRTY deps"]
+  dirty -->|"a dep is a dirty Derived"| recompute["update_derived: fn\`()\` runs NOW\n(lazy — only because something read it)"]
+  dirty --> run["update_effect: your \`$effect\`/\`$effect.pre\` fn runs"]`;
+
+## `untrack`: อ่านโดยไม่ subscribe
+
+`$.get(signal)` คือจุดที่ dependency ถูกลงทะเบียนจริง ๆ — มัน push signal เข้า `active_reaction.deps` (`runtime.js`) `untrack(fn)` รัน `fn` โดยพัก bookkeeping ของ active-reaction ไว้ชั่วคราว ดังนั้น `$.get` ใดก็ตามข้างในมันจะอ่านค่าปัจจุบัน **โดยไม่** เพิ่ม dependency:
+
+```ts
+// src/lib/untrack-proof.svelte.test.ts
+import { flushSync, untrack } from 'svelte';
+import { expect, test } from 'vitest';
+
+test('untrack: reading $state inside untrack() does not register a dependency', () => {
+  const log: string[] = [];
+  const destroy = $effect.root(() => {
+    let a = $state(0);
+    let b = $state(0);
+
+    $effect(() => { log.push(`a=${a} b(untracked)=${untrack(() => b)}`); });
+
+    flushSync();
+    log.length = 0;
+
+    b = 1; // b was only read via untrack — should NOT re-run the effect
+    flushSync();
+    expect(log).toEqual([]);
+
+    a = 1; // a IS a real, tracked dependency
+    flushSync();
+    expect(log).toEqual(['a=1 b(untracked)=1']); // re-ran, and b's CURRENT value is visible
+  });
+  destroy();
+});
+```
+
+```text
+✓ untrack: reading $state inside untrack() does not register a dependency
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+สังเกตว่า effect ยังเห็นค่าล่าสุดของ `b` (`1`) ในครั้งถัดไปที่มันรันจริง (ถูก trigger โดย `a`) — `untrack` ไม่ได้ซ่อนค่า มันแค่ทำให้การอ่านครั้งนั้นไม่ถูกเพิ่มเข้า `deps`
+
+## `state_unsafe_mutation`: การป้องกันจริงที่ตั้งใจใส่ไว้
+
+การเขียนค่า `$state` จากข้างใน evaluator ของ `$derived` ไม่ใช่แค่คำเตือนเรื่อง style — `set()` (`reactivity/sources.js`) เช็ค flag ของ reaction ที่ active อยู่ตอนนี้ แล้ว throw ถ้ามันเป็น `DERIVED` (หรือ reaction ชนิดอื่นอีกไม่กี่แบบ) ที่กำลังเขียนลง source *อื่น* แบบไม่ได้ขอ ในขณะที่มันควรจะเป็น pure computation:
+
+```js
+// packages/svelte/src/internal/client/reactivity/sources.js — set (trimmed)
+export function set(source, value, should_proxy = false) {
+	if (
+		active_reaction !== null &&
+		(!untracking || ...) &&
+		is_runes() &&
+		(active_reaction.f & (DERIVED | BLOCK_EFFECT | ASYNC | EAGER_EFFECT)) !== 0 &&
+		(current_sources === null || !current_sources.has(source))
+	) {
+		e.state_unsafe_mutation();
+	}
+	// ...
+}
+```
+
+```ts
+// src/lib/state-unsafe-mutation.svelte.test.ts
+import { expect, test } from 'vitest';
+
+test('state_unsafe_mutation: writing to $state from inside a $derived is a real thrown error', () => {
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    let bad = $derived.by(() => {
+      count = count + 1; // @expect-error state_unsafe_mutation
+      return count;
+    });
+
+    expect(() => bad).toThrow(/state_unsafe_mutation|Writing to state/i);
+  });
+  destroy();
+});
+```
+
+```text
+✓ state_unsafe_mutation: writing to $state from inside a $derived is a real thrown error
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+นี่คือ runtime ที่บังคับใช้กฎ "derived คือ pure computation ของ dependency ของมัน" — กฎเดียวกับที่ [svelte.dev](https://svelte.dev/docs/svelte/$derived#Understanding-dependencies) เขียนไว้เป็นข้อความ แต่ที่นี่มี error ที่ถูก throw จริงและมีชื่อรองรับ
+
+## อ่านโค้ดที่ AI เขียน
+
+- comment อ้างว่า `$effect` "รันแบบ synchronous ทันทีหลัง `set()` ที่ trigger มัน" หรือเปล่า? `mark_reactions` แค่ schedule เท่านั้น การรันจริงเกิดขึ้นตอน microtask flush รอบถัดไป (หรือ `flushSync()` ที่เรียกตรง ๆ) ไม่เคยเกิดใน call stack เดียวกับการเขียน เว้นแต่โค้ดจะเรียก `flushSync` เอง
+- โค้ดสมมติว่า `$derived` ที่มี computation แพง "รันทุกครั้งที่ dependency เปลี่ยน" แล้วเลยเพิ่ม manual memoization ทับเข้าไปอีกชั้นหรือเปล่า? มัน lazy และ cache ไว้แล้ว — พิสูจน์ข้างบน: การเขียน dependency ไม่เคย evaluate มัน มีแค่การอ่าน derived เท่านั้นที่ทำ และอ่านซ้ำโดยไม่มีการเขียนคั่นก็ไม่ re-run
+- `untrack` ถูกใช้เพื่อ "อ่านค่าล่าสุด" ข้างใน effect โดยคาดว่า effect จะยัง re-run เมื่อค่า *นั้น* เปลี่ยนทีหลังหรือเปล่า? มันจะไม่ re-run — `untrack` ตัดการอ่านนั้นออกจาก `deps` ถาวรสำหรับรอบนั้นของ effect
+- การ migrate จาก `$: doubled = x * 2` ไป `$derived(x * 2)` เปลี่ยน behavior ไหมถ้า statement เดิมมี side effect อยู่ข้างใน (มี `console.log`, มี mutation)? `$derived` expression ถูกคาดหวังว่าต้องเป็น pure — การป้องกัน `state_unsafe_mutation` ข้างบนคือ runtime ที่จับสมมติฐานนั้นถูกละเมิดแบบตรง ๆ เลย
+
+<SpotTheBug code={`<script>
+  let user = $state({ name: 'Ada', visits: 0 });
+
+  // "log a visit every time the greeting is computed"
+  let greeting = $derived.by(() => {
+    user.visits += 1;
+    return \`Hello, \${user.name}\`;
+  });
+</script>
+
+<p>{greeting}</p>`}>
+`user.visits += 1` mutate `$state` จากข้างใน evaluator function ของ `$derived` reaction ที่ active อยู่ตอนที่ thunk นี้รันคือ `Derived` เอง (มี flag `DERIVED`) และการป้องกันของ `set()` เช็คตรงกรณีนี้เป๊ะ — โค้ดนี้ throw `state_unsafe_mutation` error จริงทันทีที่ derived ถูกอ่านครั้งแรก (พิสูจน์ข้างบนด้วย shape เดียวกันเป๊ะ: derived ที่เขียน $state ระหว่าง evaluate ตัวเอง) ทางแก้คือไม่ปฏิบัติกับ evaluator ของ derived เหมือนเป็นที่ใส่ side effect เลย — การนับจำนวนครั้งที่เยี่ยมชมควรอยู่ใน `$effect` (ซึ่งได้รับอนุญาตให้เขียน state ภายใต้กฎการ re-run ของตัวเอง) ไม่ใช่ในค่าที่ควรจะเป็นฟังก์ชัน pure ของ input ของมัน
+</SpotTheBug>
+
+<Callout title="สรุปหนึ่งบรรทัด">
+`$state`/`$derived`/`$effect` คือ object `Source`/`Derived`/`Effect` ที่ต่อกันด้วย `deps`/`reactions` และ reactivity ก็แค่การกระจาย flag: `mark_reactions` ตั้ง `DIRTY` บน effect และ `MAYBE_DIRTY` บน derived ที่มันเดินผ่าน — พิสูจน์ข้างบน — และไม่มีอะไรรันแบบ synchronous จากการเขียน `Derived` เรียกฟังก์ชันของตัวเองแค่จาก `is_dirty`→`update_derived` ซึ่งเกิดเฉพาะตอน**อ่าน**จริง ๆ — พิสูจน์ด้วย test นับจำนวนครั้งเรียก นี่คือเหตุผลว่าทำไม `$derived` ถึง lazy และ cache ไว้ ไม่ใช่ re-run แบบ eager เหมือน legacy `$:` statement effect ที่ schedule ไว้ทุกตัวถูกเข้าคิวใน `Batch` เดียว flush ทีเดียวต่อ microtask เดียว (`queue_micro_task`) เว้นแต่ `flushSync()` จะบังคับให้ทำตอนนี้เลย `untrack` ตัดการอ่านออกจาก dependency tracking โดยไม่ซ่อนค่า และการ mutate `$state` จากข้างใน evaluator ของ `$derived` เองไม่ใช่แค่ style ที่ไม่ดี — `set()` throw `state_unsafe_mutation` error จริงและมีชื่อ พิสูจน์ข้างบน
+</Callout>
+
+export const quizScheduling = [
+  {
+    q: '```svelte\n<script>\n  let count = $state(0);\n  $effect(() => {\n    console.log(count);\n  });\n</script>\n<button onclick={() => count++}>{count}</button>\n```\nหลังจากคลิก `$effect` ข้างบนรันเมื่อไหร่จริง ๆ เทียบกับตอนที่ `onclick` handler return?',
+    options: [
+      'Synchronously, on the same line, before the next statement executes',
+      'Not synchronously — the write only marks the effect DIRTY and schedules it onto the current Batch; it runs on the next microtask flush (or an explicit flushSync())',
+      'Only after the component fully unmounts',
+      'Immediately, but only in dev mode',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย source ของ mark_reactions: มันเรียก set_signal_status กับ schedule_effect ไม่เคยเรียกฟังก์ชันของ effect เอง test เรื่องลำดับ effect ข้างบนก็โชว์ว่า effect จริงรันหลัง flushSync() เท่านั้น',
+  },
+  {
+    q: 'mark_reactions ตั้ง flag อะไรตอนที่เดินผ่านผู้อ่านที่เป็น Derived (ต่างจากผู้อ่านที่เป็น Effect)?',
+    options: ['DIRTY, and it stops walking', 'MAYBE_DIRTY, and it keeps walking into whatever reads that derived', 'CLEAN', 'It removes the derived from the graph'],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย source ของ mark_reactions ที่ยกมา: `mark_reactions(reaction, MAYBE_DIRTY, ...)` recurse ต่อสำหรับ reaction ที่เป็น DERIVED แทนที่จะ schedule มัน — derived ไม่มีอะไรให้ \'รัน\' จนกว่าจะถูกอ่าน',
+  },
+  {
+    q: '```ts\nlet count = $state(0);\nlet doubled = $derived.by(() => { calls.push(count); return count * 2; });\ncount = 5;\n// (no read of `doubled` yet)\n```\nณ จุดนี้ ฟังก์ชันของ derived รันไปแล้วกี่ครั้ง?',
+    options: ['Once, immediately when count changed', 'Zero times — it only runs when doubled is actually read', 'Twice', 'It depends on the browser'],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ ข้างบนด้วย array calls[]: การเขียน dependency ไม่ทำให้เกิดการเรียกเลย ฟังก์ชันรันแค่ตอนอ่าน doubled ครั้งแรกจริง ๆ เท่านั้น',
+  },
+  {
+    q: '`untrack(() => b)` ข้างใน `$effect` ทำอะไร?',
+    options: [
+      'Prevents `b` from ever updating',
+      'Reads the CURRENT value of `b` without registering it as a dependency of the effect — a later change to `b` alone will not re-run this effect',
+      'Deletes `b` from the reactive graph permanently',
+      'Is identical to just writing `b`',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ข้างบน: การเปลี่ยนแค่ค่าที่ untrack ไว้ไม่ทำให้ effect re-run แต่ effect ก็ยังเห็นค่าล่าสุดของมันตอนที่ effect รันจริงในครั้งถัดไปที่ถูก trigger โดย dependency จริง',
+  },
+  {
+    q: 'ทำไมการ mutate ค่า `$state` ตัว*อื่น*จากข้างใน evaluator ของ `$derived` ถึง throw `state_unsafe_mutation`?',
+    options: [
+      'It doesn\'t — this always works fine',
+      '`set()` checks whether the currently active reaction is a Derived (or a few other pure-computation-like reaction kinds) and throws, because a derived is supposed to be a pure function of its dependencies, not something with side effects',
+      'Only because of a linter rule, not a runtime check',
+      'Only in production builds',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย error ที่ถูก throw จริงข้างบน โดยยกเงื่อนไขการป้องกันจริงของ set() มาจาก sources.js — นี่คือ runtime enforcement ไม่ใช่แค่ documentation หรือ linting',
+  },
+];
+
+<Quiz client:visible id="svelte-internals/signals-and-scheduling" questions={quizScheduling} />
+
+<ProgressTracker client:visible id="internals-signals" />

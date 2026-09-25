@@ -1,0 +1,510 @@
+---
+title: 'Compiler Output'
+description: 'What $state, $derived, $effect, a template, and an event actually compile to in Svelte 5.57.1 — proven with real compile() calls, not paraphrased — plus generate: "server", dev: true, and legacy (non-runes) output.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
+
+## The compiler's job, in one sentence
+
+`svelte/compiler`'s `compile()` turns a `.svelte` file into a plain JavaScript module that calls functions exported from `svelte/internal/client` (or `svelte/internal/server`, for SSR). There is no framework runtime "interpreting" your component at render time — the interpretation already happened, once, in the compiler. Every claim below was produced by running `compile()` from the exact version this course targets (`node_modules/svelte` resolves to **5.57.1** in this repo's harness, the same version pinned in [`SveltePlayground`](/svelte/en/reactivity/state-rune/)'s esm.sh loader) — click **Compile** on any embed below to reproduce it yourself.
+
+## `$state` becomes `$.state`, `count++` becomes `$.update`
+
+```svelte
+<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+```
+
+export const stateCounterCode = `<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+
+<SveltePlayground code={stateCounterCode} id="compiler-output-state" />
+
+Compiling that (client target, runes mode, `dev: false`) produces:
+
+```js
+import 'svelte/internal/disclose-version';
+import * as $ from 'svelte/internal/client';
+
+var root = $.from_html(`<button> </button>`);
+
+export default function Playground($$anchor) {
+	let count = $.state(0);
+	var button = root();
+	var text = $.only_child(button, true);
+
+	$.template_effect(() => $.set_text(text, $.get(count)));
+	$.delegated('click', button, () => $.update(count));
+	$.append($$anchor, button);
+}
+
+$.delegate(['click']);
+```
+
+The compiler's rune-to-call mapping is a literal `switch` over the recognized rune name — this is the real handler, trimmed, from `packages/svelte/src/compiler/phases/3-transform/client/visitors/CallExpression.js`:
+
+```js
+// packages/svelte/src/compiler/phases/3-transform/client/visitors/CallExpression.js — CallExpression (trimmed)
+export function CallExpression(node, context) {
+	const rune = get_rune(node, context.state.scope);
+
+	switch (rune) {
+		case '$state':
+		case '$state.raw': {
+			// ...
+			const callee = b.id('$.state', node.callee.loc);
+			return b.call(callee, value);
+		}
+		case '$derived':
+		case '$derived.by': {
+			let fn = context.visit(node.arguments[0]);
+			return b.call('$.derived', rune === '$derived' ? b.thunk(fn) : fn);
+		}
+		case '$effect':
+		case '$effect.pre': {
+			const callee = rune === '$effect' ? '$.user_effect' : '$.user_pre_effect';
+			// ...
+		}
+	}
+}
+```
+
+And `count++` — an `UpdateExpression`, not a call — goes through a separate visitor, `.../visitors/UpdateExpression.js`, which looks up whether the identifier being updated has a registered reactive `transform` (set up when the binding was analyzed as `$state`) and, if so, defers to that transform instead of emitting a plain `++`. For a `$state` binding this produces `$.update(count)` — proven directly in the compiled output above, and in a real `compile()` assertion:
+
+```ts
+// src/lib/compiler-state.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): $state becomes $.state, count++ becomes $.update, template read becomes $.get inside $.template_effect/$.set_text', () => {
+  const src = `<script>
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+  const result = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' });
+  const js = result.js.code;
+
+  expect(js).toContain('let count = $.state(0);');
+  expect(js).toContain('$.template_effect(() => $.set_text(text, $.get(count)));');
+  expect(js).toContain("$.delegated('click', button, () => $.update(count));");
+  expect(js).toContain("$.delegate(['click']);");
+});
+```
+
+```text
+✓ compile(): $state becomes $.state, count++ becomes $.update, template read becomes $.get inside $.template_effect/$.set_text
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`$.state(0)` (defined in `packages/svelte/src/internal/client/reactivity/sources.js`) is the actual runtime constructor for a reactive cell — trimmed to the parts that matter here:
+
+```js
+// packages/svelte/src/internal/client/reactivity/sources.js — source / state (trimmed)
+export function source(v, stack) {
+	var signal = { f: 0, v, reactions: null, equals, rv: 0, wv: 0 };
+	return signal;
+}
+
+/*#__NO_SIDE_EFFECTS__*/
+export function state(v, stack) {
+	const s = source(v, stack);
+	push_reaction_value(s);
+	return s;
+}
+```
+
+A `$state` value is a plain object with a current value (`v`), a list of things that depend on it (`reactions`), and version counters (`rv`/`wv`) — nothing more exotic than that. [Signals & Scheduling](/svelte/en/svelte-internals/signals-and-scheduling/) covers what `reactions`, `rv`/`wv`, and the `f` flags field actually do.
+
+## `$derived` becomes `$.derived`, and stays lazy
+
+```svelte
+<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{doubled}</button>
+```
+
+Compiles to:
+
+```js
+let count = $.state(0);
+let doubled = $.derived(() => $.get(count) * 2);
+var button = root();
+var text = $.only_child(button, true);
+
+$.template_effect(() => $.set_text(text, $.get(doubled)));
+$.delegated('click', button, () => $.update(count));
+```
+
+Two details worth noticing: the `$derived(expr)` rune wraps the expression in a thunk (`b.thunk(fn)` in the compiler source above) before calling `$.derived` — the expression is **not evaluated at this point**, only a function that can evaluate it later is created. And every *read* of `count` or `doubled` elsewhere in the compiled output goes through `$.get(...)` — reads are never bare property accesses, because `$.get` is also how a dependency gets registered (see [Signals & Scheduling](/svelte/en/svelte-internals/signals-and-scheduling/)).
+
+```ts
+// src/lib/compiler-derived.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): $derived becomes $.derived(() => ...), reading it elsewhere is $.get(derivedName)', () => {
+  const src = `<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+</script>
+<button onclick={() => count++}>{doubled}</button>
+`;
+  const js = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain('let doubled = $.derived(() => $.get(count) * 2);');
+  expect(js).toContain('$.template_effect(() => $.set_text(text, $.get(doubled)));');
+});
+```
+
+```text
+✓ compile(): $derived becomes $.derived(() => ...), reading it elsewhere is $.get(derivedName)
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+## `$effect` becomes `$.user_effect`; `$effect.pre` becomes `$.user_pre_effect`
+
+```ts
+// src/lib/compiler-effect.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): $effect becomes $.user_effect', () => {
+  const src = `<script>
+  let count = $state(0);
+  $effect(() => { console.log('count is', count); });
+</script>
+<button onclick={() => count++}>{count}</button>
+`;
+  const js = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain('$.user_effect(() => {');
+});
+```
+
+```text
+✓ compile(): $effect becomes $.user_effect
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The full compiled body for that snippet is:
+
+```js
+let count = $.state(0);
+
+$.user_effect(() => {
+	console.log('count is', $.get(count));
+});
+
+var button = root();
+var text = $.only_child(button, true);
+
+$.template_effect(() => $.set_text(text, $.get(count)));
+$.delegated('click', button, () => $.update(count));
+```
+
+Notice the function that builds the whole component is now wrapped in `$.push($$props, true)` / `$.pop(...)` (omitted above for brevity) the moment an `$effect` is present — the compiler needs a component context to know when to actually run a top-level `$effect` (deferred until mount; see `user_effect` in `packages/svelte/src/internal/client/reactivity/effects.js`). `$effect.pre` compiles to `$.user_pre_effect`, a `RENDER_EFFECT | USER_EFFECT` (runs in the render phase, before the DOM is updated) instead of a plain `EFFECT | USER_EFFECT` — the flag difference [Signals & Scheduling](/svelte/en/svelte-internals/signals-and-scheduling/) uses to prove the actual run order.
+
+## Templates: cloning, child/sibling walking, and `$.set_text`
+
+The `<button> </button>` string passed to `$.from_html` is the template — parsed and cloned once per mount, never re-parsed. `$.only_child(button, true)` grabs the button's one text-node child (the `true` means "yes, get its child as text"), and every dynamic value gets its own `$.template_effect` that writes into that specific node with `$.set_text`. Try it with two independent values:
+
+export const twoStateCode = `<script>
+  let a = $state('a0');
+  let b = $state('b0');
+</script>
+
+<p>{a}</p>
+<p>{b}</p>
+`;
+
+<SveltePlayground code={twoStateCode} id="compiler-output-two-state" />
+
+Look at the compiled output: two separate `$.template_effect` calls, one per `<p>`, each calling `$.set_text` on its own text node. [Fine-Grained DOM](/svelte/en/svelte-internals/fine-grained-dom/) proves directly that changing `a` never touches `b`'s text node — not "produces the same visible text," but literally never calls `nodeValue`'s setter on it.
+
+## Events: `$.event` vs. delegated `$.delegated`
+
+`onclick={...}` on a plain element compiles to a **delegated** handler, not a direct `addEventListener` call. The compiler's event visitor (`packages/svelte/src/compiler/phases/3-transform/client/visitors/shared/events.js`, function `build_event`) chooses between the two:
+
+```js
+// .../visitors/shared/events.js — build_event (trimmed)
+export function build_event(context, event_name, handler, capture, passive, delegated) {
+	// ...
+	return b.call(
+		delegated ? '$.delegated' : '$.event',
+		b.literal(event_name),
+		context.state.node,
+		fn,
+		capture && b.true,
+		passive === undefined ? undefined : b.literal(passive),
+	);
+}
+```
+
+For a delegatable event (`click` is one), the runtime's `delegated()` function — `packages/svelte/src/internal/client/dom/elements/events.js` — does **not** attach a listener to the element at all:
+
+```js
+// packages/svelte/src/internal/client/dom/elements/events.js — delegated (trimmed)
+export function delegated(event_name, element, handler) {
+	(element[event_symbol] ??= {})[event_name] = handler;
+}
+```
+
+It just stashes the handler on the element itself, under a symbol key. The actual `addEventListener` happens **once per event type, at the root**, registered by `$.delegate(['click'])` (emitted at module scope — see the compiled output above). When a click happens anywhere in the app, one root listener (`handle_event_propagation`) walks `event.composedPath()` looking for the nearest ancestor carrying a handler for that event type under `event_symbol`, and calls it. This is real, deliberate **event delegation**: N buttons cost one root listener, not N.
+
+## `generate: 'server'`: no reactivity graph at all
+
+```ts
+// src/lib/compiler-server.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): generate: "server" produces svelte/internal/server output with a plain string template, no reactivity graph', () => {
+  const src = `<script>
+  let count = $state(0);
+</script>
+<button onclick={() => count++}>clicks: {count}</button>
+`;
+  const js = compile(src, { generate: 'server', runes: true, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain("import * as $ from 'svelte/internal/server';");
+  expect(js).toContain('let count = 0;'); // NOT $.state — server output has no reactivity graph
+  expect(js).toContain('$$renderer.push(`<button>clicks: ${$.escape(count)}</button>`);');
+});
+```
+
+```text
+✓ compile(): generate: "server" produces svelte/internal/server output with a plain string template, no reactivity graph
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The full server output is small enough to show in full:
+
+```js
+import * as $ from 'svelte/internal/server';
+
+export default function Playground($$renderer) {
+	let count = 0;
+
+	$$renderer.push(`<button>clicks: ${$.escape(count)}</button>`);
+}
+```
+
+There is no `$.state`, no signal graph, no event delegation — `count` is a plain variable, rendered once into a template-literal string ([Hydration & SSR](/svelte/en/svelte-internals/hydration-and-ssr/) covers what `render()` from `svelte/server` actually returns, including the `<!--[-->` hydration markers this snippet doesn't show because it has no block-level content).
+
+## `dev: true` adds real, extra runtime calls
+
+```ts
+// src/lib/compiler-dev.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): dev: true adds $.tag()/$.add_locations()/component-name tracking that dev: false omits', () => {
+  const src = `<script>
+  let count = $state(0);
+</script>
+<button onclick={() => count++}>{count}</button>
+`;
+  const dev = compile(src, { generate: 'client', runes: true, dev: true, filename: 'Playground.svelte' }).js.code;
+  const prod = compile(src, { generate: 'client', runes: true, dev: false, filename: 'Playground.svelte' }).js.code;
+
+  expect(dev).toContain("$.tag($.state(0), 'count')");
+  expect(dev).toContain('$.add_locations(');
+  expect(dev).toContain('Playground[$.FILENAME]');
+  expect(prod).not.toContain('$.tag(');
+  expect(prod).not.toContain('$.add_locations(');
+});
+```
+
+```text
+✓ compile(): dev: true adds $.tag()/$.add_locations()/component-name tracking that dev: false omits
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+`dev: true` wraps `$.state(0)` in `$.tag(..., 'count')` (so devtools and error messages can show the variable's real name), records every template's source location with `$.add_locations(...)` (for the "click to open in editor" browser extension feature), and stamps `Playground[$.FILENAME] = 'Playground.svelte'` on the component function. None of this exists in a production build — it is pure development ergonomics, added by the same compiler, controlled entirely by the `dev` option — exactly the checkbox the `SveltePlayground` embeds above toggle.
+
+## Legacy (non-runes) mode: `$:` compiles very differently from `$derived`
+
+```ts
+// src/lib/compiler-legacy.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('compile(): legacy mode ($: reactive statement, runes: false) compiles to $.legacy_pre_effect, not $.derived', () => {
+  const src = `<script>
+  export let x = 1;
+  $: doubled = x * 2;
+</script>
+<p>{doubled}</p>
+`;
+  const js = compile(src, { generate: 'client', runes: false, filename: 'Playground.svelte' }).js.code;
+  expect(js).toContain('$.legacy_pre_effect(');
+  expect(js).toContain('$.legacy_pre_effect_reset();');
+  expect(js).not.toContain('$.derived(');
+});
+```
+
+```text
+✓ compile(): legacy mode ($: reactive statement, runes: false) compiles to $.legacy_pre_effect, not $.derived
+
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+```
+
+The full legacy-mode output:
+
+```js
+import 'svelte/internal/disclose-version';
+import 'svelte/internal/flags/legacy';
+import * as $ from 'svelte/internal/client';
+
+var root = $.from_html(`<p> </p>`);
+
+export default function Playground($$anchor, $$props) {
+	$.push($$props, false);
+
+	const doubled = $.mutable_source();
+	let x = $.prop($$props, 'x', 8, 1);
+
+	$.legacy_pre_effect(() => ($.deep_read_state(x())), () => {
+		$.set(doubled, x() * 2);
+	});
+
+	$.legacy_pre_effect_reset();
+
+	var p = root();
+	var text = $.only_child(p, true);
+
+	$.template_effect(() => $.set_text(text, $.get(doubled)));
+	$.append($$anchor, p);
+	$.pop();
+}
+```
+
+A `$: doubled = x * 2` is **not** a `$.derived` — it's a special kind of **effect** (`$.legacy_pre_effect`) that re-derives and `$.set`s a `mutable_source` every time its declared dependencies (`$.deep_read_state(x())`) change. This is a real, meaningful difference from `$derived`: legacy reactive statements are eagerly re-run effects with a value assigned into them, while `$derived` is a genuinely lazy, pull-based computation ([Signals & Scheduling](/svelte/en/svelte-internals/signals-and-scheduling/) proves the laziness with a call-count test). They often *look* interchangeable in simple examples, which is exactly why AI-generated migrations from legacy to runes mode sometimes get the semantics subtly wrong.
+
+## Reading AI-generated code
+
+- Does an explanation of "why Svelte is fast" describe a virtual DOM diff? There is no virtual DOM anywhere in this compiled output — the compiler already generated the exact `$.set_text`/`$.set_attribute` call each value needs.
+- Does code assume `$derived(expr)` evaluates `expr` immediately, the way a normal function call would? The compiled output above wraps it in a thunk — it's lazy, not eager (proven properly in [Signals & Scheduling](/svelte/en/svelte-internals/signals-and-scheduling/)).
+- Is a migration from `$: doubled = x * 2` to `let doubled = $derived(x * 2)` treated as a pure syntax swap? They compile to genuinely different runtime constructs (an eagerly re-run effect vs. a lazy computation) — usually equivalent, but not always, especially with side effects inside the expression.
+- Does a comment claim an `onclick` handler is "attached directly to the button"? For a delegatable event, it isn't — the handler is stashed on the element and invoked by one shared root listener (`$.delegate([...])`), which matters if code later tries to manually `removeEventListener` the "same" handler from the DOM node.
+
+<SpotTheBug code={`<script>
+  let count = $state(0);
+</script>
+
+<!-- calling the handler through a spread should be identical to a literal onclick -->
+<button {...{ onclick: () => { count += 1; } }}>{count}</button>`}>
+This isn't actually a bug in the reactivity — `count += 1` still goes through the same `$.update`-style transform and still updates the button's text. The real issue is the assumption in the comment: spreading `onclick` through `{...{ onclick: ... }}` (a computed/spread attribute) is compiled by a **different** code path than a literal `onclick={...}` attribute — spread attributes are applied with `$.set_attributes`/`$.event`, not the delegated `$.delegated`/`$.delegate` pair this lesson's compiled output shows for a literal handler. It still works, but it silently opts this one handler out of event delegation (a real, non-delegated `addEventListener` gets attached to this specific button instead of being handled by the shared root listener), which is invisible in the rendered output and only shows up as a difference if something depends on delegation specifically (for example, code that expects exactly one root-level click listener, or relies on `$.delegate`'s registered-events set).
+</SpotTheBug>
+
+## Mental Model
+
+The compiler is a one-time translator, not a runtime interpreter: every rune, every `{expression}` in a template, and every event handler becomes a specific, plain JavaScript call against `svelte/internal/client` (or `/server`) — decided once, by walking the AST, never re-decided at render time. Reading compiled output is reading the actual program that runs; there is no second, hidden layer underneath it.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+|---|---|---|
+| Compile-time rune resolution (vs. a runtime reactivity library) | The runtime never has to figure out "is this reactive," "which node does this touch" — it's already decided; smaller, more predictable runtime | The compiler must fully understand your code's shape (destructuring, reassignment patterns); unusual patterns can hit real compiler errors instead of "just working" at runtime |
+| Event delegation by default (`$.delegated`/`$.delegate`) | One root listener instead of one per element — cheaper for large lists of interactive rows | A handler attached via a spread/computed attribute silently opts out of delegation — invisible unless you specifically check for it |
+| `dev`/`generate` as compile options, not runtime flags | Zero-cost production builds (no `$.tag`/`$.add_locations` shipped); a single source compiles to genuinely different server vs. client code | The exact same `.svelte` file can produce three meaningfully different outputs (client/server/legacy) — "what does this code do" always depends on which compile target produced the JS you're actually reading |
+
+## Common Misconceptions
+
+- **"`$derived(expr)` runs `expr` right away, like a normal assignment."** Proven false above: the compiler wraps it in a thunk (`() => ...`), and nothing calls that thunk until something actually reads the derived value.
+- **"`$: x = ...` and `let x = $derived(...)` are the same thing, just old vs. new syntax."** They compile to different runtime primitives — an eagerly re-run effect (`$.legacy_pre_effect`) vs. a lazy pull-based computation (`$.derived`) — proven by the two very different compiled bodies above.
+- **"Every `onclick` gets its own `addEventListener`."** A literal `onclick={...}` on a normal element is delegated: the handler is stashed on the element, and one listener at the root dispatches to it — proven directly from the compiled output and the runtime source of `delegated()`.
+
+<Callout title="The one-line takeaway">
+`compile()` turns `$state` into `$.state`, `$derived(expr)` into a **lazy** `$.derived(() => expr)`, `$effect`/`$effect.pre` into `$.user_effect`/`$.user_pre_effect`, and every dynamic template value into a `$.template_effect` that calls `$.set_text`/`$.set_attribute` on the **one** node the compiler already knows it belongs to — proven above with real `compile()` output at every step. `onclick` is delegated (one root listener, not one per element) unless it arrives through a spread. `generate: 'server'` strips the entire reactivity graph down to a plain string template; `dev: true` adds `$.tag`/`$.add_locations` calls that a production build never ships; and legacy `$:` compiles to a genuinely different construct (an eager effect) than `$derived` (a lazy computation) — not just old syntax for the same thing.
+</Callout>
+
+export const quizCompilerOutput = [
+  {
+    q: 'What does `let count = $state(0);` compile to (client target, runes mode)?',
+    options: [
+      'It stays exactly as written — `$state` is a real JavaScript function at runtime',
+      '`let count = $.state(0);` — a call into `svelte/internal/client`\'s `state()`, which returns a plain signal object',
+      'A `useState`-style array destructure',
+      'It is removed entirely and replaced with a Proxy on `window`',
+    ],
+    answer: 1,
+    explain: 'Proven directly with compile() above: $state is a compiler-recognized rune, transformed to a call against the internal client runtime, not a real exported function.',
+  },
+  {
+    q: '```js\nlet doubled = $.derived(() => $.get(count) * 2);\n```\nGiven this compiled output, is `count * 2` evaluated at the moment this line runs?',
+    options: [
+      'Yes, immediately, like any other assignment',
+      'No — the compiler wraps it in a thunk (`() => count * 2`); nothing calls it until the derived value is actually read',
+      'Only in dev mode',
+      'Only if it has no dependencies',
+    ],
+    answer: 1,
+    explain: 'Proven by the compiled output: `$.derived(() => $.get(count) * 2)` — a function is passed, not a value. Signals & Scheduling proves the laziness further with a call-count test.',
+  },
+  {
+    q: '```svelte\n<button onclick={() => count++}>{count}</button>\n```\nWhat does the compiler emit for the click handler?',
+    options: [
+      'A direct `button.addEventListener(\'click\', ...)`',
+      '`$.delegated(\'click\', button, ...)` plus a module-level `$.delegate([\'click\'])` — the handler is stashed on the element and dispatched by one shared root listener',
+      'Nothing — click handlers only work with `use:` actions',
+      'An inline `onclick` HTML attribute string',
+    ],
+    answer: 1,
+    explain: 'Proven directly from real compiled output and from delegated()\'s runtime source, which stores the handler under a symbol key on the element rather than calling addEventListener.',
+  },
+  {
+    q: 'What is different about `generate: \'server\'` output compared to the client target, for `let count = $state(0)`?',
+    options: [
+      'Nothing — the server target still uses `$.state` for hydration purposes',
+      '`count` compiles to a plain variable (`let count = 0`) — there is no reactivity graph at all in server output, only a one-time string render',
+      'It throws a compiler error — $state cannot be used with generate: \'server\'',
+      'It becomes a Node.js `EventEmitter`',
+    ],
+    answer: 1,
+    explain: 'Proven with the exact server output above: no $.state, no signal graph, just $$renderer.push with a template literal and $.escape.',
+  },
+  {
+    q: 'How does a legacy `$: doubled = x * 2` (compiled with `runes: false`) differ from `let doubled = $derived(x * 2)` at the runtime-construct level?',
+    options: [
+      'They are identical — only the syntax differs',
+      '`$:` compiles to `$.legacy_pre_effect`, an eagerly re-run effect that `$.set`s a `mutable_source`; `$derived` compiles to `$.derived`, a lazy, pull-based computation — genuinely different runtime primitives',
+      '`$:` only works with numbers',
+      '`$derived` is only available in legacy mode',
+    ],
+    answer: 1,
+    explain: 'Proven by the two compiled bodies in this lesson: one is an eager effect assigning into a mutable source, the other is a lazy derived that is never eagerly invoked.',
+  },
+];
+
+<Quiz client:visible id="svelte-internals/compiler-output" questions={quizCompilerOutput} />
+
+<ProgressTracker client:visible id="internals-compiler" />
