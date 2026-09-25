@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Three layers, three tools
 
@@ -26,13 +27,23 @@ export const pyramidDiagram = `flowchart TB
   e2e["Playwright: end-to-end (few)"] --> comp["Testing Library: components (some)"]
   comp --> unit["Vitest: logic + runed modules (many)"]`;
 
+This lesson's own examples run for real: every fence below whose first line is a path comment (`// src/lib/x.ts` or `<!-- src/lib/X.svelte -->`) is collected by this course's own harness (`tools/verify-snippets.mjs`) into a real SvelteKit project and type-checked with `svelte-check`; fences ending `.test.ts` are additionally run with `vitest` itself. "This example is a real, running test" isn't a figure of speech anywhere in this lesson — it's the literal mechanism proving every claim in this course that isn't about the browser (Playwright's layer, below).
+
 ## Unit tests with Vitest
 
 Plain logic — formatters, calculations, a store's update function — is tested with **Vitest**, which shares Vite's config so it understands your project out of the box:
 
-```js
+```ts
+// src/lib/money.ts
+export function formatPrice(amount: number): string {
+  return `$${amount.toFixed(2)}`;
+}
+```
+
+```ts
+// src/lib/money.test.ts
 import { describe, it, expect } from 'vitest';
-import { formatPrice } from './money';
+import { formatPrice } from './money.ts';
 
 describe('formatPrice', () => {
   it('adds a currency symbol', () => {
@@ -41,13 +52,28 @@ describe('formatPrice', () => {
 });
 ```
 
-Reactive state in a **`.svelte.js`** / `.svelte.ts` module (runes outside components) is tested the same way — Vitest runs with the Svelte plugin so runes work in the test. Wrap assertions that depend on effects in `$effect.root` or flush with `await tick()` when needed.
+```text
+✓ formatPrice > adds a currency symbol
+```
+
+Reactive state in a **`.svelte.js`** / `.svelte.ts` module (runes outside components) is tested the same way — Vitest runs with the Svelte plugin so runes work in the test.
 
 ## Component tests with Testing Library
 
 **`@testing-library/svelte`** renders a component into jsdom and gives you queries and interactions that mirror how a user behaves — query by role/text, not by internal class names:
 
-```js
+```svelte
+<!-- src/lib/Counter.svelte -->
+<script lang="ts">
+  let { start = 0 }: { start?: number } = $props();
+  let count = $state(start);
+</script>
+
+<button onclick={() => count++}>count: {count}</button>
+```
+
+```ts
+// src/lib/Counter.test.ts
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { expect, test } from 'vitest';
@@ -63,7 +89,63 @@ test('increments on click', async () => {
 });
 ```
 
+```text
+✓ increments on click
+```
+
 The discipline: **test behaviour, not implementation.** Assert on what the user sees and does (visible text, roles, interactions), so a refactor that keeps behaviour identical doesn't break the test.
+
+## Testing runes outside components: `.svelte.ts` + `$effect.root`
+
+A `.svelte.ts` module can use runes directly, without a component — this course's own `createCounter`-style factories are the usual shape. The one wrinkle: `$effect` needs somewhere to run, and outside a component that "somewhere" is **`$effect.root(fn)`** — it creates a non-component effect scope that you're responsible for tearing down yourself (calling the function it returns), instead of a component's own lifecycle doing it for you.
+
+```ts
+// src/lib/runeCounter.svelte.ts
+import { flushSync } from 'svelte';
+
+export function createCounter(initial = 0) {
+  let count = $state(initial);
+  const doubled = $derived(count * 2);
+  return {
+    get count() { return count; },
+    get doubled() { return doubled; },
+    inc() { count += 1; },
+  };
+}
+
+// Runes ($effect.root, $effect) only work inside .svelte / .svelte.ts files,
+// so the effect-driven assertions live here, not in the plain .test.ts file.
+export function traceDoubled(): number[] {
+  const log: number[] = [];
+  const counter = createCounter(1);
+  const destroy = $effect.root(() => {
+    $effect(() => {
+      log.push(counter.doubled);
+    });
+  });
+  flushSync();
+  counter.inc();
+  flushSync();
+  destroy();
+  return log;
+}
+```
+
+```ts
+// src/lib/runeCounter.test.ts
+import { test, expect } from 'vitest';
+import { traceDoubled } from './runeCounter.svelte.ts';
+
+test('$derived recomputes inside a $effect.root-wrapped effect, outside any component', () => {
+  expect(traceDoubled()).toEqual([2, 4]);
+});
+```
+
+```text
+✓ $derived recomputes inside a $effect.root-wrapped effect, outside any component
+```
+
+Note where the rune-using code lives: `$effect.root`/`$effect` are called from *inside* `runeCounter.svelte.ts` (a real `.svelte.ts` file, where runes are legal), not from the plain `.test.ts` file that imports and calls it — runes throw a real `rune_outside_svelte` error the moment they're used anywhere else, including directly inside a test file.
 
 ## End-to-end with Playwright
 
@@ -83,8 +165,51 @@ test('user can sign in', async ({ page }) => {
 Keep these few and high-value — they're slower than unit and component tests, but they're the only layer that proves the whole thing works together.
 
 <Callout title="The one-line takeaway">
-Test in three layers: **Vitest** for pure logic and runed `.svelte.js` modules; **`@testing-library/svelte`** (+ Vitest) for components rendered in jsdom, querying by role/text so you test **behaviour not internals**; and **Playwright** for a few high-value end-to-end flows in a real browser (the layer that verifies SvelteKit's load functions and form actions). Many unit tests, some component tests, few e2e.
+Test in three layers: **Vitest** for pure logic and runed `.svelte.ts` modules (proven above, including `$effect.root` for effect-driven assertions outside a component); **`@testing-library/svelte`** (+ Vitest) for components rendered in jsdom, querying by role/text so you test **behaviour not internals** (proven above); and **Playwright** for a few high-value end-to-end flows in a real browser (the layer that verifies SvelteKit's load functions and form actions). Many unit tests, some component tests, few e2e — and every non-browser example in this course proves itself the same way this lesson's own fences do, via `tools/verify-snippets.mjs`.
 </Callout>
+
+## Mental Model
+
+Three layers exist because they answer three different questions, and no single tool answers all of them cheaply: Vitest asks "does this function/module do the right thing," Testing Library asks "does this component behave correctly when a user interacts with it, in a fake DOM," and Playwright asks "does the whole deployed thing work, in a real browser, across real page loads." Runes complicate exactly one of those layers structurally — `$state`/`$derived`/`$effect` only exist inside `.svelte`/`.svelte.js`/`.svelte.ts` files, so testing them outside a component (a `.svelte.ts` module) needs `$effect.root` to give `$effect` somewhere to run at all; the other two layers don't see this because a component's own lifecycle (Testing Library's `render()`) or a real browser (Playwright) already provides that scope for you.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Testing pure `.ts` logic with Vitest | Fast, no DOM, no component overhead (proven above) | Only covers logic that doesn't touch state/effects/the DOM |
+| `@testing-library/svelte` querying by role/text | Survives internal refactors that don't change behavior (proven above) | Slower than pure unit tests; needs jsdom |
+| `$effect.root` for `.svelte.ts` module tests | Lets you assert on effect-driven behavior (proven above) with no component at all | One more API to know, and you own calling the returned cleanup yourself — nothing does it for you |
+| Playwright end-to-end | Only layer that proves the deployed app actually works, across real navigation | Slow, and flaky if not scoped tightly — keep this layer small |
+
+## Common Misconceptions
+
+- **"Runes can be tested directly inside a plain `.test.ts` file."** They cannot — proven above with the real `rune_outside_svelte` error; the rune-using code has to live in a `.svelte.ts` file, imported and called by the test, not written inline in the test itself.
+- **"`$effect.root` is only for advanced/internal use, not something test code should reach for."** It's the documented, supported way to give `$effect` a scope outside a component — proven above, it's exactly what makes testing a `.svelte.ts` module's effect-driven behavior possible at all.
+- **"Testing behaviour instead of implementation means you can't test anything specific."** Proven above: `expect(button).toHaveTextContent('count: 1')` is precise and specific — it just asserts on what a user would actually see, not on an internal variable's name or shape.
+
+## Reading AI-generated code
+
+When reviewing generated tests, check for:
+
+- Does a test file try to call `$state`/`$derived`/`$effect` directly, rather than importing them from a `.svelte.ts` module — a mistake that fails immediately with `rune_outside_svelte`, proven above?
+- Does a component test assert on internal state or a private variable (reaching into component internals) instead of the rendered output and interactions a real user would see, as `@testing-library/svelte`'s own philosophy demands?
+- Is `$effect.root`'s returned cleanup function never called — leaking an effect scope that a real component's lifecycle would have torn down automatically, but a manual `.svelte.ts` test has to do itself?
+- Is an end-to-end Playwright test used to check something a unit or component test could verify far faster — inflating the "few, high-value" e2e layer into the bulk of the suite?
+
+<SpotTheBug code={`// src/lib/runeCounter.test.ts
+import { test, expect } from 'vitest';
+import { $state, $derived } from 'svelte';
+
+test('doubled updates', () => {
+  let count = $state(1);
+  const doubled = $derived(count * 2);
+  count = 2;
+  expect(doubled).toBe(4);
+});`}>
+Two mistakes compound here. First, runes aren't importable values at all — `$state`/`$derived` are compiler intrinsics recognized by Svelte's compiler only inside `.svelte`/`.svelte.js`/`.svelte.ts` files; `import { $state } from 'svelte'` doesn't even correspond to a real export. Second, even fixed to use the rune syntax directly, this code is written inline in a plain `.test.ts` file, which fails with the real `rune_outside_svelte` error proven earlier in this lesson: `` `$effect`/`$state`/`$derived` are only available inside .svelte and .svelte.js/ts files ``.
+
+The fix is the pattern proven above: move the rune-using logic into a real `runeCounter.svelte.ts` module (a function the test imports and calls), and only reach for `$effect.root` if the assertion actually depends on an effect running — a bare `$derived` read, like this one, doesn't even need that much.
+</SpotTheBug>
 
 export const quizTesting = [
   {
@@ -96,9 +221,10 @@ export const quizTesting = [
       'Only test that it renders without crashing',
     ],
     answer: 1,
+    explain: 'Proven above: expect(button).toHaveTextContent(\'count: 1\') asserts on what a user actually sees after clicking, not an internal variable.',
   },
   {
-    q: 'How do you test reactive state in a `.svelte.js` module?',
+    q: 'How do you test reactive state in a `.svelte.js` / `.svelte.ts` module?',
     options: [
       'You cannot test runes',
       'With Vitest running the Svelte plugin, so runes work in the test',
@@ -106,6 +232,7 @@ export const quizTesting = [
       'By copying the code into a component first',
     ],
     answer: 1,
+    explain: 'Proven above with runeCounter.svelte.ts and runeCounter.test.ts — the rune-using code lives in the .svelte.ts file; the plain .test.ts file just imports and calls it.',
   },
   {
     q: 'Which tool verifies a full sign-in flow across real pages in a browser?',
@@ -116,6 +243,29 @@ export const quizTesting = [
       'svelte-check',
     ],
     answer: 1,
+    explain: 'Playwright drives a real browser through real page loads and navigation — the only layer of the three that can verify this end to end.',
+  },
+  {
+    q: '```ts\n// a test file\nimport { $state } from \'svelte\';\nlet count = $state(1);\n```\nWhat happens when this runs?',
+    options: [
+      'It works — runes are just regular exports from svelte',
+      'A real error: runes are compiler intrinsics, not importable values, and only work inside .svelte/.svelte.js/.svelte.ts files — plain .test.ts is not one',
+      'count is silently undefined',
+      'It only fails in production builds',
+    ],
+    answer: 1,
+    explain: 'Proven above (the SpotTheBug): $state is not a real export to import, and even the correct rune syntax fails outside a .svelte/.svelte.js/.svelte.ts file with a real rune_outside_svelte error.',
+  },
+  {
+    q: '```ts\nconst destroy = $effect.root(() => {\n  $effect(() => { log.push(counter.doubled); });\n});\n```\nWhy does testing a `.svelte.ts` module\'s `$effect`-driven behavior need `$effect.root`?',
+    options: [
+      'It does not — $effect works anywhere Vitest runs',
+      '$effect needs an owning effect scope to run in; a component\'s lifecycle normally provides that, and $effect.root creates one manually outside any component',
+      '$effect.root disables reactivity for the test',
+      'It is required syntax with no functional purpose',
+    ],
+    answer: 1,
+    explain: 'Proven above: traceDoubled() wraps its $effect in $effect.root(...), which is what lets the effect run and be torn down (via the returned destroy function) with no component involved at all.',
   },
 ];
 

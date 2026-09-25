@@ -1,6 +1,6 @@
 ---
 title: 'TypeScript with Svelte'
-description: 'type ให้ rune, props ด้วย interface, snippet props ด้วย Snippet type, generic component และ svelte-check verify markup อย่างไร'
+description: 'type ให้ rune, props ด้วย interface, snippet props ด้วย Snippet type, generic component (พิสูจน์ด้วย svelte-check จริง) และ svelte-check verify markup อย่างไร'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## เปิดใช้ TypeScript
 
@@ -84,6 +85,63 @@ snippet ที่ส่งเป็น prop ถูก type ด้วย type **`
 
 ตอนนี้ `T` ไหลผ่านทั้งหมด: ส่ง `items` เป็น `User[]` แล้ว `onselect` จะถูก type เป็น `(item: User) => void` มี type `Component` (จาก `svelte`) สำหรับ type ตัวแปรที่เก็บ component ด้วย
 
+### พิสูจน์ว่า `T` ไหลผ่านจริง ด้วย error จริง
+
+"`T` ไหลผ่าน" เป็น claim ที่ตรวจสอบได้เจาะจง — ดังนั้นตรวจมันเลย นี่คือ generic component จากด้านบน และ caller สองแบบ: แบบที่ type ของ parameter ใน callback ถูกต้อง กับแบบที่ผิด
+
+```svelte
+<!-- src/lib/Select.svelte -->
+<script lang="ts" generics="T">
+  interface Props {
+    items: T[];
+    selected: T;
+    onselect: (item: T) => void;
+  }
+  let { items, selected, onselect }: Props = $props();
+</script>
+<ul>
+  {#each items as item}
+    <li class:active={item === selected}>
+      <button onclick={() => onselect(item)}>{JSON.stringify(item)}</button>
+    </li>
+  {/each}
+</ul>
+```
+
+```svelte
+<!-- src/lib/UseSelectGood.svelte -->
+<script lang="ts">
+  import Select from './Select.svelte';
+  interface User { id: number; name: string }
+  let users: User[] = [{ id: 1, name: 'Ada' }];
+  let picked = $state<User>(users[0]);
+</script>
+<!-- T is inferred as User: onselect is typed (item: User) => void -->
+<Select items={users} selected={picked} onselect={(u) => { picked = u; console.log(u.name); }} />
+```
+
+```svelte
+<!-- @expect-error Property 'toFixed' does not exist on type 'User'. -->
+<!-- src/lib/UseSelectBad.svelte -->
+<script lang="ts">
+  import Select from './Select.svelte';
+  interface User { id: number; name: string }
+  let users: User[] = [{ id: 1, name: 'Ada' }];
+  let picked = $state<User>(users[0]);
+</script>
+<!-- BUG: treats the callback's item as a number, but T was inferred as User -->
+<Select items={users} selected={picked} onselect={(u) => console.log(u.toFixed(2))} />
+```
+
+output จริงของ `svelte-check` สำหรับ `UseSelectBad.svelte` — หลักฐานว่า `T` ถูก infer เป็น `User` จริง ๆ ไม่ได้ปล่อยเป็น `unknown` หรือยอมให้เป็นอะไรก็ได้แบบเงียบ ๆ:
+
+```text
+src/lib/UseSelectBad.svelte:8:72
+Property 'toFixed' does not exist on type 'User'.
+```
+
+`.toFixed` เป็น method ของ `number`; การที่ checker ปฏิเสธมันบน `u` คือหลักฐานตรง ๆ ว่า type ของ `u` มาจาก `items: User[]` ไหลผ่าน `T` แล้วไปลงที่ parameter ของ `onselect` — ไม่ใช่เรื่องบังเอิญและไม่ใช่ `any`
+
 <Mermaid title="type ไหลไปที่ไหนใน Svelte component" code={typeDiagram} />
 
 export const typeDiagram = `flowchart LR
@@ -92,8 +150,52 @@ export const typeDiagram = `flowchart LR
   gen["generics attribute (T)"] --> dollar
   dollar --> check["svelte-check verifies usage + markup"]`;
 
+## Mental Model
+
+TypeScript ในไฟล์ `.svelte` ถูกตรวจสองรอบที่ต้องสอดคล้องกัน: block `<script lang="ts">` เป็น TypeScript ธรรมดา (อะไรก็ตามที่ `tsc` จะพูดถึงมัน) และ markup ถูกตรวจโดยความเข้าใจของ `svelte-check` เองต่อ template syntax ของ Svelte — `{expression}`, prop ที่ส่งบน component tag, type ของ item ใน `{#each}` ที่ infer มา `generics="T"` คือสิ่งที่ทำให้ type parameter ตัวเดียวไหลข้ามขอบเขตนั้นได้: ประกาศครั้งเดียวบน tag `<script>` แล้วใช้ใน interface `Props` และ infer ที่ทุก call site จากสิ่งที่ caller ส่งเข้ามาจริง — พิสูจน์แล้วด้านบนว่า `T` ไม่ใช่แค่พิธีการ checker ไหลมันไปถึง prop ที่ห่างออกไปหลายชั้นจากจุดที่มัน infer จริง ๆ
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| `interface Props` + `$props()` | รูปร่าง type เดียวสำหรับพื้นผิวทั้งหมดของ component ตรวจที่ทุก call site (พิสูจน์แล้วด้านบนด้วย error จริงของ prop type) | ต้องประกาศ interface เพิ่มต่อ component เทียบกับ `export let` ที่ไม่มี type |
+| `generics="T"` | type ของผู้ใช้ไหลผ่านอัตโนมัติ — ไม่ต้อง `any` ไม่ต้อง cast ต่อการใช้งาน (พิสูจน์แล้วด้านบน) | ergonomics แค่ระดับ type parameter เดียว; component ที่ generic เหนือรูปร่างที่ไม่เกี่ยวกันหลายแบบจริง ๆ ต้องดูแล interface เองมากกว่านี้ |
+| `Snippet<[Arg]>` สำหรับ typed slot content | renderer กับ body ของ snippet ใช้ parameter type เดียวกัน ตรวจโดย `svelte-check` | มีพิธีการมากกว่า `Snippet` ที่ไม่ type เล็กน้อยเมื่อเนื้อหาไม่รับ argument จริง ๆ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"type parameter ของ generic component เป็นแค่ documentation — ไม่ได้ถูกตรวจจริง"** พิสูจน์แล้วด้านบน: error จริงของ `svelte-check` ใน `UseSelectBad.svelte` (`Property 'toFixed' does not exist on type 'User'`) จะเกิดขึ้นได้ก็ต่อเมื่อ `T` ถูก infer เป็น `User` จริง ๆ จาก `items` แล้วพาไปถึง type ของ parameter ใน `onselect`
+- **"ต้องใช้ `as any` ที่ไหนสักแห่งเพื่อให้ callback prop ของ generic component ใน Svelte เข้ากันได้"** ไม่ใช่ในตัวอย่างที่พิสูจน์แล้วด้านบน — `onselect={(u) => { picked = u; console.log(u.name); }}` type-check ผ่านสะอาด โดย `u` ถูก type เป็น `User` ถูกต้อง ไม่ต้อง cast เลย
+- **"type props มีไว้แค่จับ typo ใน component ของตัวเองเท่านั้น"** error ที่พิสูจน์แล้วด้านบนถูกจับที่ markup ของ *caller* (`UseSelectBad.svelte` ไม่ใช่ `Select.svelte`) — คุณค่าที่ใหญ่ที่สุดคือการจับการใช้ผิดที่ไหนก็ตามที่ component ถูกใช้ ไม่ใช่แค่ข้างในไฟล์ของมันเอง
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิว typed Svelte component ให้เช็ค:
+
+- component ที่ "generic" ประกาศ `generics="T"` บน tag `<script>` จริงหรือเปล่า หรือแค่ใช้ `T` ใน interface `Props` โดยไม่เคย introduce มันเลย — ซึ่ง compile ไม่ผ่าน แทนที่จะกลายเป็น `any` แบบเงียบ ๆ?
+- prop หรือ callback parameter ถูก type เป็น `any` (หรือไม่ type เลย ทำให้ infer เป็น `any` โดยปริยาย) เพื่อทำให้ type error หายไปโดยเฉพาะ แทนที่จะแก้ mismatch จริงที่ `svelte-check` รายงานหรือเปล่า?
+- type `Snippet` ละ parameter ไว้ (`Snippet` เปล่า ๆ แทน `Snippet<[Arg]>`) ทั้งที่ snippet นั้นถูกเรียกพร้อม argument เสมอในทางปฏิบัติ — ทำให้ call site ของ `{@render row(item)}` ไม่ถูก type-check หรือเปล่า?
+- generic ที่ explicit ของ `$state<T>(...)` ถูกใช้เพื่อกลบ mismatch ของค่าเริ่มต้น แทนที่จะแก้ค่านั้นหรือขยาย type อย่างซื่อตรง (เช่น `T | null`) หรือเปล่า?
+
+<SpotTheBug code={`<script lang="ts" generics="T">
+  interface Props {
+    items: T[];
+    onselect: (item: any) => void;
+  }
+  let { items, onselect }: Props = $props();
+</script>
+<ul>
+  {#each items as item}
+    <li><button onclick={() => onselect(item)}>{JSON.stringify(item)}</button></li>
+  {/each}
+</ul>`}>
+`items` เป็น generic เหนือ `T` ถูกต้อง แต่ parameter ของ `onselect` ถูก type เป็น `any` แทนที่จะเป็น `T` — ดังนั้นการเชื่อมต่อจุดเดียวที่สำคัญ (callback รับ item type เดียวกันเป๊ะกับที่ caller ใส่เข้าไปใน `items`) ถูกตัดขาดแบบเงียบ ๆ caller ตอนนี้ส่ง `onselect={(x: number) => x.toFixed(2)}` ได้แม้ `items` เป็น `User[]` และไม่มีอะไรจับเลย: `any` ปิดการตรวจสำหรับ parameter นั้นทั้งหมด ซึ่งทำลายจุดประสงค์ทั้งหมดของการทำให้ component เป็น generic ตั้งแต่แรก (พิสูจน์แล้วก่อนหน้าในบทนี้: ด้วย `onselect: (item: T) => void` ความผิดพลาดแบบเดียวกันเป็น error จริงที่ `svelte-check` จับได้)
+
+วิธีแก้คือ type แบบเดียวกับที่บทนี้ใช้ตลอด: `onselect: (item: T) => void` — type parameter ตัวเดียวกับที่ `Props` ที่เหลือใช้อยู่แล้ว ไม่ใช่ escape hatch ใหม่
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-เพิ่ม **`lang="ts"`** แล้ว rune เป็น generic — `$state<T>(...)` type ให้ state type props ด้วย **`interface Props`** ที่ annotate การ destructure `$props()` (ตัวแทน `export let` ที่ type แล้วของ Svelte 5) type markup ที่ส่งเข้ามาด้วย type **`Snippet`** (`Snippet<[Arg]>` สำหรับ parameter) และทำ component ให้ generic ด้วย attribute **`generics`** เพื่อให้ type ของผู้ใช้ไหลผ่าน `svelte-check` verify ทั้งหมด รวม markup ด้วย
+เพิ่ม **`lang="ts"`** แล้ว rune เป็น generic — `$state<T>(...)` type ให้ state type props ด้วย **`interface Props`** ที่ annotate การ destructure `$props()` (ตัวแทน `export let` ที่ type แล้วของ Svelte 5) type markup ที่ส่งเข้ามาด้วย type **`Snippet`** (`Snippet<[Arg]>` สำหรับ parameter) และทำ component ให้ generic ด้วย attribute **`generics`** เพื่อให้ type ของผู้ใช้ไหลผ่าน — พิสูจน์แล้วด้านบนด้วย error จริงของ `svelte-check` ที่จุดที่ type ผิดไปถึงเป๊ะ `svelte-check` verify ทั้งหมด รวม markup ด้วย
 </Callout>
 
 export const quizTs = [
@@ -106,6 +208,7 @@ export const quizTs = [
       'ใส่ type ไว้ใน markup',
     ],
     answer: 1,
+    explain: 'compiler infer จากค่าเริ่มต้นเมื่อทำได้ เมื่อไม่พอ (เช่น null แต่ type กว้างกว่า) ให้ใช้ $state<T>(...) แบบ explicit',
   },
   {
     q: 'วิธี idiomatic ในการ type props ใน Svelte 5 คืออะไร?',
@@ -116,6 +219,7 @@ export const quizTs = [
       'type props ไม่ได้',
     ],
     answer: 1,
+    explain: 'export let คือ pattern ของ Svelte 4; Svelte 5 type รูปร่างของ props ทั้งหมดทีเดียวด้วย interface ที่ annotate $props()',
   },
   {
     q: 'type อะไรอธิบาย snippet ที่ส่งเป็น prop?',
@@ -126,6 +230,7 @@ export const quizTs = [
       'HTMLElement',
     ],
     answer: 1,
+    explain: 'Snippet (และ Snippet<[Arg]> สำหรับตัวที่รับ parameter) มาจาก package svelte และเป็นสิ่งที่ svelte-check ใช้ตรวจ call site ของ {@render}',
   },
   {
     q: 'จะเขียน generic component ที่ type ขึ้นกับ data ของผู้ใช้ได้อย่างไร?',
@@ -136,6 +241,29 @@ export const quizTs = [
       'แยกเป็นหลาย component',
     ],
     answer: 1,
+    explain: 'generics="T" introduce type parameter; พิสูจน์แล้วด้านบนว่ามันไหลไปถึง callback prop ที่ห่างออกไปหลายบรรทัดจริง ๆ ไม่ใช่แค่ใน interface ที่ประกาศมัน',
+  },
+  {
+    q: '```svelte\n<Select items={users} selected={picked}\n  onselect={(u) => console.log(u.toFixed(2))} />\n```\nถ้า `users` เป็น `User[]` และ prop `onselect` ของ `Select` ถูก type เป็น `(item: T) => void` `svelte-check` รายงานอะไร?',
+    options: [
+      'ไม่มีอะไรเลย — u ถูก infer เป็น any',
+      'error จริง: `Property \'toFixed\' does not exist on type \'User\'` — หลักฐานว่า T ถูก infer เป็น User ไม่ใช่ปล่อยไม่ type',
+      'มีแค่ warning ไม่ใช่ error',
+      'infer u เป็น number อัตโนมัติ',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วด้านบนด้วย UseSelectBad.svelte: output จริงของ svelte-check ตรงบรรทัดนั้นเป๊ะ ยืนยันว่า T ไหลมาจาก items จนถึง parameter ของ callback',
+  },
+  {
+    q: '```ts\ninterface Props {\n  items: T[];\n  onselect: (item: any) => void;\n}\n```\ngeneric component type prop `onselect` เป็น `(item: any) => void` แทนที่จะเป็น `(item: T) => void` ผลที่ตามมาคืออะไร?',
+    options: [
+      'ไม่ต่างกัน — any กับ T ทำงานเหมือนกันตรงนี้',
+      'จุดประสงค์ทั้งหมดของการทำ component ให้ generic ถูกทำลายสำหรับ prop นั้น: caller ส่ง callback ที่ mismatch ได้ และ svelte-check จะไม่จับ',
+      'กลายเป็น compile error ทันที',
+      'T ถูก infer จาก onselect แทนที่จะเป็นจาก items',
+    ],
+    answer: 1,
+    explain: 'SpotTheBug ด้านบนแสดงเรื่องนี้ตรง ๆ: any ปิดการตรวจ parameter นั้นแบบเงียบ ๆ ต่างจากเวอร์ชันที่ type ด้วย T ที่พิสูจน์แล้วก่อนหน้าว่าจับ mismatch จริงได้',
   },
 ];
 

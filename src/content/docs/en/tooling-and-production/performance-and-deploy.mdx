@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Fast by default
 
@@ -66,8 +67,56 @@ The big deployment decision mirrors the rendering choice:
 
 Set `export const prerender = true` on the routes that can be static and let the rest render on demand — the same hybrid approach that keeps most of the site cacheable while a few routes stay dynamic.
 
+<Callout title="The real adapter-node build, proven in the SvelteKit module">
+This lesson's adapter table and static-vs-server split are the map; the [SvelteKit module's Server & API lesson](/svelte/en/sveltekit/server-and-api/#render-mode-per-route-and-adapters) is the territory — it builds this course's probe with **`adapter-node`** for real and inspects the actual output, including the [static-vs-dynamic environment variable distinction](/svelte/en/sveltekit/server-and-api/#environment-variables-static-vs-dynamic-and-the-origin-check) (`$env/static/*` inlined as literals at *build* time vs `$env/dynamic/*` read from `process.env` at *request* time) proven from a real build's compiled output, and the `ORIGIN` environment variable `adapter-node` needs at runtime behind a proxy.
+</Callout>
+
+## `svelte/reactivity`: one more reason output stays small
+
+The "small by default" theme in this lesson isn't only about the compiler — it extends to the standard library Svelte ships alongside it. **`svelte/reactivity`** (`SvelteMap`, `SvelteSet`, `SvelteDate`, and friends) gives you rune-native reactive collections without reaching for a `writable` store wrapper, which matters here because it's one less dependency-shaped thing riding along in your bundle for a job the runtime already does natively. The [state & stores module's Built-in Stores lesson](/svelte/en/state-and-stores/built-in-stores) proves the reactivity difference against a plain `Map` in detail; this lesson's takeaway is simpler: reaching for the rune-native version over a store-wrapped one is itself a small, free performance choice, not a trade-off.
+
+## Mental Model
+
+Everything in this lesson follows from one fact established in the very first lesson of this course: Svelte's compiler already does the expensive analysis at build time, so "performance work" here is mostly about *not undoing* that advantage — not importing a heavy dependency whole, not choosing a server adapter for content that could be static (and therefore free to serve from a CDN with no compute at all), not reaching for a store-wrapped collection where a rune-native one does the same job with less around it. None of the tools in this lesson (bundle visualizers, adapters, `svelte/reactivity`) create speed on their own; they mostly just stop you from accidentally spending the budget the compiler handed you for free.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `adapter-auto` | Zero-config, works out of the box on common platforms | Doesn't expose platform-specific options (env handling, edge bindings) that a specific adapter does |
+| `adapter-static` / `prerender = true` | Free hosting on any CDN, no server compute cost per request (proven with real build inspection in the SvelteKit module) | Cannot serve request-time data — a route needing the logged-in user or live data cannot be prerendered |
+| `adapter-node` | Full control, runs anywhere Node runs (proven with a real build in the SvelteKit module) | You own the process — env vars like `ORIGIN`, proven in that lesson, instead of a platform managing it |
+| `svelte/reactivity` over a store wrapper | Rune-native, no extra dependency-shaped code for the same behavior | Only covers the collection types it ships (Map, Set, Date, URL, …) — a fully custom reactive shape still needs `$state`/a store |
+
+## Common Misconceptions
+
+- **"Prerendering (`adapter-static`/`prerender = true`) is just a performance toggle you can flip on any route."** It's a correctness constraint, not just a speed one — a prerendered route is rendered once at build time, so any route needing request-time data (cookies, the logged-in user, live data) cannot be prerendered at all, regardless of how much faster it would be.
+- **"`$env/static/private` and `$env/dynamic/private` are interchangeable — just pick whichever."** They resolve at different times entirely (build time vs request time) — proven with a real build's inspected output in the [SvelteKit module](/svelte/en/sveltekit/server-and-api/#environment-variables-static-vs-dynamic-and-the-origin-check); swapping one for the other silently changes when a value can change without a rebuild.
+- **"Using `svelte/reactivity`'s `SvelteMap` instead of a plain `Map` wrapped in a store is just a style preference."** It's a real bundle and reactivity-model difference — no store subscription machinery, method-level reactivity instead of whole-object replacement — covered in full in the built-in-stores lesson linked above.
+
+## Reading AI-generated code
+
+When reviewing deployment and performance-sensitive code, check for:
+
+- Is `export const prerender = true` set on a route that actually reads request-time data (`cookies()`, a session, `url.searchParams` used for anything other than static generation) — a correctness bug, not just a missed optimization?
+- Does server code read a secret via `$env/dynamic/private` when `$env/static/private` would do (and be inlined, slightly faster) — or the reverse, reading `$env/static/private` for a value that's genuinely meant to change per deployment without a rebuild?
+- Is a `Map`/`Set` wrapped in a hand-rolled `writable` store where `svelte/reactivity`'s `SvelteMap`/`SvelteSet` would give the same reactivity with less code and no store subscription overhead?
+- Is a specific adapter (`adapter-node`, `adapter-cloudflare`) assumed to "just work" the same as `adapter-auto` — missing the platform-specific setup (env vars, bindings) the specific adapter actually needs, proven in the SvelteKit module for `adapter-node`'s `ORIGIN`?
+
+<SpotTheBug code={`// src/routes/dashboard/+page.server.ts
+export const prerender = true;
+
+export async function load({ cookies }) {
+  const session = cookies.get('session_id');
+  return { user: await getUserBySession(session) };
+}`}>
+`prerender = true` tells SvelteKit to render this route **once, at build time**, and serve the same static HTML to everyone forever after — but the `load` function reads `cookies.get('session_id')`, a value that's different for every visitor and only exists at request time. There is no "request" during a build, so this isn't a subtle performance trade-off; it's a route that structurally cannot do what it's trying to do. Depending on exactly what's read, SvelteKit's prerendering will either fail the build with an error, or (worse) silently bake one specific request's data into the static output that every subsequent visitor then receives.
+
+The fix is to remove `prerender` here entirely (or set it to `false`) — a per-user dashboard is exactly the "server" side of the static-vs-server split this lesson describes, not a candidate for the "static" side no matter how much faster static would be.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Svelte's compiler makes output **small and fast by default**, but measure with `vite build` (and a bundle visualizer) — the weight is usually a third-party dependency, not Svelte. Deploy a SvelteKit app through an **adapter**: `adapter-auto` (zero-config), `adapter-node`, `adapter-cloudflare`, or `adapter-static`. Choose **static** (prerender to a CDN, no server) for shared content and a **server** adapter for request-time data — and mix them per route with `export const prerender`.
+Svelte's compiler makes output **small and fast by default**, but measure with `vite build` (and a bundle visualizer) — the weight is usually a third-party dependency, not Svelte. Deploy a SvelteKit app through an **adapter**: `adapter-auto` (zero-config), `adapter-node`, `adapter-cloudflare`, or `adapter-static` — the SvelteKit module proves a real `adapter-node` build, including the static-vs-dynamic env var distinction. Choose **static** (prerender to a CDN, no server) for shared content and a **server** adapter for request-time data (never both on the same route, proven above) — and mix them per route with `export const prerender`. `svelte/reactivity`'s rune-native collections are the same "small by default" idea applied to your own data structures.
 </Callout>
 
 export const quizDeploy = [
@@ -80,6 +129,7 @@ export const quizDeploy = [
       'It compresses HTML',
     ],
     answer: 1,
+    explain: 'Covered from the very first lesson of this course, and proven with real compiled output in the "Why Svelte, the Compiler" lesson: there is no reconciler to ship.',
   },
   {
     q: 'When you measure a large bundle, what is usually to blame?',
@@ -90,6 +140,7 @@ export const quizDeploy = [
       'Scoped styles',
     ],
     answer: 1,
+    explain: 'The framework overhead is small by construction; a bundle visualizer almost always points at a third-party dependency, not Svelte itself.',
   },
   {
     q: 'What is a SvelteKit adapter for?',
@@ -100,6 +151,18 @@ export const quizDeploy = [
       'Running tests',
     ],
     answer: 1,
+    explain: 'The SvelteKit module proves a real adapter-node build end to end, including the environment-variable and ORIGIN details specific to that adapter.',
+  },
+  {
+    q: '```ts\n// src/routes/dashboard/+page.server.ts\nexport const prerender = true;\n\nexport async function load({ cookies }) {\n  return { user: await getUserBySession(cookies.get(\'session_id\')) };\n}\n```\nWhat is wrong here?',
+    options: [
+      'Nothing — prerendering just makes it faster',
+      'prerender = true renders once at build time, with no request — but this load reads a per-visitor cookie that only exists at request time, so it structurally cannot work',
+      'cookies() cannot be used in a load function at all',
+      'It needs adapter-node specifically',
+    ],
+    answer: 1,
+    explain: 'Proven in the SpotTheBug above: this is a correctness bug, not a missed optimization — a prerendered route has no per-request cookies to read.',
   },
   {
     q: 'How do you make some routes static and others render on demand?',
@@ -110,6 +173,18 @@ export const quizDeploy = [
       'It is not possible in SvelteKit',
     ],
     answer: 1,
+    explain: 'This mixing is exactly the hybrid approach this lesson describes — but only for routes that genuinely have no request-time data dependency, proven above.',
+  },
+  {
+    q: '```ts\nimport { SvelteMap } from \'svelte/reactivity\';\nlet cache = new SvelteMap();\n```\nWhat does `svelte/reactivity`\'s `SvelteMap` give you over a plain `Map` wrapped in a `writable` store?',
+    options: [
+      'Nothing different, just a naming preference',
+      'Rune-native, method-level reactivity with no store-subscription machinery — one less dependency-shaped thing in the bundle for the same job',
+      'It replaces $state entirely for all values',
+      'It only works on the server',
+    ],
+    answer: 1,
+    explain: 'Detailed and proven in the state & stores module\'s built-in-stores lesson; here it is the same "small by default" idea applied to your own data structures.',
   },
 ];
 

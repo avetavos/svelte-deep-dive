@@ -1,6 +1,6 @@
 ---
 title: 'Events & Attributes'
-description: 'Svelte 5 event handlers (onclick, not on:click), attribute shorthands and spreads, and the class and style directives.'
+description: 'Svelte 5 event handlers (onclick, not on:click), event delegation and its consequences, capture/passive/once, attribute spread ordering, class/style directives, and a consolidated Svelte 4 to 5 legacy-code recognition table.'
 sidebar:
   order: 5
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Events are just properties now
 
@@ -28,6 +29,146 @@ This is a deliberate change from **Svelte 4**, which used a special `on:click` d
 <Callout title="Svelte 4 vs Svelte 5 events">
 Svelte 4: `<button on:click={handler}>` — a framework directive. Svelte 5: `<button onclick={handler}>` — a plain property. Event *modifiers* (`on:click|preventDefault`) are also gone in 5; you call `e.preventDefault()` inside the handler, or use a small wrapper. This is one of the most visible Svelte 4 → 5 changes.
 </Callout>
+
+## Event delegation: one listener, not one per element
+
+Svelte doesn't attach a native listener to every element with an `onclick`. The [docs](https://svelte.dev/docs/svelte/basic-markup#Events) are direct about this:
+
+> To reduce memory footprint and increase performance, Svelte uses a technique called event delegation. This means that for certain events... a single event listener at the application root takes responsibility for running any handlers on the event's path.
+
+You can see it directly in the compiler's own output — compiling a trivial counter with `svelte/compiler`'s `compile()`:
+
+```ts
+// src/lib/compile-tiny.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+const source = `<script>
+  let count = $state(0);
+</script>
+<button onclick={() => count++}>clicked {count} times</button>
+`;
+
+test('a click handler compiles to delegated dispatch, not a per-element listener', () => {
+  const { js } = compile(source, { filename: 'Tiny.svelte' });
+  // No addEventListener anywhere in the output...
+  expect(js.code).not.toMatch(/addEventListener/);
+  // ...instead, the handler is registered for delegation, and the event
+  // type is collected into a single call that wires up the root listener.
+  expect(js.code).toMatch(/\$\.delegated\('click', button, /);
+  expect(js.code).toMatch(/\$\.delegate\(\['click'\]\)/);
+});
+```
+
+```text
+✓ a click handler compiles to delegated dispatch, not a per-element listener
+```
+
+### The consequence: a `stopPropagation()` between the root and your element can eat the event
+
+Because Svelte's own dispatch logic only runs once the native event has actually reached the root, anything in between that stops native bubbling prevents Svelte from ever finding out the click happened — even though the click visibly landed on your button. The docs call this out explicitly:
+
+> When using `addEventListener` directly, avoid calling `stopPropagation`, as it prevents the event from reaching the root and invoking handlers.
+
+Proven with a real ancestor that does exactly that — a plain `addEventListener` (via an attachment, so it runs on a real DOM node) between the root and the button, calling `stopPropagation()`:
+
+```svelte
+<!-- src/lib/DelegationDemo.svelte -->
+<script lang="ts">
+  let { events }: { events: string[] } = $props();
+
+  function blockBubble(node: HTMLElement) {
+    function handle(e: MouseEvent) {
+      events.push('ancestor-vanilla-listener');
+      e.stopPropagation(); // stops NATIVE bubbling before it reaches the app root
+    }
+    node.addEventListener('click', handle);
+    return () => node.removeEventListener('click', handle);
+  }
+</script>
+
+<div {@attach blockBubble}>
+  <button onclick={() => events.push('svelte-onclick')}>click</button>
+</div>
+```
+
+```ts
+// src/lib/delegation.test.ts
+import { test, expect } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import DelegationDemo from './DelegationDemo.svelte';
+
+test('a vanilla stopPropagation() on an ancestor prevents the delegated Svelte onclick from firing', async () => {
+  const events: string[] = [];
+  render(DelegationDemo, { props: { events } });
+  await fireEvent.click(screen.getByRole('button'));
+  // The ancestor's own listener ran — but the button's onclick never did.
+  expect(events).toEqual(['ancestor-vanilla-listener']);
+});
+```
+
+```text
+✓ a vanilla stopPropagation() on an ancestor prevents the delegated Svelte onclick from firing
+```
+
+This is exactly why the docs recommend `on` (imported from `svelte/events`) over raw `addEventListener` for code that has to coexist with Svelte's own handlers: it "ensure[s] correct execution order and proper handling of `stopPropagation`" instead of silently racing against a mechanism your code can't see.
+
+<Callout title="Where this bites in practice">
+This surfaces whenever generated or third-party code manipulates the DOM directly inside the tree Svelte manages — a portal-like widget, a vanilla analytics snippet attached to a wrapper `<div>`, a modal library that calls `stopPropagation()` on backdrop clicks. None of that code is "wrong" on its own; it's just invisible to Svelte's delegated dispatch, and the failure mode (a click handler that silently never fires) gives no error to point at.
+</Callout>
+
+## `onclickcapture`, and `on` for passive/once
+
+Two more DOM event details Svelte 5 keeps directly reachable, without an old-style modifier syntax:
+
+- **The capture phase**: append `capture` to the event name — `onclickcapture={...}` fires during the capture phase, before delegated bubble-phase handlers.
+- **`passive` / `once`**: these require the listener to know its own options *when it's attached*, which a plain attribute can't express — so use the **`on`** function from `svelte/events` instead, inside an attachment or `$effect`.
+
+```svelte
+<!-- src/lib/CaptureOnce.svelte -->
+<script lang="ts">
+  import { on } from 'svelte/events';
+  let { events }: { events: string[] } = $props();
+
+  function passiveOnce(node: HTMLElement) {
+    // `on` returns a cleanup function, like addEventListener + removeEventListener in one call.
+    return on(node, 'click', () => events.push('on()-passive-once'), { passive: true, once: true });
+  }
+</script>
+
+<div onclickcapture={() => events.push('capture')}>
+  <button {@attach passiveOnce} onclick={() => events.push('bubble-onclick')}>click</button>
+</div>
+```
+
+```ts
+// src/lib/capture-once.test.ts
+import { test, expect } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import CaptureOnce from './CaptureOnce.svelte';
+
+test('onclickcapture runs in the capture phase; on() with { once: true } only fires once', async () => {
+  const events: string[] = [];
+  render(CaptureOnce, { props: { events } });
+  const button = screen.getByRole('button');
+
+  await fireEvent.click(button);
+  // Capture phase first, then the on()-attached listener, then the delegated onclick.
+  expect(events).toEqual(['capture', 'on()-passive-once', 'bubble-onclick']);
+
+  await fireEvent.click(button);
+  // Second click: capture and the delegated onclick fire again — but on()'s
+  // `once: true` listener has already removed itself.
+  expect(events).toEqual([
+    'capture', 'on()-passive-once', 'bubble-onclick',
+    'capture', 'bubble-onclick',
+  ]);
+});
+```
+
+```text
+✓ onclickcapture runs in the capture phase; on() with { once: true } only fires once
+```
 
 ## Attribute shorthands and spreads
 
@@ -52,6 +193,68 @@ Spread a whole object of attributes with `{...obj}` — handy for forwarding pro
 <button {...rest}>click</button>   <!-- forward them all to the button -->
 ```
 
+### Ordering matters: later always wins
+
+When a spread and an explicit attribute set the same name, Svelte applies attributes in **document order** — whichever comes later in the markup wins, exactly like assigning the same object key twice in JavaScript. Proven both directions:
+
+```svelte
+<!-- src/lib/SpreadBefore.svelte -->
+<script lang="ts">
+  let rest: Record<string, string> = { title: 'from-rest' };
+</script>
+<!-- explicit title AFTER the spread: explicit wins -->
+<button {...rest} title="explicit" data-testid="before">go</button>
+```
+
+```svelte
+<!-- src/lib/SpreadAfter.svelte -->
+<script lang="ts">
+  let rest: Record<string, string> = { title: 'from-rest' };
+</script>
+<!-- explicit title BEFORE the spread: spread wins -->
+<button title="explicit" {...rest} data-testid="after">go</button>
+```
+
+```ts
+// src/lib/spread-order.test.ts
+import { test, expect } from 'vitest';
+import { render, screen } from '@testing-library/svelte';
+import SpreadBefore from './SpreadBefore.svelte';
+import SpreadAfter from './SpreadAfter.svelte';
+
+test('an explicit attribute written after a spread overrides it', () => {
+  render(SpreadBefore);
+  expect(screen.getByTestId('before').getAttribute('title')).toBe('explicit');
+});
+
+test('a spread written after an explicit attribute overrides it', () => {
+  render(SpreadAfter);
+  expect(screen.getByTestId('after').getAttribute('title')).toBe('from-rest');
+});
+```
+
+```text
+✓ an explicit attribute written after a spread overrides it
+✓ a spread written after an explicit attribute overrides it
+```
+
+When the spread's shape is statically known (not just `Record<string, string>`, but an object literal with a `title` property inferred directly), `svelte-check` goes further and flags the ambiguity at compile time, rather than silently picking a winner:
+
+```svelte
+<!-- @expect-error "title" is specified more than once, so this usage will be overwritten. -->
+<!-- src/lib/DuplicateAttrDemo.svelte -->
+<script lang="ts">
+  let rest = { title: 'from-rest' }; // inferred as { title: string }, not Record<string, string>
+</script>
+<button title="explicit" {...rest}>go</button>
+```
+
+```text
+"title" is specified more than once, so this usage will be overwritten.
+```
+
+If you want a prop to always win regardless of what a caller spreads in (or always lose to it), the position of `{...rest}` relative to the explicit attribute is the entire mechanism — there's no separate "priority" concept to reach for.
+
 ## The class and style directives
 
 Toggling classes and inline styles reactively is common enough that Svelte gives them dedicated directives.
@@ -62,10 +265,21 @@ Toggling classes and inline styles reactively is common enough that Svelte gives
 <div class:active={isActive} class:done={isDone}>…</div>
 ```
 
-Svelte 5 also lets you pass an object or array to the plain `class` attribute (like the popular `clsx` helper):
+**Since Svelte 5.16**, the plain `class` attribute also accepts an **object or an array**, processed the same way the popular `clsx` helper works (Svelte uses that exact algorithm internally): object keys with truthy values become classes; array entries are flattened and falsy entries dropped — arrays and objects can nest:
 
 ```svelte
-<div class={{ active: isActive, done: isDone }}>…</div>
+<div class={{ active: isActive, done: isDone }}>…</div>          <!-- object -->
+<div class={[faded && 'opacity-50', large && 'scale-200']}>…</div> <!-- array -->
+```
+
+The array form composes especially well when a component both has its own class and accepts one from a caller:
+
+```svelte
+<!-- Button.svelte -->
+<script>
+  let props = $props();
+</script>
+<button {...props} class={['btn', props.class]}>{@render props.children?.()}</button>
 ```
 
 **`style:prop={value}`** sets an inline CSS property reactively:
@@ -74,17 +288,156 @@ Svelte 5 also lets you pass an object or array to the plain `class` attribute (l
 <div style:color={textColor} style:font-size="{size}px">…</div>
 ```
 
-Both compile to precise updates — when `isActive` flips, only that class is toggled; when `textColor` changes, only that style property is set.
+All of these compile to precise updates — when `isActive` flips, only that class is toggled; when `textColor` changes, only that style property is set.
 
 <Mermaid title="Directives compile to surgical updates" code={directiveDiagram} />
 
 export const directiveDiagram = `flowchart LR
   cls["class:active={isActive}"] --> u1["toggle exactly that class"]
+  arr["class={[a, b]} (5.16+, clsx-style)"] --> u1
   sty["style:color={textColor}"] --> u2["set exactly that CSS property"]
-  ev["onclick={handler}"] --> u3["attach a plain event listener"]`;
+  ev["onclick={handler}"] --> u3["registered for root-level delegation"]`;
+
+## Legacy code recognition: one table for four patterns at once
+
+Code written for Svelte 4 — or generated by a model trained mostly on Svelte 4 examples — mixes four patterns that all changed in Svelte 5. Recognizing all four in one glance is the actual skill; here they are side by side:
+
+| Svelte 4 (legacy) | Svelte 5 (runes) | What happens if you mix legacy into a runes-mode component |
+|---|---|---|
+| `export let value` | `let { value } = $props()` | **Compile error**: `Cannot use `export let` in runes mode — use `$props()` instead` |
+| `$: doubled = count * 2` | `let doubled = $derived(count * 2)` | **Compile error**: `` `$:` is not allowed in runes mode, use `$derived` or `$effect` instead `` |
+| `<slot />` / `<slot name="x" />` | `{@render children?.()}` / snippet props | **Compiles, with a deprecation warning** — `<slot>` still renders |
+| `on:click={handler}` | `onclick={handler}` | **Compiles, with a deprecation warning** — `on:click` still works |
+| `createEventDispatcher()` + `dispatch('x', detail)` | a callback prop, e.g. `onchange?.(detail)` | **Compiles with no warning at all** — still fully supported, just not idiomatic |
+
+A component enters **runes mode** automatically the moment it uses any rune (`$state`, `$derived`, `$effect`, `$props`, …) anywhere in the file, or when `runes: true` is set explicitly in compiler options. Once in runes mode, the *reactivity* primitives from legacy mode (`export let`, top-level `let` as implicit state, `$:`) are rejected outright — but content-projection (`<slot>`) and event *syntax* (`on:click`) are considered separate, softer deprecations that still compile.
+
+Proven against the real compiler — mixing `$state` with `export let`, or with `$:`, in the same file:
+
+```ts
+// src/lib/compile-errors.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+test('`export let` alongside a rune is a hard compile error in runes mode', () => {
+  const source = `<script>
+  let count = $state(0);
+  export let label;
+</script>
+<p>{label}: {count}</p>`;
+  expect(() => compile(source, { filename: 'BadExportLet.svelte' })).toThrowError(
+    /Cannot use `export let` in runes mode/,
+  );
+});
+
+test('`$:` alongside a rune is a hard compile error in runes mode', () => {
+  const source = `<script>
+  let count = $state(0);
+  $: doubled = count * 2;
+</script>
+<p>{doubled}</p>`;
+  expect(() => compile(source, { filename: 'BadReactive.svelte' })).toThrowError(
+    /`\$:` is not allowed in runes mode/,
+  );
+});
+
+test('`<slot>` and `on:click` still compile in runes mode — with warnings, not errors', () => {
+  const slotSource = `<script>\n  let count = $state(0);\n</script>\n<slot />`;
+  const slotResult = compile(slotSource, { filename: 'StillSlot.svelte' });
+  expect(slotResult.warnings.map((w) => w.code)).toContain('slot_element_deprecated');
+
+  const onColonSource = `<script>\n  let count = $state(0);\n</script>\n<button on:click={() => count++}>{count}</button>`;
+  const onColonResult = compile(onColonSource, { filename: 'StillOnColon.svelte' });
+  expect(onColonResult.warnings.map((w) => w.code)).toContain('event_directive_deprecated');
+});
+```
+
+```text
+✓ `export let` alongside a rune is a hard compile error in runes mode
+✓ `$:` alongside a rune is a hard compile error in runes mode
+✓ `<slot>` and `on:click` still compile in runes mode — with warnings, not errors
+```
+
+The real errors, verbatim (`svelte-check` reports the same text `compile()` throws):
+
+```text
+Cannot use `export let` in runes mode — use `$props()` instead
+https://svelte.dev/e/legacy_export_invalid
+
+`$:` is not allowed in runes mode, use `$derived` or `$effect` instead
+https://svelte.dev/e/legacy_reactive_statement_invalid
+
+Using `<slot>` to render parent content is deprecated. Use `{@render ...}` tags instead
+https://svelte.dev/e/slot_element_deprecated
+
+Using `on:click` to listen to the click event is deprecated. Use the event attribute `onclick` instead
+https://svelte.dev/e/event_directive_deprecated
+```
+
+<Callout title="Why export let and $: are hard errors, but slot and on: are not">
+`export let` and `$:` are Svelte 4's *reactivity* mechanism — the compiler used to treat every top-level `let` as implicitly reactive and rewrite `$:` blocks into its own dependency-tracking code. Once a file opts into runes, that whole rewriting pass is off, so those two forms have no meaning left to fall back to: an error is the only honest outcome. `<slot>` and `on:click`, by contrast, are independent *syntax* the compiler can still recognize and lower correctly either way — so they degrade to "still works, please stop" instead of "no longer means anything."
+</Callout>
+
+## Mental Model
+
+Think of every DOM-facing feature in this lesson as the compiler picking, at build time, the cheapest correct way to reach the same outcome: one root listener instead of many (delegation), a document-order write instead of a "priority" system (spread), a `clsx`-equivalent string builder instead of a runtime class-list library (`class={{...}}`/`class={[...]}`). None of it is magic layered on top of the DOM — it's the DOM, generated for you in the shape you'd have hand-written for that one specific case. Legacy mode and runes mode are two separate compiler code paths, not one mode with optional features; that's why mixing their reactivity primitives (`export let` + `$state`, `$:` + `$derived`) is a hard error instead of "unexpected but tolerated" — the compiler genuinely can't merge the two rewriting strategies in one pass.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Event delegation | Fewer listeners for the browser to manage; smaller generated code | A `stopPropagation()` anywhere between the root and your element silently defeats delegated handlers (proven above) |
+| `on` from `svelte/events` over raw `addEventListener` | Correct ordering relative to Svelte's own dispatch; a single call handles add + remove | One more import to reach for instead of the DOM API you already know |
+| `class={[...]}`/`class={{...}}` (5.16+) | Composes with props (`class={['btn', props.class]}`) far more naturally than `class:x` chains | Requires 5.16+; a large object/array is less scannable at a glance than a short `class:` list |
+| Runes mode rejecting legacy reactivity outright | Impossible to silently mix two incompatible reactivity systems in one file | An AI-generated snippet that pattern-matches on older training data fails loudly instead of "half-working" |
+
+## Common Misconceptions
+
+- **"Calling `stopPropagation()` on a wrapper only affects other listeners on that wrapper."** Proven above: it also prevents the event from ever reaching the root, so it silently defeats a delegated `onclick` several levels further in, with no error anywhere.
+- **"`{...rest}` always wins, because it's spreading a whole object."** It's just an attribute like any other in source order — proven above in both directions: whichever is written later, spread or explicit, overrides the other.
+- **"Legacy syntax always throws once you touch runes."** Only `export let` and `$:` do (they're reactivity primitives with nothing to fall back to); `<slot>`, `on:click`, and `createEventDispatcher` all still compile and run, some with a deprecation warning and some with none at all — proven above.
+- **"`class={{...}}` needs a library like `clsx` installed."** Since 5.16 the behavior is built into the compiler's output — no dependency, no import.
+
+## Reading AI-generated code
+
+When reviewing generated markup and event code, check for:
+
+- Does an `onclick`/`oninput`/etc. handler sit inside a subtree where something else (a modal library, a manually-attached vanilla listener) might call `stopPropagation()` on an ancestor — silently eating the event before Svelte's delegated dispatch ever sees it?
+- Is a `use:`-style or manually-attached listener using raw `addEventListener` where `on` from `svelte/events` would guarantee correct ordering?
+- Does `{...rest}` appear in a position (before or after an explicit attribute) that doesn't match the stated intent — e.g. spreading *after* an explicit `class` when the intent was for the explicit one to always win?
+- Does the file mix a rune (`$state`, `$derived`, `$props`, …) with `export let` or a top-level `$:` block — a real, hard compile error, not a style nit (proven above)?
+- Is `createEventDispatcher` used in new Svelte 5 code out of habit, where a plain callback prop would be simpler and is what the component's own consumers now expect?
+
+<SpotTheBug code={`<script>
+  export let initialCount = 0;
+  let count = $state(initialCount);
+
+  $: label = count === 1 ? '1 item' : \`\${count} items\`;
+</script>
+
+<button onclick={() => count++}>{label}</button>`}>
+This is exactly the "half-migrated" shape a model trained mostly on Svelte 4 examples tends to produce: `count` is correctly upgraded to `$state(...)`, but `initialCount` is still declared with `export let`, and the derived label still uses `$:`. The moment *any* rune appears in the file, the whole component is in runes mode — and both `export let` and `$:` are then hard compile errors, proven above:
+
+```text
+Cannot use `export let` in runes mode — use `$props()` instead
+`$:` is not allowed in runes mode, use `$derived` or `$effect` instead
+```
+
+The fix upgrades both forms to their rune equivalents, not just the one that happened to get touched first:
+
+```svelte
+<script>
+  let { initialCount = 0 } = $props();
+  let count = $state(initialCount);
+  let label = $derived(count === 1 ? '1 item' : `${count} items`);
+</script>
+
+<button onclick={() => count++}>{label}</button>
+```
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-Svelte 5 event handlers are **plain properties** — `onclick={handler}`, not Svelte 4's `on:click` directive (and event modifiers are gone — call `e.preventDefault()` yourself). Use the **`{value}` shorthand** when a variable matches the attribute name, **`{...obj}`** to spread attributes, and the **`class:name={cond}`** and **`style:prop={value}`** directives (or an object passed to `class`) to toggle classes and styles reactively — all of which compile to surgical DOM updates.
+Svelte 5 event handlers are **plain properties** (`onclick={handler}`) that get **delegated** to a single root listener — proven above, a `stopPropagation()` on an ancestor silently defeats them, which is exactly why the docs recommend **`on` from `svelte/events`** (also how you get `passive`/`once`; `onclickcapture` covers the capture phase). Attributes apply in **document order**, spread included, so `{...obj}` only wins if it's written *after* the explicit one. **`class={{...}}`/`class={[...]}`** (5.16+) is a built-in `clsx`. And the four Svelte 4 → 5 patterns don't degrade the same way: **`export let`/`$:`** are hard compile errors once any rune is present, while **`<slot>`/`on:click`** still compile (with a warning) and **`createEventDispatcher`** still works with no warning at all — all proven above.
 </Callout>
 
 export const quizEvents = [
@@ -97,36 +450,73 @@ export const quizEvents = [
       '`v-on:click`',
     ],
     answer: 1,
+    explain: 'Svelte 5 event handlers are ordinary attributes named like the DOM property (onclick, oninput, …), not a special directive.',
   },
   {
-    q: 'What changed about events from Svelte 4 to Svelte 5?',
+    q: '```svelte\n<div use:blockBubbleVanilla>\n  <button onclick={() => count++}>+1</button>\n</div>\n```\nIf `blockBubbleVanilla` attaches a plain `addEventListener(\'click\', handler)` on the div and that handler calls `e.stopPropagation()`, what happens when the button is clicked?',
     options: [
-      'Nothing',
-      'Svelte 4 used the `on:click` directive (with modifiers); Svelte 5 uses plain properties like `onclick` and drops modifiers',
-      'Events were removed',
-      'Events now require a store',
+      'Nothing changes — Svelte always runs onclick regardless of native propagation',
+      'The button\'s onclick never runs — Svelte\'s delegated dispatch only fires once the event has bubbled natively to the root, and stopPropagation() prevented that',
+      'It throws a compile error',
+      'Only in production builds does this matter',
     ],
     answer: 1,
+    explain: 'Proven above with delegation.test.ts: the events log contains only \'ancestor-vanilla-listener\' — the delegated onclick on the button never ran.',
   },
   {
-    q: 'What does `<img {src} {alt} />` mean?',
+    q: 'How do you attach a `passive` or `once` event listener in Svelte 5?',
     options: [
-      'It is invalid syntax',
-      'Shorthand for `src={src} alt={alt}` when the variable names match the attributes',
-      'It clears the attributes',
-      'It spreads an object',
+      'A `|passive`/`|once` event modifier, same as Svelte 4',
+      'The `on` function from `svelte/events`, which accepts standard `addEventListener` options',
+      'It is not possible in Svelte 5',
+      '`onclickpassive={...}`',
     ],
     answer: 1,
+    explain: 'Event modifiers were removed in Svelte 5. capture has a dedicated onclickcapture form; passive/once (which need to be set when the listener attaches) go through on() from svelte/events, proven above with capture-once.test.ts.',
   },
   {
-    q: 'What does `class:active={isActive}` do?',
+    q: '```svelte\n<button {...rest} title="explicit">go</button>\n```\nversus\n```svelte\n<button title="explicit" {...rest}>go</button>\n```\nIf `rest = { title: \'from-rest\' }`, which `title` wins in each?',
     options: [
-      'Always adds the active class',
-      'Adds the `active` class only when `isActive` is truthy, updating precisely when it changes',
-      'Renames the element',
-      'Sets an inline style',
+      '`{...rest}` always wins, regardless of position',
+      'Document order decides — whichever is written later wins in each case, proven above',
+      'The explicit attribute always wins, regardless of position',
+      'Svelte throws a runtime error for the conflict',
     ],
     answer: 1,
+    explain: 'Proven above with spread-order.test.ts in both directions: title="explicit" wins when written after the spread, and the spread\'s value wins when written after the explicit attribute.',
+  },
+  {
+    q: 'Since Svelte 5.16, what can the plain `class` attribute accept besides a string?',
+    options: [
+      'Nothing else — only a string was ever supported',
+      'An object or an array, processed like the `clsx` library (truthy keys/entries become classes, and nesting is flattened)',
+      'A CSS-in-JS object of style properties',
+      'Only a single boolean',
+    ],
+    answer: 1,
+    explain: 'class={{ active: isActive }} and class={[a, b && \'c\']} both work since 5.16, using the same algorithm as the popular clsx helper, built into the compiler.',
+  },
+  {
+    q: 'A component already uses `$state` elsewhere, and also has `$: doubled = count * 2`. What happens when it compiles?',
+    options: [
+      'It compiles fine — `$:` still works everywhere',
+      'A compile error: `` `$:` is not allowed in runes mode, use `$derived` or `$effect` instead ``',
+      'A deprecation warning only, same as `<slot>`',
+      'It silently ignores the `$:` line',
+    ],
+    answer: 1,
+    explain: 'Proven above: any rune usage puts the whole component in runes mode, where $: (a legacy reactivity primitive with nothing to fall back to) is a hard compile error — unlike <slot> or on:click, which still compile with only a warning.',
+  },
+  {
+    q: 'Which of these four legacy patterns still compiles in a runes-mode component with **no warning at all**?',
+    options: [
+      '`export let value`',
+      '`$: derived = ...`',
+      '`createEventDispatcher()` + `dispatch(...)`',
+      '`<slot />`',
+    ],
+    answer: 2,
+    explain: 'Proven above: export let and $: are hard errors; <slot> and on:click compile with a deprecation warning; createEventDispatcher compiles with no warning at all — it is simply no longer the idiomatic choice.',
   },
 ];
 

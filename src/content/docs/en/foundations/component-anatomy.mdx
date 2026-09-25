@@ -78,6 +78,10 @@ Add `lang="ts"` to the script tag to write TypeScript — the compiler type-chec
 
 Everything else is unchanged; runes are typed (`$state<T>`), and props get typed interfaces (a later lesson). Svelte's tooling (`svelte-check`) type-checks `.svelte` files including the markup.
 
+<Callout title="A one-paragraph preview of runes, before the reactivity module">
+`$state(...)` in the script above isn't a special variable-declaration syntax — it creates a reactive *signal*: a container the compiler can watch. Every place that reads it (a text node, a `$derived`, an `$effect`) is registered as a dependent; every place that writes it schedules exactly those dependents to re-run. That single idea — read tracks, write notifies — is the whole mechanism behind `$state`, `$derived`, and `$effect` alike. The [reactivity module](/svelte/en/reactivity/state-rune) is where it gets a full, proven treatment; this is just enough to make the rest of this module make sense.
+</Callout>
+
 <Callout title="The one-line takeaway">
 A `.svelte` file has three optional parts: a **`<script>`** (state, props, logic — runs once on creation), the **markup** (HTML plus template syntax), and a **`<style>`** block that is **scoped to the component by default** (Svelte rewrites selectors so CSS doesn't leak; opt out with `:global(...)`). There's no wrapper or `render()` — the file *is* the component, and `lang="ts"` turns on TypeScript.
 </Callout>

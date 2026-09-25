@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Turning on TypeScript
 
@@ -84,6 +85,63 @@ When a component's types depend on what the consumer passes (a typed list, a gen
 
 Now `T` flows through: pass `items` of `User[]` and `onselect` is typed as `(item: User) => void`. There's also a `Component` type (from `svelte`) for typing a variable that holds a component.
 
+### Proving `T` actually flows through, with a real error
+
+"`T` flows through" is a specific, checkable claim — so check it. Here's the generic component from above, and two callers: one that gets the callback's parameter type right, one that doesn't.
+
+```svelte
+<!-- src/lib/Select.svelte -->
+<script lang="ts" generics="T">
+  interface Props {
+    items: T[];
+    selected: T;
+    onselect: (item: T) => void;
+  }
+  let { items, selected, onselect }: Props = $props();
+</script>
+<ul>
+  {#each items as item}
+    <li class:active={item === selected}>
+      <button onclick={() => onselect(item)}>{JSON.stringify(item)}</button>
+    </li>
+  {/each}
+</ul>
+```
+
+```svelte
+<!-- src/lib/UseSelectGood.svelte -->
+<script lang="ts">
+  import Select from './Select.svelte';
+  interface User { id: number; name: string }
+  let users: User[] = [{ id: 1, name: 'Ada' }];
+  let picked = $state<User>(users[0]);
+</script>
+<!-- T is inferred as User: onselect is typed (item: User) => void -->
+<Select items={users} selected={picked} onselect={(u) => { picked = u; console.log(u.name); }} />
+```
+
+```svelte
+<!-- @expect-error Property 'toFixed' does not exist on type 'User'. -->
+<!-- src/lib/UseSelectBad.svelte -->
+<script lang="ts">
+  import Select from './Select.svelte';
+  interface User { id: number; name: string }
+  let users: User[] = [{ id: 1, name: 'Ada' }];
+  let picked = $state<User>(users[0]);
+</script>
+<!-- BUG: treats the callback's item as a number, but T was inferred as User -->
+<Select items={users} selected={picked} onselect={(u) => console.log(u.toFixed(2))} />
+```
+
+Real `svelte-check` output for `UseSelectBad.svelte` — proof that `T` was actually inferred as `User`, not left as `unknown` or silently allowed to be anything:
+
+```text
+src/lib/UseSelectBad.svelte:8:72
+Property 'toFixed' does not exist on type 'User'.
+```
+
+`.toFixed` is a `number` method; the checker rejecting it on `u` is direct evidence that `u`'s type came from `items: User[]`, flowed through `T`, and landed on `onselect`'s parameter — not a coincidence and not `any`.
+
 <Mermaid title="Where types flow in a Svelte component" code={typeDiagram} />
 
 export const typeDiagram = `flowchart LR
@@ -92,8 +150,52 @@ export const typeDiagram = `flowchart LR
   gen["generics attribute (T)"] --> dollar
   dollar --> check["svelte-check verifies usage + markup"]`;
 
+## Mental Model
+
+TypeScript in a `.svelte` file is checked in two passes that have to agree: the `<script lang="ts">` block is ordinary TypeScript (whatever `tsc` would say about it), and the markup is checked by `svelte-check`'s own understanding of Svelte's template syntax — an `{expression}`, a prop passed on a component tag, a `{#each}` item's inferred type. `generics="T"` is what lets a single type parameter flow across that boundary: declared once on the `<script>` tag, then usable in the `Props` interface, and inferred at every call site from whatever the caller actually passes — proven above, `T` isn't a formality, the checker really does carry it through to a prop several levels removed from where it was inferred.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `interface Props` + `$props()` | One typed shape for the whole component surface, checked at every call site (proven above with a real prop-type error) | An extra interface declaration per component, versus untyped `export let` |
+| `generics="T"` | Consumer types flow through automatically — no `any`, no per-usage casting (proven above) | Only one type parameter's worth of ergonomics; a component genuinely generic over multiple unrelated shapes needs more care in the interface itself |
+| `Snippet<[Arg]>` for typed slot content | The renderer and the snippet body share one parameter type, checked by `svelte-check` | Slightly more ceremony than an untyped `Snippet` when the content truly takes no arguments |
+
+## Common Misconceptions
+
+- **"A generic component's type parameter is just documentation — it doesn't actually get checked."** Proven above: `UseSelectBad.svelte`'s real `svelte-check` error (`Property 'toFixed' does not exist on type 'User'`) only makes sense if `T` was genuinely inferred as `User` from `items` and carried into `onselect`'s parameter type.
+- **"You need `as any` somewhere to make a generic Svelte component's callback prop line up."** Not in the proven example above — `onselect={(u) => { picked = u; console.log(u.name); }}` type-checks cleanly with `u` correctly typed as `User`, no cast required.
+- **"Typing props is only about catching typos in your own component."** The error proven above is caught at the *caller's* markup (`UseSelectBad.svelte`, not `Select.svelte`) — the biggest value is catching a wrong usage anywhere the component is consumed, not just inside its own file.
+
+## Reading AI-generated code
+
+When reviewing typed Svelte components, check for:
+
+- Does a "generic" component actually declare `generics="T"` on the `<script>` tag, or does it just use `T` in the `Props` interface without ever introducing it — which fails to compile rather than silently becoming `any`?
+- Is a prop or callback parameter typed as `any` (or left untyped, inferring `any` implicitly) specifically to make a type error go away, rather than fixing the actual shape mismatch `svelte-check` was reporting?
+- Does a `Snippet` type omit its parameters (plain `Snippet` instead of `Snippet<[Arg]>`) when the snippet is always called with an argument in practice — losing type-checking on `{@render row(item)}` call sites?
+- Is `$state<T>(...)`'s explicit generic used to paper over a mismatched initial value, instead of fixing the value or widening the type honestly (e.g. `T | null`)?
+
+<SpotTheBug code={`<script lang="ts" generics="T">
+  interface Props {
+    items: T[];
+    onselect: (item: any) => void;
+  }
+  let { items, onselect }: Props = $props();
+</script>
+<ul>
+  {#each items as item}
+    <li><button onclick={() => onselect(item)}>{JSON.stringify(item)}</button></li>
+  {/each}
+</ul>`}>
+`items` is correctly generic over `T`, but `onselect`'s parameter is typed `any` instead of `T` — so the one connection that matters (the callback receives exactly the item type the caller put into `items`) is silently severed. A caller can now pass `onselect={(x: number) => x.toFixed(2)}` even when `items` is `User[]`, and nothing catches it: `any` disables checking for that parameter entirely, which defeats the entire point of making the component generic in the first place (proven earlier in this lesson: with `onselect: (item: T) => void`, the equivalent mistake is a real, caught `svelte-check` error).
+
+The fix is exactly the type this lesson used throughout: `onselect: (item: T) => void` — the same type parameter the rest of `Props` already uses, not a new escape hatch.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Add **`lang="ts"`** and runes are generic — `$state<T>(...)` types state. Type props with an **`interface Props`** annotating `$props()` destructuring (the Svelte 5 replacement for typed `export let`). Type passed-in markup with the **`Snippet`** type (`Snippet<[Arg]>` for parameters), and make a component generic with the **`generics`** attribute so consumer types flow through. `svelte-check` verifies it all, markup included.
+Add **`lang="ts"`** and runes are generic — `$state<T>(...)` types state. Type props with an **`interface Props`** annotating `$props()` destructuring (the Svelte 5 replacement for typed `export let`). Type passed-in markup with the **`Snippet`** type (`Snippet<[Arg]>` for parameters), and make a component generic with the **`generics`** attribute so consumer types flow through — proven above with a real `svelte-check` error at the exact spot a mismatched type reaches. `svelte-check` verifies it all, markup included.
 </Callout>
 
 export const quizTs = [
@@ -106,6 +208,7 @@ export const quizTs = [
       'Put the type in the markup',
     ],
     answer: 1,
+    explain: 'The compiler infers from the initial value where it can; when that is not enough (e.g. null but a wider type), $state<T>(...) is explicit.',
   },
   {
     q: 'What is the idiomatic way to type component props in Svelte 5?',
@@ -116,6 +219,7 @@ export const quizTs = [
       'Props cannot be typed',
     ],
     answer: 1,
+    explain: 'export let is the Svelte 4 pattern; Svelte 5 types the whole props shape at once with an interface annotating $props().',
   },
   {
     q: 'What type describes a snippet passed as a prop?',
@@ -126,6 +230,7 @@ export const quizTs = [
       'HTMLElement',
     ],
     answer: 1,
+    explain: 'Snippet (and Snippet<[Arg]> for one that takes a parameter) comes from the svelte package and is what svelte-check uses to verify {@render} call sites.',
   },
   {
     q: 'How do you write a generic component whose types depend on the consumer\'s data?',
@@ -136,6 +241,29 @@ export const quizTs = [
       'Split it into multiple components',
     ],
     answer: 1,
+    explain: 'generics="T" introduces the type parameter; proven above, it genuinely flows through to a callback prop several lines away, not just the interface where it is declared.',
+  },
+  {
+    q: '```svelte\n<Select items={users} selected={picked}\n  onselect={(u) => console.log(u.toFixed(2))} />\n```\nIf `users` is `User[]` and `Select`\'s `onselect` prop is typed `(item: T) => void`, what does `svelte-check` report?',
+    options: [
+      'Nothing — u is inferred as any',
+      'A real error: `Property \'toFixed\' does not exist on type \'User\'` — proof T was inferred as User, not left untyped',
+      'A warning only, not an error',
+      'It infers u as number automatically',
+    ],
+    answer: 1,
+    explain: 'Proven above with UseSelectBad.svelte: the exact real svelte-check output at that line, confirming T flowed all the way from items to the callback parameter.',
+  },
+  {
+    q: '```ts\ninterface Props {\n  items: T[];\n  onselect: (item: any) => void;\n}\n```\nThis generic component types `onselect`\'s parameter as `any` instead of `T`. What is the consequence?',
+    options: [
+      'No difference — any and T behave identically here',
+      'The whole point of making the component generic is defeated for that prop: a caller can pass a mismatched callback and svelte-check will not catch it',
+      'It becomes a compile error immediately',
+      'T is inferred from onselect instead of items',
+    ],
+    answer: 1,
+    explain: 'The SpotTheBug above shows exactly this: any silently disables checking on that one parameter, unlike the T-typed version proven earlier to catch a real mismatch.',
   },
 ];
 

@@ -86,6 +86,10 @@ block `{#key expression}` จะ destroy และสร้างเนื้อ
 {@render greeting('world')}
 ```
 
+<Callout title="ทำไม block พวกนี้ไม่ต้อง re-render เองเลย">
+ทุก block และ expression ในหน้านี้อัปเดตตัวเองได้เพราะ rune คือ *signal* ข้างใน: การอ่าน `user.points` ใน `{user.points > 40 ? …}` ลงทะเบียนจุดนั้นเป็น dependent ของ `user` และการเขียน `user` ทำให้เฉพาะ dependent ที่อ่านมันเท่านั้น run ใหม่ — ไม่ใช่ทั้ง template [โมดูล reactivity](/svelte/th/reactivity/state-rune) พิสูจน์กลไกนี้เต็ม ๆ ที่นี่แค่เป็นสิ่งที่ทำให้ `{#if}`, `{#each}` และ `{#await}` "ทำงานได้เอง" โดยไม่ต้องเรียก render function เลย
+</Callout>
+
 <Callout title="สรุปหนึ่งบรรทัด">
 markup ของ Svelte ฝังค่าด้วย **`{expression}`** และแสดง control flow ด้วย **block** เฉพาะ: `{#if}/{:else}` สำหรับ conditional, `{#each … as item (id)}` สำหรับ keyed list (มี `{:else}` เป็น empty case), `{#await}` สำหรับ pending/then/catch ของ promise และ `{#key}` เพื่อบังคับสร้างใหม่ ส่วน **`{@html}`** inject raw HTML ที่เชื่อถือได้ และ **`{@render snippet()}`** render snippet ของ Svelte 5 (ตัวแทนของ `<slot>`)
 </Callout>

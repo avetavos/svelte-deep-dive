@@ -78,6 +78,10 @@ block **`<style>`** ถูก **scope อยู่ที่ component** — Svel
 
 อย่างอื่นไม่เปลี่ยน; runes ถูก type (`$state<T>`) และ props ได้ typed interface (บทเรียนถัดไป) tooling ของ Svelte (`svelte-check`) type-check ไฟล์ `.svelte` รวมถึง markup ด้วย
 
+<Callout title="ตัวอย่าง runes สั้น ๆ ก่อนถึงโมดูล reactivity">
+`$state(...)` ใน script ด้านบนไม่ใช่ syntax ประกาศ variable แบบพิเศษ — มันสร้าง reactive *signal*: container ที่ compiler เฝ้าดูได้ ทุกจุดที่อ่านมัน (text node, `$derived`, `$effect`) ถูกลงทะเบียนเป็น dependent; ทุกจุดที่เขียนมัน schedule ให้ dependent เหล่านั้นแค่กลุ่มนั้น run ใหม่ ความคิดเดียวนี้ — อ่านแล้ว track, เขียนแล้ว notify — คือกลไกทั้งหมดเบื้องหลังทั้ง `$state`, `$derived` และ `$effect` [โมดูล reactivity](/svelte/th/reactivity/state-rune) คือที่ที่มันถูกอธิบายเต็มรูปแบบและพิสูจน์จริง นี่แค่พอให้ส่วนที่เหลือของโมดูลนี้เข้าใจได้
+</Callout>
+
 <Callout title="สรุปหนึ่งบรรทัด">
 ไฟล์ `.svelte` มีสามส่วนที่ไม่บังคับ: **`<script>`** (state, props, logic — รันหนึ่งครั้งตอนสร้าง), **markup** (HTML บวก template syntax) และ block **`<style>`** ที่ **scope อยู่ที่ component โดย default** (Svelte rewrite selector เพื่อไม่ให้ CSS leak; opt out ด้วย `:global(...)`) ไม่มี wrapper หรือ `render()` — ไฟล์ *คือ* component และ `lang="ts"` เปิด TypeScript
 </Callout>

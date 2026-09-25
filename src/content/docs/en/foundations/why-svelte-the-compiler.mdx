@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Runtime frameworks vs a compiler
 
@@ -51,8 +52,134 @@ Given a component with `let count = $state(0)` and `<p>{count}</p>`, the compile
 
 You write declarative components; the compiler writes the imperative DOM code. That division of labor is the entire value proposition.
 
+## The compiler's output, for real
+
+`svelte/compiler` is the same isomorphic package the Svelte tooling uses internally, and it runs anywhere JavaScript does — including in your own Node scripts and tests. `compile(source, options)` returns the generated JavaScript directly, so instead of taking "the compiler emits precise update code" on faith, you can read exactly what it emits for a specific component:
+
+```ts
+// src/lib/compile-tiny-output.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+const source = `<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+  $effect(() => {
+    console.log(count);
+  });
+</script>
+<button onclick={() => count++}>{count} / {doubled}</button>
+`;
+
+test('compile() output names the exact runtime primitives each rune becomes', () => {
+  const { js } = compile(source, { filename: 'Richer.svelte' });
+  // $state becomes a call to $.state(); reading it goes through $.get().
+  expect(js.code).toMatch(/let count = \$\.state\(0\);/);
+  // $derived becomes $.derived(() => ...), lazily re-reading its own dependency.
+  expect(js.code).toMatch(/let doubled = \$\.derived\(\(\) => \$\.get\(count\) \* 2\);/);
+  // $effect becomes $.user_effect(...) — "user_effect" to distinguish it
+  // internally from the effects the compiler generates for template updates.
+  expect(js.code).toMatch(/\$\.user_effect\(/);
+  // The template's own reactive text update is a template_effect calling set_text —
+  // this is the "surgical update" from the mental model, made concrete.
+  expect(js.code).toMatch(/\$\.template_effect\(\(\) => \$\.set_text\(text, /);
+});
+```
+
+```text
+✓ compile() output names the exact runtime primitives each rune becomes
+```
+
+Reading that output line by line: `let count = $.state(0)` is the rune becoming a reactive cell; `$.get(count)` is every *read* of `count` becoming an explicit call (so the compiler always knows exactly where a dependency is read); `$.derived(() => ...)` wraps the computation instead of running it eagerly; `$.template_effect(() => $.set_text(text, ...))` is the one line that updates the DOM whenever `count` or `doubled` changes — there is no other update path, and no diffing anywhere in this output. This *is* "the compiler traces the dependency graph and writes surgical update code," not a metaphor for it.
+
+<Callout title="This output is an implementation detail, not a public API">
+The exact shape of compiled output (`$.state`, `$.user_effect`, helper names, how many effects get generated) is internal to Svelte's runtime and has changed between minor versions before, and will again. Reading it (as this lesson does, and as the [Svelte Internals module](/svelte/en/svelte-internals/compiler-output) does in far more depth) is an excellent way to build the right mental model — importing from `svelte/internal/client` in application code, or asserting on its exact shape in your own app's tests, is not.
+</Callout>
+
+## Runes mode vs legacy mode: how the compiler decides
+
+Every `.svelte` file compiles in one of two modes, and the compiler picks automatically:
+
+```ts
+// src/lib/legacy-detect.test.ts
+import { test, expect } from 'vitest';
+import { compile } from 'svelte/compiler';
+
+test('a component with no runes compiles in legacy mode by default', () => {
+  const source = `<script>\n  let count = 0;\n</script>\n<button on:click={() => count += 1}>{count}</button>`;
+  const { metadata } = compile(source, { filename: 'Legacy.svelte' });
+  expect(metadata.runes).toBe(false);
+});
+
+test('any rune usage switches the whole file to runes mode', () => {
+  const source = `<script>\n  let count = $state(0);\n</script>\n<button onclick={() => count++}>{count}</button>`;
+  const { metadata } = compile(source, { filename: 'Runes.svelte' });
+  expect(metadata.runes).toBe(true);
+});
+
+test('the `runes` compiler option forces runes mode even with no runes present', () => {
+  const source = `<script>\n  let count = 0;\n</script>\n<p>{count}</p>`;
+  const { metadata } = compile(source, { filename: 'Forced.svelte', runes: true });
+  expect(metadata.runes).toBe(true);
+});
+```
+
+```text
+✓ a component with no runes compiles in legacy mode by default
+✓ any rune usage switches the whole file to runes mode
+✓ the `runes` compiler option forces runes mode even with no runes present
+```
+
+`compile()`'s returned `metadata.runes` boolean is the same detection the tooling (`svelte-check`, the editor extension) surfaces to you as diagnostics — it's a **per-file** decision, made from that file's own contents (or forced project-wide via `compilerOptions.runes` in `svelte.config.js` / the Vite plugin). That's why a large codebase can migrate one component at a time: an untouched Svelte 4 file keeps compiling in legacy mode right next to a converted one in runes mode, and the compiler never has to guess across file boundaries.
+
+<Mermaid title="One compiler, two detected modes" code={modeDiagram} />
+
+export const modeDiagram = `flowchart TB
+  file[".svelte file"] --> scan["compiler scans for rune usage"]
+  scan -->|"a rune is used, or runes: true"| runes["runes mode: $state/$derived/$effect only"]
+  scan -->|"no runes found"| legacy["legacy mode: export let, top-level reactive let, $:"]
+  runes --> out["compiled output (this lesson's tests, above)"]
+  legacy --> out`;
+
+## Mental Model
+
+Two ideas do all the work in this lesson: the compiler is a *static analyzer* first (it decides delegation, dependency tracking, and which mode a file is in, all before your code ever runs), and its output is *generated source*, not a black box — `compile()` proves that directly, and the [Svelte Internals module](/svelte/en/svelte-internals/compiler-output) walks the full pipeline (signals, scheduling, fine-grained DOM updates, hydration) for anyone who wants to go further than "what does this one file produce."
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Reading `compile()` output directly | The clearest possible answer to "what does this actually do" — no framework documentation can be more precise than the generated source itself | The exact helper names and shape are internal and can change between versions (proven by the Callout above) — don't build application logic around them |
+| Automatic per-file mode detection | Incremental migration, file by file, with zero configuration | A file that mixes both modes' reactivity primitives fails to compile at all (the legacy-recognition table in the events & attributes lesson) rather than silently picking one |
+
+## Common Misconceptions
+
+- **"The compiler's output is a documented, stable API you can import from."** It isn't — proven above via the Callout: `svelte/internal/client`'s exports and shape are private and have changed across versions. Read them to learn, don't depend on them in shipped code.
+- **"Runes mode is a project-wide setting you flip once."** It's normally detected *per file*, automatically, from that file's own contents — proven above with `metadata.runes` on three different sources. `compilerOptions.runes` can force it project-wide, but that's the exception, not the default path.
+- **"`$derived(() => count * 2)` computes eagerly, like a plain function call would."** The compiled output wraps it, and reading it always goes through `$.get(doubled)` — it's a lazily-read reactive cell, not code that reruns unconditionally on every change (the [`$derived` lesson](/svelte/en/reactivity/derived-rune) covers push/pull evaluation in depth).
+
+## Reading AI-generated code
+
+When reviewing code that touches the compiler or its output directly, check for:
+
+- Does application code import anything from `svelte/internal/client` (or `svelte/internal/*` generally) instead of the public `svelte` / `svelte/store` / `svelte/attachments` / `svelte/events` entry points? That's importing an implementation detail, proven unstable above.
+- Does a test assert on the *exact* compiled output string of a component, rather than its observable behavior (what renders, what a user can do)? Compiled output is allowed to change shape between patch versions.
+- Is a file's mode assumed rather than checked — e.g. code review comments claiming "this is a runes-mode component" without any rune actually present, when the file in front of you is still legacy mode by the same detection rule proven above?
+
+<SpotTheBug code={`// app.ts — a "performance debugging" helper someone added
+import { proxy, get } from 'svelte/internal/client';
+
+export function inspectState(value: unknown) {
+  // reach into Svelte's internal state representation directly
+  return get(proxy(value));
+}`}>
+This imports directly from `svelte/internal/client` — the exact module this lesson's Callout names as unstable, private, and subject to change between versions with no deprecation warning, because it was never meant to be consumed outside of compiler-generated code. It may work today and break on the next Svelte patch release with no warning in a changelog aimed at application authors, because from the maintainers' point of view nothing public changed.
+
+The fix is to not reach for internals at all — everything an application legitimately needs (reading state, inspecting values, debugging) is available through the public API: `$inspect(value)` inside a component during development, or `$state.snapshot(value)` to get a plain, debuggable object out of reactive state, both documented and stable across versions.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Runtime frameworks ship a **virtual DOM and a diffing reconciler** to the browser; Svelte is a **compiler** that does that analysis at build time and emits precise, imperative DOM-update code instead. The payoff is **smaller bundles and less runtime work** — when state changes, generated code updates exactly the dependent nodes, with no tree to re-create or diff. Much of the "framework" compiles away.
+Runtime frameworks ship a **virtual DOM and a diffing reconciler** to the browser; Svelte is a **compiler** that does that analysis at build time and emits precise, imperative DOM-update code instead — proven directly above by reading `compile()`'s real output (`$.state`, `$.derived`, `$.template_effect`/`$.set_text`, no diffing anywhere). Each file's **runes vs legacy mode** is detected automatically, per file, from its own contents (`metadata.runes`, proven above), which is what lets a codebase migrate incrementally. That compiled output is **internal**, not a public API — read it to learn, never import from it.
 </Callout>
 
 export const quizWhy = [
@@ -65,6 +192,7 @@ export const quizWhy = [
       'It does not diff',
     ],
     answer: 1,
+    explain: 'A runtime framework ships its reconciler to the browser and re-runs it on every state change; Svelte does that analysis once, at build time, instead.',
   },
   {
     q: 'Why are Svelte bundles typically small?',
@@ -75,6 +203,7 @@ export const quizWhy = [
       'They exclude CSS',
     ],
     answer: 1,
+    explain: 'Proven above by reading real compile() output: there is no diffing machinery in the generated code at all, just direct calls like $.set_text.',
   },
   {
     q: 'When `count` changes in Svelte, what happens?',
@@ -85,6 +214,7 @@ export const quizWhy = [
       'A virtual DOM is rebuilt',
     ],
     answer: 1,
+    explain: 'Proven above: the compiled output contains one $.template_effect that calls $.set_text on the specific text node — nothing else re-runs.',
   },
   {
     q: 'Why is Svelte called "the disappearing framework"?',
@@ -95,6 +225,40 @@ export const quizWhy = [
       'It has no components',
     ],
     answer: 1,
+    explain: 'The compiled output (proven above) is close to what you would hand-write — a thin runtime helper layer ($.state, $.get, …), not a framework riding along at full size.',
+  },
+  {
+    q: '```ts\nconst { js } = compile(source, { filename: \'X.svelte\' });\nconsole.log(js.code);\n```\nWhat does this actually print?',
+    options: [
+      'A minified, unreadable bundle',
+      'Real, readable JavaScript — the exact imperative code the compiler generated for that component, including which runtime helper each rune became',
+      'The original .svelte source unchanged',
+      'Nothing — compile() has no accessible output',
+    ],
+    answer: 1,
+    explain: 'Proven above: js.code contains readable calls like $.state(0), $.derived(...), and $.template_effect(() => $.set_text(...)) — the real generated update logic.',
+  },
+  {
+    q: '```svelte\n<script>\n  let count = 0;\n</script>\n<button on:click={() => count += 1}>{count}</button>\n```\nDoes this file compile in runes mode or legacy mode?',
+    options: [
+      'Runes mode, because it is Svelte 5',
+      'Legacy mode — no rune is used anywhere in the file, and mode is detected per file from its own contents',
+      'It depends on the file extension',
+      'It fails to compile',
+    ],
+    answer: 1,
+    explain: 'Proven above with compile()\'s metadata.runes: a file with no rune usage compiles in legacy mode by default, letting old and new components coexist in the same project.',
+  },
+  {
+    q: 'Why shouldn\'t application code import from `svelte/internal/client`?',
+    options: [
+      'It is slower than the public API',
+      'It is compiled output\'s own internal implementation — unstable, undocumented, and free to change between versions, proven above',
+      'It requires a paid license',
+      'It only works during SSR',
+    ],
+    answer: 1,
+    explain: 'The SpotTheBug above shows exactly this: reaching into svelte/internal/client for "debugging" is fragile because that module is what compiled output uses internally, not a supported public entry point.',
   },
 ];
 

@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Scaffolding with the `sv` CLI
 
@@ -62,11 +63,174 @@ Two tools keep the authoring experience honest:
 npm run check      # runs svelte-check across the project
 ```
 
-Because `svelte-check` understands `.svelte` files end to end, it catches mistakes a plain `tsc` would miss — a wrong prop type passed in markup, a typo in a template expression, an unused CSS selector. Prettier and ESLint (with their Svelte plugins, offered by `sv create`) round out formatting and linting.
+Because `svelte-check` understands `.svelte` files end to end, it catches mistakes a plain `tsc` would miss — a wrong prop type passed in markup, a typo in a template expression, an unused CSS selector.
+
+### `svelte-check`, proven with a real error
+
+"Catches a wrong prop type passed in markup" isn't a hypothetical — here's a component with a typed prop, and a caller that passes the wrong type:
+
+```svelte
+<!-- src/lib/Greeter.svelte -->
+<script lang="ts">
+  interface Props {
+    name: string;
+  }
+  let { name }: Props = $props();
+</script>
+<p>Hello {name.toUpperCase()}</p>
+```
+
+```svelte
+<!-- @expect-error Type 'number' is not assignable to type 'string'. -->
+<!-- src/lib/BadUsage.svelte -->
+<script lang="ts">
+  import Greeter from './Greeter.svelte';
+</script>
+<Greeter name={42} />
+```
+
+Running `svelte-check` against the project (real output, only the path trimmed):
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+src/lib/BadUsage.svelte:4:10
+Type 'number' is not assignable to type 'string'.
+```
+
+A plain `tsc` run over this project wouldn't catch this at all — the type error is inside a `.svelte` file's markup (`<Greeter name={42} />`), which only a tool that understands the `.svelte` format, not just `.ts`/`.tsx`, can type-check.
+
+### Linting `.svelte` files: `eslint-plugin-svelte`
+
+Type-checking is one axis; **linting** is another. `sv create` can wire up ESLint with **`eslint-plugin-svelte`**, which understands Svelte-specific patterns a generic JS/TS linter has no concept of — an unescaped `{@html}`, a missing `{#each}` key, a deprecated `on:` directive. It's ESLint's modern **flat config** (`eslint.config.js`) only, matching current ESLint itself:
+
+```js
+// eslint.config.js
+import svelteConfig from './svelte.config.js';
+import { defineConfig } from 'eslint/config';
+import globals from 'globals';
+import js from '@eslint/js';
+import svelte from 'eslint-plugin-svelte';
+
+export default defineConfig([
+  js.configs.recommended,
+  svelte.configs.recommended,
+  {
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
+  {
+    files: ['**/*.svelte', '**/*.svelte.js', '**/*.svelte.ts'],
+    languageOptions: { parserOptions: { svelteConfig } },
+  },
+]);
+```
+
+Run against a component that injects unsanitized HTML:
+
+```svelte
+<!-- src/lib/LintViolation.svelte -->
+<script>
+  let unsafeHtml = $state('<b>hi</b>');
+  let count = $state(0);
+</script>
+
+{@html unsafeHtml}
+<button onclick={() => count++}>{count}</button>
+```
+
+Real output (`eslint-plugin-svelte` 3.23.0, ESLint 10):
+
+```text
+$ npx eslint src/lib/LintViolation.svelte
+/.../src/lib/LintViolation.svelte
+  6:1  error  `{@html}` can lead to XSS attack  svelte/no-at-html-tags
+
+✖ 1 problem (1 error, 0 warnings)
+```
+
+`svelte.configs.recommended` bundles rules like this one — plus deprecation-aware rules that flag `on:click` and other Svelte-4-era patterns — so a CI lint step catches them before a PR merges, not just when `svelte-check` happens to notice.
+
+### `vite-plugin-svelte`: the compiler options underneath everything
+
+`@sveltejs/vite-plugin-svelte` (wired up by `sv create`, mentioned earlier in this lesson) is where every compiler option ultimately gets set for the whole project, in `svelte.config.js`:
+
+```js
+// svelte.config.js
+export default {
+  compilerOptions: {
+    // e.g. { runes: true } to force runes mode project-wide (see the
+    // "Why Svelte, the Compiler" lesson for what this overrides)
+  },
+  vitePlugin: {
+    // dynamicCompileOptions lets you vary compiler options PER FILE —
+    // e.g. forcing runes mode only for files under one directory during
+    // an incremental migration.
+    experimental: {
+      dynamicCompileOptions({ filename, compileOptions }) {
+        if (filename.includes('/src/routes/legacy/') || compileOptions.runes) return;
+        return { runes: true };
+      },
+    },
+  },
+};
+```
+
+The **`experimental.async`** flag this course's [Async Svelte lesson](/svelte/en/reactivity/async-svelte) proves — required before `await` works inside `$derived` or a template expression — is set exactly this way, as a `compilerOptions.experimental` entry; that lesson's real compile error (`Cannot use \`await\` in deriveds and template expressions... unless the \`experimental.async\` compiler option is \`true\``) is what happens when this project-wide switch is left off.
+
+### Migrating Svelte 4 code: `sv migrate svelte-5`
+
+For an existing Svelte 4 project, the `sv` CLI also drives the migration itself:
+
+```bash
+npx sv migrate svelte-5
+```
+
+Per the [migration guide](https://svelte.dev/docs/svelte/v5-migration-guide): it "automates repetitive tasks such as updating dependencies, converting `let` declarations to runes, migrating event attributes like `on:click` to `onclick`, and transforming slot-based patterns into the new snippet and render tag syntax." It handles the mechanical rewriting; the [legacy-recognition table](/svelte/en/foundations/events-and-attributes/#legacy-code-recognition-one-table-for-four-patterns-at-once) in the events & attributes lesson is the reference for what each of those transformations targets, and for the real compile errors you'll hit on anything the script's automated pass doesn't fully cover.
 
 <Callout title="The one-line takeaway">
-Scaffold with **`npx sv create`** (the current CLI, replacing `npm create svelte`) — it sets up a **SvelteKit** app on **Vite** with optional TypeScript/Prettier/ESLint/testing. Vite gives you **HMR** in dev and an optimized **`vite build`** for production. Keep quality high with the **Svelte editor extension** and **`svelte-check`**, which type-check `.svelte` files including the markup — catching errors plain `tsc` cannot.
+Scaffold with **`npx sv create`** (the current CLI, replacing `npm create svelte`) — it sets up a **SvelteKit** app on **Vite** with optional TypeScript/Prettier/ESLint/testing, and **`npx sv migrate svelte-5`** automates most of an existing Svelte 4 project's upgrade. Vite gives you **HMR** in dev and an optimized **`vite build`** for production. Keep quality high with **`svelte-check`** (proven above: catches a wrong prop type in markup that plain `tsc` misses) and **`eslint-plugin-svelte`**'s flat config (proven above: catches `{@html}` XSS risk and deprecated patterns). Every compiler option — including `experimental.async` — is ultimately a `vite-plugin-svelte`/`svelte.config.js` setting, per-project or, via `dynamicCompileOptions`, per file.
 </Callout>
+
+## Mental Model
+
+Everything in this lesson is tooling built *around* one fact: a `.svelte` file is not plain JavaScript, so any tool that only understands JS/TS (`tsc`, a generic ESLint config) is structurally blind to markup-level mistakes. `svelte-check` and `eslint-plugin-svelte` both exist because someone has to parse the `.svelte` format itself before type-checking or linting can see inside the markup — that's the whole reason they're separate tools instead of `tsc`/`eslint` just working out of the box.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `svelte-check` over plain `tsc` | Catches errors inside markup — proven above with a prop-type mismatch `tsc` alone cannot see | A second, slower command in CI; needs its own `--tsconfig` invocation |
+| `eslint-plugin-svelte` flat config | Svelte-aware rules (`{@html}` risk, deprecated `on:`, missing each-keys) — proven above | Flat config only; a project still on `.eslintrc.js` must migrate that first |
+| `dynamicCompileOptions` for per-file compiler settings | Lets a big codebase force runes mode file-by-file during migration, instead of all-or-nothing | One more layer of project config to reason about beyond the simple `compilerOptions` object |
+| `sv migrate svelte-5` | Automates the mechanical parts of a Svelte 4 → 5 upgrade | Does not catch every case — anything it misses surfaces as the real compile errors proven in the legacy-recognition table |
+
+## Common Misconceptions
+
+- **"`tsc` alone is enough to type-check a Svelte project."** Proven above: a wrong prop type passed in a `.svelte` file's markup is invisible to plain `tsc` — only `svelte-check`, which actually parses the Svelte file format, catches it.
+- **"Any ESLint config works with `.svelte` files."** `eslint-plugin-svelte` v3 requires flat config (`eslint.config.js`) specifically, and needs `svelte-eslint-parser` to even read the file — a legacy `.eslintrc.js` setup doesn't lint `.svelte` files' markup at all.
+- **"`experimental.async` is a `<svelte:options>` or per-component setting."** It's a project-wide (or, via `dynamicCompileOptions`, per-file) compiler option set through `vite-plugin-svelte`/`svelte.config.js` — not something you toggle per component.
+
+## Reading AI-generated code
+
+When reviewing project configuration and tooling setup, check for:
+
+- Is CI running only `tsc --noEmit` (or nothing at all) for a SvelteKit project, with no `svelte-check` step — meaning markup-level type errors like the one proven above ship silently?
+- Is there an `.eslintrc.js`/`.eslintrc.json` alongside `eslint-plugin-svelte` — a combination that doesn't work, since the plugin's current major version requires flat config only?
+- Does a lesson, README, or generated snippet still say `npm create svelte@latest` or reference `svelte-migrate` as a standalone package, instead of the current `npx sv create` / `npx sv migrate svelte-5`?
+- Is a compiler option like `experimental.async` set somewhere per-component (a prop, a comment) rather than in `svelte.config.js`'s `compilerOptions`/`vitePlugin`, where it actually has to live?
+
+<SpotTheBug code={`// eslint.config.js
+import js from '@eslint/js';
+
+export default [
+  js.configs.recommended,
+  // ... rest of the config, no Svelte-specific plugin at all
+];`}>
+This lints plain `.js`/`.ts` files fine, but it never mentions `eslint-plugin-svelte` or its parser — so every `.svelte` file in the project is either skipped entirely or, if included via a glob, parsed as if it were plain JavaScript (which it isn't: the markup, `{expressions}`, and directives aren't valid JS syntax). Either way, none of the Svelte-specific rules proven above (like the real `svelte/no-at-html-tags` error) ever run, and a review that only looks at whether "ESLint passes" gets false confidence.
+
+The fix is the flat config from this lesson: import `eslint-plugin-svelte`, extend `svelte.configs.recommended`, and point `.svelte`/`.svelte.js`/`.svelte.ts` files at the Svelte parser via `languageOptions.parserOptions.svelteConfig`.
+</SpotTheBug>
 
 export const quizTooling = [
   {
@@ -98,6 +262,62 @@ export const quizTooling = [
       'It replaces Vite',
     ],
     answer: 1,
+    explain: 'Proven above: <Greeter name={42} /> — a number passed where a string prop is declared — is invisible to plain tsc but caught by svelte-check with a real "Type \'number\' is not assignable to type \'string\'." error.',
+  },
+  {
+    q: '```svelte\n{@html unsafeHtml}\n```\nWhich real tool flags this specific line as a risk, and with what rule name?',
+    options: [
+      'tsc, with a type error',
+      'eslint-plugin-svelte\'s recommended config, rule svelte/no-at-html-tags',
+      'svelte-check, as a warning only',
+      'Nothing flags it automatically',
+    ],
+    answer: 1,
+    explain: 'Proven above: running eslint (with eslint-plugin-svelte\'s flat config) against LintViolation.svelte reports "`{@html}` can lead to XSS attack  svelte/no-at-html-tags".',
+  },
+  {
+    q: 'What does `eslint-plugin-svelte` (current major version) require to lint `.svelte` files at all?',
+    options: [
+      'Nothing special — any ESLint config works',
+      'ESLint\'s flat config (`eslint.config.js`) — a legacy `.eslintrc.js` setup is not supported',
+      'A separate CLI outside ESLint entirely',
+      'TypeScript must be disabled',
+    ],
+    answer: 1,
+    explain: 'The plugin\'s v3 requires flat config specifically; a project still on .eslintrc.js needs to migrate its ESLint config before .svelte files can be linted with it at all.',
+  },
+  {
+    q: 'Where does a project-wide compiler option like `experimental.async` actually get set?',
+    options: [
+      'As a prop on each component that needs it',
+      'In `svelte.config.js` / the `vite-plugin-svelte` config (`compilerOptions`, or per-file via `dynamicCompileOptions`)',
+      'In `package.json`',
+      'It cannot be configured — it is always on',
+    ],
+    answer: 1,
+    explain: 'Every compiler option flows through vite-plugin-svelte\'s configuration in svelte.config.js; dynamicCompileOptions is the escape hatch for varying it per file (e.g. during an incremental runes migration).',
+  },
+  {
+    q: 'What does `npx sv migrate svelte-5` do, per the official migration guide?',
+    options: [
+      'Nothing automated — it only prints instructions',
+      'Automates mechanical rewrites: updating dependencies, `let` to runes, `on:click` to `onclick`, and slot patterns to snippets',
+      'Deletes all Svelte 4 syntax without replacing it',
+      'Only works on SvelteKit projects, not plain Svelte',
+    ],
+    answer: 1,
+    explain: 'Quoted directly from the migration guide above; it handles most common patterns automatically, with the legacy-recognition table (events & attributes lesson) as the reference for what is being rewritten and any real compile errors left over.',
+  },
+  {
+    q: '```svelte\n<!-- Greeter.svelte declares: interface Props { name: string } -->\n<Greeter name={42} />\n```\nWhat does `svelte-check` report for this, and why does plain `tsc` miss it?',
+    options: [
+      'Nothing — 42 is coerced to a string automatically',
+      'A real error, `Type \'number\' is not assignable to type \'string\'.` — tsc alone cannot see inside a .svelte file\'s markup at all',
+      'A warning, not an error',
+      'It only fails at runtime, never at check time',
+    ],
+    answer: 1,
+    explain: 'Proven above: this exact BadUsage.svelte/Greeter.svelte pair produces that real svelte-check error at line 4, precisely because svelte-check (unlike tsc) parses the .svelte format and can see the mismatched prop in the markup.',
   },
 ];
 

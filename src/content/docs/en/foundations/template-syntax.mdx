@@ -86,6 +86,10 @@ The `{#key expression}` block destroys and recreates its contents whenever the e
 {@render greeting('world')}
 ```
 
+<Callout title="Why these blocks never need a manual re-render">
+Every block and expression on this page updates itself because runes are *signals* under the hood: reading `user.points` inside `{user.points > 40 ? …}` registers that spot as a dependent of `user`, and writing to `user` re-runs exactly the dependents that read it — never the whole template. The [reactivity module](/svelte/en/reactivity/state-rune) proves that mechanism end to end; here it's just what makes `{#if}`, `{#each}`, and `{#await}` all "just work" without you ever calling a render function.
+</Callout>
+
 <Callout title="The one-line takeaway">
 Svelte markup embeds values with **`{expression}`** and expresses control flow with dedicated **blocks**: `{#if}/{:else}` for conditionals, `{#each … as item (id)}` for keyed lists (with an `{:else}` empty case), `{#await}` for a promise's pending/then/catch states, and `{#key}` to force re-creation. **`{@html}`** injects trusted raw HTML, and **`{@render snippet()}`** renders a Svelte 5 snippet (the replacement for `<slot>`).
 </Callout>
