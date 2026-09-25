@@ -40,6 +40,9 @@ export default defineConfig({
         { label: 'State Management & Stores', items: [{ autogenerate: { directory: 'state-and-stores' } }] },
         { label: 'SvelteKit: Full-Stack Svelte', items: [{ autogenerate: { directory: 'sveltekit' } }] },
         { label: 'Tooling, Testing & Production', items: [{ autogenerate: { directory: 'tooling-and-production' } }] },
+        { label: 'How Svelte Works', translations: { th: 'Svelte ทำงานอย่างไรข้างใน' }, items: [{ autogenerate: { directory: 'svelte-internals' } }] },
+        { label: 'Reading AI-generated Svelte', translations: { th: 'อ่านโค้ด Svelte ที่ AI เขียน' }, items: [{ autogenerate: { directory: 'reading-svelte' } }] },
+        { label: 'Glossary', translations: { th: 'อภิธานศัพท์' }, link: 'glossary' },
       ],
       }), preact()],
 });
