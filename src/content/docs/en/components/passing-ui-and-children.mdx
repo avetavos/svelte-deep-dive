@@ -1,6 +1,6 @@
 ---
 title: 'Passing UI & Children'
-description: 'Passing markup into a component via the children snippet, named snippet props for flexible layouts, and how this compares to React children and render props.'
+description: 'Passing markup into a component via the children snippet, named snippet props for flexible layouts, typing snippet props with Snippet<[T]>, $props.id() for SSR-safe unique ids, and how this compares to React children and render props.'
 sidebar:
   order: 3
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## The children snippet
 
@@ -91,8 +92,162 @@ Because snippets take parameters, a component can pass data *out* to the markup 
 
 The child owns the iteration; the parent owns the per-item markup. This inversion — child provides data, parent provides presentation — is the render-prop pattern, expressed cleanly with snippets.
 
+## Typing snippet props with `Snippet<[T]>`
+
+With `lang="ts"`, a snippet prop (`children`, or a render-prop snippet like `row` above) is typed with the **`Snippet`** interface imported from `'svelte'`. `Snippet` (no arguments) means "takes no parameters"; `Snippet<[T]>` means "takes one parameter of type `T`" — the array is a tuple, since a snippet can take multiple parameters. Combined with a **generic** on the component itself, TypeScript ties the data's item type to the snippet's parameter type:
+
+```svelte
+<!-- src/lib/TypedList.svelte -->
+<script lang="ts" generics="T">
+  import type { Snippet } from 'svelte';
+  let { data, row }: { data: T[]; row: Snippet<[T]> } = $props();
+</script>
+<ul>
+  {#each data as item}
+    {@render row(item)}
+  {/each}
+</ul>
+```
+
+Used correctly, `T` is inferred from `data` and `row`'s parameter must match:
+
+```svelte
+<!-- src/lib/UseTypedListGood.svelte -->
+<script lang="ts">
+  import TypedList from './TypedList.svelte';
+  let products = [{ name: 'Tea', price: 2 }];
+</script>
+<TypedList data={products}>
+  {#snippet row(item)}
+    <li data-testid="row">{item.name} — ${item.price}</li>
+  {/snippet}
+</TypedList>
+```
+
+```ts
+// src/lib/typedlist.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import UseTypedListGood from './UseTypedListGood.svelte';
+
+test('a correctly-typed row snippet renders each item', () => {
+  const { container } = render(UseTypedListGood);
+  expect(container.querySelector('[data-testid="row"]')?.textContent).toBe('Tea — $2');
+});
+```
+
+```text
+✓ a correctly-typed row snippet renders each item
+```
+
+And a `row` snippet typed for the *wrong* shape is a real, caught type error — not a runtime surprise:
+
+```svelte
+<!-- @expect-error Type '{ name: string; price: number; }[]' is not assignable to type '{ wrongShape: boolean; }[]'. Property 'wrongShape' is missing in type '{ name: string; price: number; }' but required in type '{ wrongShape: boolean; }'. -->
+<script lang="ts">
+  import TypedList from './TypedList.svelte';
+  let products = [{ name: 'Tea', price: 2 }];
+</script>
+<TypedList data={products}>
+  {#snippet row(item: { wrongShape: boolean })}
+    <li>{item.wrongShape}</li>
+  {/snippet}
+</TypedList>
+```
+
+`svelte-check` on that file reports exactly (verified against this course's probe, Svelte 5.57.1 + TypeScript):
+
+```text
+Type '{ name: string; price: number; }[]' is not assignable to type '{ wrongShape: boolean; }[]'.
+  Property 'wrongShape' is missing in type '{ name: string; price: number; }' but required in type '{ wrongShape: boolean; }'.
+```
+
+Without `Snippet<[T]>`, a mismatched `row` snippet would only surface as `undefined` values or a runtime crash inside the snippet body — typing it turns that into a compile-time catch.
+
+## `$props()` rest, renaming, defaults — and `$props.id()` for SSR-safe ids
+
+Destructuring `$props()` for **data** props (defaults, renaming, rest with `{...rest}`) and typing them with a `Props` interface is covered in full in [Props & $bindable](/svelte/en/reactivity/props-and-bindable) — the same `$props()` call is what yields the snippet props (`children`, `header`, `row`) this lesson is about.
+
+One more `$props`-family rune matters specifically for markup you pass down: **`$props.id()`** (added in 5.20) generates an id that's unique to the current component instance and, critically, **consistent between server and client during hydration** — exactly what you need to link a `<label for>` to an `<input id>` without hardcoding a string that would collide if the component is used twice on the same page.
+
+```svelte
+<!-- src/lib/LabeledField.svelte -->
+<script lang="ts">
+  const uid = $props.id();
+</script>
+<label for="{uid}-name" data-testid="label">Name</label>
+<input id="{uid}-name" data-testid="input" />
+<span data-testid="uid">{uid}</span>
+```
+
+```ts
+// src/lib/propsid.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import LabeledField from './LabeledField.svelte';
+
+test('$props.id() is unique per component instance and links label to input', () => {
+  const first = render(LabeledField);
+  const uid = first.container.querySelector('[data-testid="uid"]')!.textContent;
+  const label = first.container.querySelector('label')!;
+  const input = first.container.querySelector('input')!;
+  expect(label.getAttribute('for')).toBe(`${uid}-name`);
+  expect(input.id).toBe(`${uid}-name`);
+
+  // A second instance on the same page gets a DIFFERENT id — no collision.
+  const second = render(LabeledField);
+  const uid2 = second.container.querySelector('[data-testid="uid"]')!.textContent;
+  expect(uid2).not.toBe(uid);
+});
+```
+
+```text
+✓ $props.id() is unique per component instance and links label to input
+```
+
+Two `<LabeledField>` instances on one page get two different `uid`s (`c1`, `c2` in this probe, proven above) — a hardcoded `id="name"` would have produced a duplicate DOM id and broken the label association for the second instance.
+
+<Callout title="A related boundary crossing: $bindable()">
+Passing UI down (this lesson) is one-way: a snippet prop only renders markup, it never lets the child write back to the parent. Genuine two-way sync across a component boundary is a separate, opt-in mechanism — a prop must be marked **`$bindable()`** before a parent can `bind:` to it, covered fully in [Props & $bindable](/svelte/en/reactivity/props-and-bindable) and [Bindings](/svelte/en/bindings-actions-transitions/bindings). What "before it's marked bindable" actually does today is proven in the Reading AI-generated code section below — it's more surprising than a clean error.
+</Callout>
+
+## Mental Model
+
+A snippet prop is just a normal prop whose value happens to be a "render this markup" function — `children`, `header`, `row` are not special syntax, they're names you chose, typed like any other prop (`Snippet` / `Snippet<[T]>`). Passing UI down and passing data down are the same mechanism (`$props()`); what differs is only the *type* of the value being passed. Two-way binding (`$bindable()`) is a deliberately separate, opt-in mechanism layered on top of that — nothing about a plain snippet or data prop implies it.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| `children`/named snippet props | Reusable wrapper components that don't know their contents | The child must remember to `{@render}` every snippet prop it receives, or that markup silently never appears |
+| `Snippet<[T]>` + component generics | Mismatched row/data shapes are compile errors, proven above | Only as strong as the generic — an untyped/`any` snippet prop gets no protection |
+| `$props.id()` | Collision-free, hydration-safe ids with zero manual bookkeeping, proven above | Only available at the top level of a component (can't be called conditionally or inside a function) |
+
+## Common Misconceptions
+
+- **"A snippet param typed loosely (or left untyped) is just as safe as `Snippet<[T]>`."** It isn't — proven above, only the properly generic-typed version turns a shape mismatch into a caught compile error instead of an `undefined` surprise at runtime.
+- **"Any unique-looking string works fine for a label/input `id`, as long as I don't reuse the component."** Hardcoded ids break the moment the component *is* reused on the same page — `$props.id()` is proven above to hand out a different id per instance automatically, including across server/client hydration.
+- **"If the child doesn't mark a prop `$bindable()`, a parent's `bind:` on it throws immediately."** Not in this installed version — see the concrete, non-obvious behavior proven in Reading AI-generated code, next.
+
+## Reading AI-generated code
+
+When reviewing generated components that pass UI down, check for:
+
+- Is `children` (or any named snippet prop) actually rendered with `{@render}` somewhere, or received and silently dropped?
+- Does a render-prop snippet (`row`, in the pattern above) have a type wide enough (`any`, or no type at all) that a genuine shape mismatch with the data it's rendering would go unnoticed until runtime?
+- Is a form's `id`/`for` pair hardcoded as a literal string instead of built from `$props.id()`, risking a collision the moment the component appears twice on one page?
+- Does a component `bind:` to a child's prop assuming Svelte will loudly error if that prop isn't `$bindable()`? Proven below: in this course's verified Svelte 5.57.1, it does **not** — the sync just silently never happens.
+
+<SpotTheBug code={`<!-- Field.svelte -->
+<script>
+  let { value } = $props(); // NOT $bindable()
+</script>
+<input bind:value={value} />`}>
+This looks like a normal two-way-bindable input wrapper, and a parent doing `<Field bind:value={name} />` doesn't throw or warn — it renders fine. But `value` here was never marked `$bindable()`. Verified against this course's probe (Svelte 5.57.1): typing into the input updates the input's own local `value` (because `bind:value` inside `Field` is a real two-way binding to the *local* variable), but the parent's `name` never changes — there is no error, no console warning, nothing. The two-way sync silently doesn't cross the component boundary at all, which is worse than an error because nothing tells you it's broken. The fix: `let { value = $bindable() } = $props();` in the child, matching the pattern in [Props & $bindable](/svelte/en/reactivity/props-and-bindable).
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-Markup nested between a component's tags arrives as the **`children`** snippet, rendered with **`{@render children()}`** — the Svelte 5 equivalent of React `children`. For multiple insertion points, pass **named snippet props** (`{#snippet header()}…` inside the tags). And because snippets take **parameters**, a child can pass data back to a parent-provided snippet — the render-prop pattern.
+Markup nested between a component's tags arrives as the **`children`** snippet, rendered with **`{@render children()}`** — the Svelte 5 equivalent of React `children`. For multiple insertion points, pass **named snippet props**, typed with **`Snippet`** / **`Snippet<[T]>`** (paired with a component generic, a mismatched shape is a real compile error, proven above). **`$props.id()`** hands out a collision-free, hydration-safe id per component instance — proven above with two instances getting two different ids. And because snippets take **parameters**, a child can pass data back to a parent-provided snippet — the render-prop pattern. None of this is two-way: that requires `$bindable()`, and forgetting it does **not** throw in this installed Svelte — it silently breaks cross-component sync, proven above.
 </Callout>
 
 export const quizChildren = [
@@ -105,6 +260,7 @@ export const quizChildren = [
       'It cannot',
     ],
     answer: 1,
+    explain: 'Markup between a component\'s tags is handed to it as the special `children` snippet prop, which the component must explicitly render with {@render children()}.',
   },
   {
     q: 'How do you provide multiple named insertion points to a component?',
@@ -115,6 +271,7 @@ export const quizChildren = [
       'A store per slot',
     ],
     answer: 1,
+    explain: 'Each named snippet defined inside the component tags becomes a separate prop the child can {@render} wherever it wants.',
   },
   {
     q: 'How does a Svelte component pass data out to parent-provided markup (render props)?',
@@ -125,6 +282,40 @@ export const quizChildren = [
       'It cannot pass data back',
     ],
     answer: 1,
+    explain: 'The child calls the snippet with a value as an argument; the parent\'s {#snippet row(item)} receives it as its parameter — the render-prop pattern.',
+  },
+  {
+    q: '```svelte\n<script lang="ts" generics="T">\n  import type { Snippet } from \'svelte\';\n  let { data, row }: { data: T[]; row: Snippet<[T]> } = $props();\n</script>\n```\nWhat does `Snippet<[T]>` mean here?',
+    options: [
+      'The snippet returns a value of type T',
+      'The snippet takes one parameter of type T — proven above to catch a shape mismatch as a real compile error',
+      'It makes the snippet optional',
+      'It has no effect at runtime or compile time',
+    ],
+    answer: 1,
+    explain: 'Proven above: giving row the wrong parameter shape produces a real, specific TypeScript error (a mismatched array element type) rather than a silent runtime problem.',
+  },
+  {
+    q: 'What guarantee does `$props.id()` give you?',
+    options: [
+      'A random string that changes on every render',
+      'An id unique to the component instance, consistent between server and client during hydration — proven above to differ across two instances on the same page',
+      'The same id for every instance, for easy CSS targeting',
+      'It only works in SvelteKit, not plain Svelte',
+    ],
+    answer: 1,
+    explain: 'Proven above with a real test: two rendered instances of the same component get two different uids, and each correctly links its own <label for> to its own <input id>.',
+  },
+  {
+    q: '```svelte\n<!-- Field.svelte -->\n<script>\n  let { value } = $props(); // NOT $bindable()\n</script>\n<input bind:value={value} />\n```\nA parent does `<Field bind:value={name} />`. What actually happens (verified against Svelte 5.57.1)?',
+    options: [
+      'A compile error, since value is not $bindable()',
+      'A runtime error the moment the component mounts',
+      'It renders with no error at all, but typing in the input never updates the parent\'s name — the sync silently never happens',
+      'It works exactly like a bindable prop',
+    ],
+    answer: 2,
+    explain: 'Proven above: no error, no warning — the input updates its own local value, but the parent\'s bound variable never changes, because the prop was never marked $bindable().',
   },
 ];
 

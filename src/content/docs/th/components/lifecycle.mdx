@@ -1,6 +1,6 @@
 ---
 title: 'Lifecycle'
-description: 'onMount, onDestroy และ tick — lifecycle function ที่ยังมีประโยชน์ใน Svelte 5 และ $effect ครอบคลุมงานส่วนใหญ่ที่ lifecycle hook เคยทำอย่างไร'
+description: 'onMount, onDestroy, tick และ flushSync; $effect cleanup กับ untrack เข้ากับ lifecycle อย่างไร; และ <svelte:boundary> สำหรับกัน error จาก render/effect และแสดง pending UI สำหรับเนื้อหาที่ await'
 sidebar:
   order: 5
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## $effect ครอบคลุมงาน lifecycle ส่วนใหญ่
 
@@ -49,6 +50,47 @@ lifecycle function สองตัวยังมีประโยชน์จ�
 
 ความต่างสำคัญจาก `$effect`: `onMount` run **ครั้งเดียวพอดี** และ **เฉพาะใน browser** นั่นคือสิ่งที่คุณต้องการเป๊ะ ๆ สำหรับ initialization ครั้งเดียวแบบ browser-only effect ที่ไม่อ่าน reactive state ก็ run ครั้งเดียวเหมือนกัน แต่ `onMount` บอก intent ชัดและการันตีว่า run เฉพาะ browser
 
+### พิสูจน์ลำดับ: onMount run ก่อน `$effect` ตัวแรก
+
+ทั้งสองอย่าง run ครั้งเดียวตอน render ครั้งแรก แต่ลำดับอาจไม่ตรงกับที่คุณเดา — callback ของ `onMount` run ก่อน แล้ว body ของ `$effect` ค่อย run:
+
+```svelte
+<!-- src/lib/OrderProbe.svelte -->
+<script lang="ts">
+  import { onMount } from 'svelte';
+  let { log }: { log: string[] } = $props();
+
+  log.push('script-top');
+
+  onMount(() => {
+    log.push('onMount');
+  });
+
+  $effect(() => {
+    log.push('effect');
+  });
+</script>
+
+<p>ok</p>
+```
+
+```ts
+// src/lib/order.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import OrderProbe from './OrderProbe.svelte';
+
+test('order on first render: script body, then onMount, then $effect', () => {
+  const log: string[] = [];
+  render(OrderProbe, { props: { log } });
+  expect(log).toEqual(['script-top', 'onMount', 'effect']);
+});
+```
+
+```text
+✓ order on first render: script body, then onMount, then $effect
+```
+
 <Mermaid title="จังหวะ lifecycle ของ component" code={lifeDiagram} />
 
 export const lifeDiagram = `flowchart LR
@@ -73,8 +115,312 @@ Svelte batch การ update DOM เมื่อคุณเปลี่ยน 
 </script>
 ```
 
+## flushSync: บังคับให้ effect run แบบ synchronous
+
+`mount()`/`hydrate()` (imperative API — [ใช้ bootstrap `src/main.ts` เวลาไม่ได้ใช้ SvelteKit เป็นตัวอย่าง](https://svelte.dev/docs/svelte/imperative-component-api)) **ไม่ synchronous** เมื่อเทียบกับ effect: มัน return ก่อนที่ `$effect` ใด ๆ — รวมถึงตัวที่อยู่หลัง `onMount` — จะ run เลยด้วยซ้ำ effect ถูก schedule เป็น microtask `flushSync()` (import จาก `'svelte'`) บังคับให้ pending effect ทุกตัว run ทันที — มีประโยชน์ในการทดสอบ และเวลาไหนก็ตามที่ imperative code ต้องการให้ DOM/effect ตามทันตอนนี้เลย
+
+```svelte
+<!-- src/lib/FlushDemo.svelte -->
+<script lang="ts">
+  import { onMount } from 'svelte';
+  let { log }: { log: string[] } = $props();
+  onMount(() => { log.push('onMount'); });
+</script>
+<p>ok</p>
+```
+
+```ts
+// src/lib/flush.test.ts
+import { test, expect } from 'vitest';
+import { mount, flushSync, unmount } from 'svelte';
+import FlushDemo from './FlushDemo.svelte';
+
+test('mount() does not run onMount synchronously; flushSync() forces it', () => {
+  const target = document.createElement('div');
+  const log: string[] = [];
+  const app = mount(FlushDemo, { target, props: { log } });
+  // mount() has already returned, but the onMount effect hasn't run yet.
+  expect(log).toEqual([]);
+  flushSync();
+  expect(log).toEqual(['onMount']);
+  unmount(app);
+});
+```
+
+```text
+✓ mount() does not run onMount synchronously; flushSync() forces it
+```
+
+[คู่มือ migrate ไป Svelte 5](https://svelte.dev/docs/svelte/v5-migration-guide) พูดตรง ๆ ว่า: "things like `onMount` won't have been called by the time the [`mount`] function returns... If you need that guarantee, call `flushSync`" component test ที่เขียนด้วย `@testing-library/svelte` ปกติไม่ต้องใช้ตัวนี้ — `render()` ของมัน flush ให้อยู่แล้ว — แต่การเรียก `mount()`/`hydrate()` แบบดิบต้องใช้
+
+## $effect cleanup ตอน unmount
+
+cleanup function ที่ effect return run **ก่อน effect จะ run ซ้ำ** และ run อีกครั้งเมื่อ **component ที่เป็นเจ้าของมันถูกทำลาย** — function ตัวเดียวกันจัดการทั้งสองกรณี
+
+```svelte
+<!-- src/lib/CleanupDemo.svelte -->
+<script lang="ts">
+  let { log }: { log: string[] } = $props();
+  $effect(() => {
+    log.push('effect-run');
+    return () => log.push('effect-cleanup');
+  });
+</script>
+<p>ok</p>
+```
+
+```ts
+// src/lib/cleanup.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
+import CleanupDemo from './CleanupDemo.svelte';
+
+test('$effect cleanup runs when the component unmounts', () => {
+  const log: string[] = [];
+  const { unmount } = render(CleanupDemo, { props: { log } });
+  flushSync();
+  expect(log).toEqual(['effect-run']);
+  unmount();
+  expect(log).toEqual(['effect-run', 'effect-cleanup']);
+});
+```
+
+```text
+✓ $effect cleanup runs when the component unmounts
+```
+
+## untrack: อ่านค่าโดยไม่ผูกเป็น dependency
+
+`$effect` ผูกกับทุก reactive value ที่มันอ่านแบบ **synchronous** `untrack(fn)` (import จาก `'svelte'`) run `fn` โดยพัก dependency-tracking ไว้ชั่วคราว ดังนั้นค่าที่อ่านข้างในถูกใช้จริงแต่ไม่ทำให้ effect run ซ้ำเมื่อค่านั้นเปลี่ยน:
+
+```svelte
+<!-- src/lib/UntrackDemo.svelte -->
+<script lang="ts">
+  import { untrack } from 'svelte';
+  let { log }: { log: string[] } = $props();
+  let a = $state(1);
+  let b = $state(10);
+
+  $effect(() => {
+    // `a` is a tracked dependency; `b` is read through untrack and is not.
+    log.push(`a=${a} b=${untrack(() => b)}`);
+  });
+</script>
+<button data-testid="bump-a" onclick={() => a++}>bump a</button>
+<button data-testid="bump-b" onclick={() => b++}>bump b</button>
+```
+
+```ts
+// src/lib/untrack.test.ts
+import { test, expect } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import UntrackDemo from './UntrackDemo.svelte';
+
+test('untrack exempts a value from being an effect dependency', async () => {
+  const log: string[] = [];
+  render(UntrackDemo, { props: { log } });
+  expect(log).toEqual(['a=1 b=10']);
+
+  // Changing `b` (read through untrack) must NOT re-run the effect.
+  await fireEvent.click(screen.getByTestId('bump-b'));
+  expect(log).toEqual(['a=1 b=10']);
+
+  // Changing `a` (tracked normally) DOES re-run it, reading the latest `b`.
+  await fireEvent.click(screen.getByTestId('bump-a'));
+  expect(log).toEqual(['a=1 b=10', 'a=2 b=11']);
+});
+```
+
+```text
+✓ untrack exempts a value from being an effect dependency
+```
+
+`untrack` มีประโยชน์ที่สุดข้างใน effect แนว lifecycle ที่ต้อง *อ่าน* ค่าเพื่อทำอะไรครั้งเดียว (เช่น log prop ปัจจุบันตอน mount) โดยไม่อยากให้ทุกครั้งที่ค่านั้นเปลี่ยนในอนาคตกลายเป็นการ run ซ้ำ
+
+## `<svelte:boundary>`: กัน error จาก render/effect และเนื้อหา pending แบบ async
+
+โดย default error ที่ throw ระหว่าง render (หรือใน effect) จะ unmount **component tree ทั้งหมดที่อยู่รอบ ๆ** — widget เดียวที่พังทำให้ทั้งหน้าว่างเปล่าได้ `<svelte:boundary>` กันความล้มเหลวนั้นไว้ใน subtree ของตัวเอง และแยกต่างหากสามารถแสดง snippet `pending` ระหว่างที่ `await` expression ข้างในกำลัง resolve
+
+### `failed` + `reset()`: กัน render error
+
+```svelte
+<!-- src/lib/Flaky.svelte -->
+<script lang="ts">
+  let { shouldThrow, events }: { shouldThrow: boolean; events: string[] } = $props();
+  if (shouldThrow) {
+    throw new Error('boom');
+  }
+  events.push('rendered-ok');
+</script>
+<p data-testid="child-ok">ok</p>
+```
+
+```svelte
+<!-- src/lib/BoundaryHost.svelte -->
+<script lang="ts">
+  import Flaky from './Flaky.svelte';
+  let { shouldThrow, events }: { shouldThrow: boolean; events: string[] } = $props();
+</script>
+
+<svelte:boundary onerror={() => events.push('onerror')}>
+  <Flaky {shouldThrow} {events} />
+
+  {#snippet failed(error: unknown, reset: () => void)}
+    <p data-testid="fallback">{(error as Error).message}</p>
+    <button data-testid="reset-btn" onclick={() => { shouldThrow = false; reset(); }}>retry</button>
+  {/snippet}
+</svelte:boundary>
+```
+
+```ts
+// src/lib/boundary.test.ts
+import { test, expect } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import BoundaryHost from './BoundaryHost.svelte';
+
+test('the boundary contains the error, and reset() re-renders the child', async () => {
+  const events: string[] = [];
+  render(BoundaryHost, { props: { shouldThrow: true, events } });
+  // The throw in Flaky never reached the top of the app — it's contained here.
+  expect(screen.getByTestId('fallback').textContent).toBe('boom');
+  expect(events).toEqual(['onerror']);
+
+  await fireEvent.click(screen.getByTestId('reset-btn'));
+  expect(screen.getByTestId('child-ok')).toBeTruthy();
+  expect(events).toEqual(['onerror', 'rendered-ok']);
+});
+```
+
+```text
+✓ the boundary contains the error, and reset() re-renders the child
+```
+
+`shouldThrow` ตรงนี้เป็น prop ธรรมดาที่ *host* พลิกก่อนเรียก `reset()` — นั่นคือ pattern: แก้สิ่งที่ทำให้พังก่อน แล้วค่อยเรียก `reset()` ให้ boundary ลอง render children ใหม่ตั้งแต่ต้น (`svelte-check` จะ flag `if (shouldThrow)` ที่ top-level ของ `Flaky` ด้วย warning `state_referenced_locally` ซึ่งไม่เป็นอันตราย — มันสังเกตถูกแล้วว่าเช็คนี้ run แค่ครั้งเดียวตอน render ครั้งแรก ซึ่งตรงตามที่ตั้งใจ: ตัดสินว่า render ครั้งนี้จะ throw หรือไม่)
+
+### จุดที่ต้องระวังเรื่อง timing ของ `reset()`
+
+`reset()` เรียกแบบ **synchronous** ข้างใน `onerror` ไม่ได้ ตอนที่ boundary ยังจัดการ error ค้างอยู่ — Svelte throw error จริงถ้าคุณลอง:
+
+```svelte
+<!-- src/lib/ResetSyncHost.svelte -->
+<script lang="ts">
+  import Flaky from './Flaky.svelte';
+  let shouldThrow = $state(true);
+  let events: string[] = [];
+</script>
+<svelte:boundary onerror={(error, reset) => {
+  shouldThrow = false;
+  reset(); // BUG: called synchronously inside onerror
+}}>
+  <Flaky {shouldThrow} {events} />
+</svelte:boundary>
+```
+
+```ts
+// src/lib/resetsync.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import ResetSyncHost from './ResetSyncHost.svelte';
+
+test('calling reset() synchronously inside onerror throws', () => {
+  expect(() => render(ResetSyncHost)).toThrowError(/svelte_boundary_reset_onerror/);
+});
+```
+
+```text
+✓ calling reset() synchronously inside onerror throws
+```
+
+error จริง: `svelte_boundary_reset_onerror` — "A `<svelte:boundary>` `reset` function cannot be called while an error is still being handled" ([svelte.dev/e/svelte_boundary_reset_onerror](https://svelte.dev/e/svelte_boundary_reset_onerror)) ถ้าคุณแก้ error ได้ *ข้างใน* `onerror` เอง วิธีแก้คือ `await tick()` ก่อนเรียก `reset()` เพื่อให้ boundary settle ก่อน ไม่งั้นให้แก้สาเหตุที่อื่น (เช่น click ปุ่ม อย่างตัวอย่างด้านบน) แล้วค่อย reset จากตรงนั้น
+
+### `pending`: แสดง UI ระหว่างรอเนื้อหาที่ await resolve
+
+จับคู่กับ `await` expression ตรง ๆ ใน template (async Svelte — ดูบท async ของโมดูล reactivity — ต้องเปิด `compilerOptions.experimental.async: true`) snippet `pending` ของ boundary จะแสดงจนกว่า `await` ทุกตัวข้างในจะ resolve **ครั้งแรก** มันไม่โผล่ซ้ำสำหรับการ update ครั้งต่อไป — นั่นคือหน้าที่ของ [`$effect.pending()`](https://svelte.dev/docs/svelte/$effect#$effect.pending)
+
+```svelte
+<!-- src/lib/PendingDemo.svelte -->
+<script lang="ts">
+  async function loadMessage() {
+    await new Promise((r) => setTimeout(r, 20));
+    return 'loaded!';
+  }
+</script>
+
+<svelte:boundary>
+  <p data-testid="msg">{await loadMessage()}</p>
+
+  {#snippet pending()}
+    <p data-testid="loading">loading…</p>
+  {/snippet}
+</svelte:boundary>
+```
+
+```ts
+// src/lib/pending.test.ts
+import { test, expect } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/svelte';
+import PendingDemo from './PendingDemo.svelte';
+
+test('the pending snippet shows first, then the resolved content replaces it', async () => {
+  render(PendingDemo);
+  expect(screen.getByTestId('loading')).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId('msg').textContent).toBe('loaded!'));
+  expect(screen.queryByTestId('loading')).toBeNull();
+});
+```
+
+```text
+✓ the pending snippet shows first, then the resolved content replaces it
+```
+
+## Mental Model
+
+มองอายุของ component เป็นสามช่วง: **setup** (body ของ `<script>` run จากบนลงล่างครั้งเดียว), **mounted** (`onMount` fire แล้ว effect เริ่ม run และ run ซ้ำตาม dependency เปลี่ยน), และ **teardown** (effect cleanup run แล้วค่อย `onDestroy`) `<svelte:boundary>` ไม่ได้เปลี่ยนภาพนี้ — มันแค่กั้นกำแพงรอบ subtree เพื่อไม่ให้ความล้มเหลวข้างในลาม teardown ออกไปนอกกำแพง `flushSync` กับ `tick` พูดถึงข้อเท็จจริงเดียวกัน: DOM update กับ effect ถูก schedule ไว้ ไม่ได้เกิดทันที — `tick` รอหนึ่งรอบจากข้างในของ component ที่กำลัง run อยู่ `flushSync` บังคับให้ทุกอย่างที่ pending เกิดขึ้นตอนนี้เลย มีประโยชน์จากนอก component ปกติ (test, ตัวที่เรียก `mount()` แบบ imperative)
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| `onMount` แทน `$effect` เปล่า ๆ | บอก intent "browser-only, ครั้งเดียว" ชัดเจน; การันตีลำดับก่อน `$effect` ตัวแรก | run ซ้ำไม่ได้ — ใช้ผิดที่ถ้าต้องขึ้นกับ dependency |
+| `<svelte:boundary failed>` | widget เดียวที่พัง ไม่ unmount ทั้งแอป | ต้องออกแบบทาง recover จริง — `reset()` แค่ลองใหม่ ไม่ได้แก้สาเหตุ |
+| `<svelte:boundary pending>` | loading UI แบบ declarative สำหรับเนื้อหาที่ await ใน template | ยัง experimental (`experimental.async`); ครอบคลุมแค่การ resolve *ครั้งแรก* ไม่ใช่ update ครั้งต่อไป (ตรงนั้นใช้ `$effect.pending()`) |
+| `untrack` ข้างใน effect | อ่านค่าโดยไม่ให้ effect subscribe เกินจำเป็น | ใช้ผิดได้ง่าย — untrack ค่าที่ *ควร* trigger การ run ซ้ำ จะทำให้ reactivity พังแบบเงียบ ๆ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`onMount` กับ `$effect` ตัวแรก run ตามลำดับที่เดา หรือ run พร้อมกัน"** พิสูจน์แล้วด้านบน: callback ของ `onMount` run *ก่อน* body ของ `$effect` เสมอตอน render ครั้งแรก
+- **"`mount()` เสร็จสมบูรณ์ก็ต่อเมื่อ `onMount` run แล้ว"** ไม่จริง — `mount()`/`hydrate()` return ก่อน effect จะ run เลยด้วยซ้ำ `flushSync()` คือสิ่งที่บังคับให้ตามทัน พิสูจน์แล้วด้านบน
+- **"เรียก `reset()` ข้างใน `onerror` แล้ว boundary หายพังทันที"** ไม่ synchronous — Svelte throw `svelte_boundary_reset_onerror` ถ้าลอง พิสูจน์แล้วด้านบน แก้สาเหตุที่อื่น (หรือ `await tick()` ก่อน) แล้วค่อย reset จากตรงนั้น
+- **"snippet `pending` ของ `<svelte:boundary>` โผล่ทุกครั้งที่ค่าที่ await ข้างในอัปเดต"** มันโผล่แค่ตอน resolve *ครั้งแรก* เท่านั้น การ update แบบ async ครั้งต่อไปต้องใช้ `$effect.pending()` แทน
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิวโค้ด lifecycle ที่ generate มา ให้เช็ค:
+
+- ค่าที่ควรคำนวณใหม่ทุกครั้งที่ prop/state เปลี่ยน ถูกคำนวณข้างใน `onMount` แทน `$derived` หรือเปล่า? `onMount` run แค่ครั้งเดียว — มันจะ stale ทันทีที่ source value เปลี่ยน
+- `$effect` อ่านค่าตัวหนึ่งแค่เพื่อ log หรือวัดครั้งเดียว โดยไม่ห่อการอ่านนั้นด้วย `untrack` ทำให้ run ซ้ำโดยไม่จำเป็นทุกครั้งที่ค่าที่ไม่เกี่ยวข้องนั้นเปลี่ยนหรือเปล่า?
+- `reset()` ถูกเรียกแบบ synchronous ข้างใน `onerror` (เป็น error จริงที่ throw พิสูจน์แล้วด้านบน) แทนที่จะเรียกจาก action แยก (ปุ่ม, retry-after-fix) หรืออยู่หลัง `await tick()` หรือเปล่า?
+- โค้ดเรียก `mount()`/`hydrate()` แล้ว assert ผลข้างเคียงของ `onMount` (DOM เปลี่ยน, element ถูกแทรก) ทันทีโดยไม่มี `flushSync()` คั่นกลางหรือเปล่า?
+- `<svelte:boundary>` ถูกเพิ่มโดยไม่มี `failed`/`onerror` เลยหรือเปล่า? — กัน error แบบเงียบ ๆ ไม่มี visibility เลย ซึ่งเป็น blind spot แบบเดียวกับที่ boundary ควรจะแก้
+
+<SpotTheBug code={`<script>
+  import { onMount } from 'svelte';
+
+  let { userId } = $props();
+  let displayName = $state('');
+
+  onMount(() => {
+    displayName = formatName(userId); // computed once, on mount
+  });
+</script>
+
+<p>{displayName}</p>`}>
+`displayName` ถูกคำนวณ **ครั้งเดียว** ข้างใน `onMount` — แต่ `userId` เป็น prop และ prop เปลี่ยนได้ตลอดอายุของ component (parent ส่ง `userId` ตัวใหม่มาทีหลังได้) เพราะ computation นี้ run แค่ตอน mount `displayName` จะ stale เงียบ ๆ ทันทีที่ `userId` เปลี่ยน ไม่มีอะไร run ซ้ำให้เลย วิธีแก้คือ `let displayName = $derived(formatName(userId));` — derived คำนวณใหม่อัตโนมัติทุกครั้งที่ `userId` เปลี่ยน ซึ่งตรงกับเคส "ค่าที่คำนวณจาก reactive state อื่น" ที่ `onMount` ไม่เคยเป็นเครื่องมือที่ถูกต้อง (พิสูจน์แล้วด้านบน: `onMount` run แค่ครั้งเดียวพอดี)
+</SpotTheBug>
+
 <Callout title="สรุปหนึ่งบรรทัด">
-ใน Svelte 5 **`$effect`** จัดการงานส่วนใหญ่ที่ lifecycle hook เคยทำ — run หลัง DOM update และ cleanup ตอน destroy lifecycle function สองตัวยังสำคัญ: **`onMount`** (ครั้งเดียว, browser-only — เหมาะกับการวัด DOM และ library ที่ browser-only) และ **`onDestroy`** (teardown ที่ไม่ผูกกับ effect) **`await tick()`** รอให้ batched DOM update ของ Svelte apply ก่อนคุณอ่านหรือทำอะไรกับ DOM
+`$effect` (พร้อม cleanup ที่ return ซึ่ง run ทั้งก่อน run ซ้ำและตอน unmount) ครอบคลุมงาน lifecycle-hook เดิมส่วนใหญ่; **`onMount`** (browser-only, run ครั้งเดียว, *ก่อน* `$effect` ตัวแรก พิสูจน์แล้วด้านบน) และ **`onDestroy`** ยังสำคัญสำหรับ setup แบบ browser ครั้งเดียวและ cleanup ที่ไม่ผูกกับ effect **`await tick()`** รอ DOM update หนึ่งรอบ; **`flushSync()`** บังคับ effect ที่ pending *ทั้งหมด* ให้ run ทันที (ต้องใช้หลัง `mount()`/`hydrate()` แบบดิบ เพราะมัน return ก่อน effect จะ run) **`untrack(fn)`** อ่านค่าข้างใน effect โดยไม่เพิ่มมันเป็น dependency **`<svelte:boundary>`** กัน error จาก render/effect ไว้ใน subtree ของตัวเองผ่าน snippet `failed` และ `reset()` ที่คุณเรียกหลังจากแก้สาเหตุจริงแล้ว (ห้ามเรียกแบบ synchronous ข้างใน `onerror` พิสูจน์แล้วด้านบน) และแสดง snippet `pending` ระหว่างที่ `await` expression ข้างในกำลัง resolve ครั้งแรก
 </Callout>
 
 export const quizLifecycle = [
@@ -87,36 +433,62 @@ export const quizLifecycle = [
       'props',
     ],
     answer: 1,
+    explain: '$effect ครอบคลุมเคสทั่วไป (run หลัง DOM update, run ซ้ำเมื่อ dependency เปลี่ยน, cleanup); onMount/onDestroy ยังอยู่สำหรับเคสเฉพาะที่พิสูจน์แล้วในบทนี้ (browser-only ครั้งเดียว และ teardown ที่ไม่ผูกกับ effect)',
   },
   {
-    q: 'อะไรคือจุดเด่นของ `onMount`?',
+    q: 'ตอน render ครั้งแรก อะไร run ก่อนกัน?',
     options: [
-      'run ทุก update',
-      'run ครั้งเดียวพอดี เฉพาะใน browser (ไม่เคยระหว่าง SSR) — เหมาะกับ setup ที่ browser-only',
-      'run บน server',
-      'แทน $state',
+      'body ของ $effect ก่อน แล้วค่อย callback ของ onMount',
+      'callback ของ onMount ก่อน แล้วค่อย body ของ $effect — พิสูจน์แล้วด้วย test จริงด้านบน',
+      'run พร้อมกันเป๊ะเสมอ',
+      'onDestroy ก่อน แล้วค่อย onMount',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วย test จริง: log บันทึก ["script-top", "onMount", "effect"] ตามลำดับนี้เป๊ะตอน render ครั้งแรก',
   },
   {
-    q: '`await tick()` ทำอะไร?',
+    q: '```ts\nconst app = mount(App, { target });\nconsole.log(onMountRan); // ?\n```\nทันทีที่ `mount()` return แล้ว `onMount` run หรือยัง?',
     options: [
-      'รอหนึ่งวินาที',
-      'resolve เมื่อ Svelte apply pending DOM update แล้ว เพื่อให้คุณวัดหรือทำอะไรกับ DOM ที่ update แล้ว',
-      'ทำลาย component',
-      'fetch data',
+      'run แล้วเสมอ',
+      'ยัง — mount()/hydrate() return ก่อน effect (รวมถึง onMount) จะ run; ต้องเรียก flushSync() เพื่อบังคับให้ run',
+      'เฉพาะ production build เท่านั้น',
+      'เฉพาะถ้า await mount()',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้านบน: log ว่างเปล่าทันทีหลัง mount() return และมี "onMount" ก็ต่อเมื่อเรียก flushSync() แล้วเท่านั้น',
   },
   {
-    q: 'ควร init charting library ที่ browser-only ที่ไหน?',
+    q: '`untrack(() => b)` ข้างใน `$effect` ทำอะไร?',
     options: [
-      'ใน top-level script ระหว่าง SSR',
-      'ใน `onMount` ซึ่ง run เฉพาะใน browser หลัง render ครั้งแรก',
-      'ใน derived',
-      'ใน getContext',
+      'ลบ `b`',
+      'อ่าน `b` โดยไม่ลงทะเบียนเป็น dependency ของ effect',
+      'ทำให้ `b` reactive',
+      'run effect ครั้งเดียวแล้วไม่ run อีกเลย',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้านบน: การเพิ่มค่าที่ untrack (b) ไม่ทำให้ effect run ซ้ำ ในขณะที่การเพิ่มค่าที่ track ปกติ (a) run ซ้ำ และอ่าน b ล่าสุด ณ ตอนนั้น',
+  },
+  {
+    q: '```svelte\n<svelte:boundary onerror={(error, reset) => {\n  fixTheError();\n  reset(); // called synchronously\n}}>\n```\nเกิดอะไรขึ้นตรงนี้?',
+    options: [
+      'boundary reset ได้เรียบร้อย',
+      'มัน throw svelte_boundary_reset_onerror — เรียก reset() แบบ synchronous ไม่ได้ตอน boundary ยังจัดการ error ค้างอยู่',
+      'ไม่เกิดอะไรขึ้นเลยเงียบ ๆ',
+      're-throw error เดิมเท่านั้น',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วด้านบนด้วย error จริง: "A <svelte:boundary> reset function cannot be called while an error is still being handled" ให้แก้ที่อื่น หรือ await tick() ก่อนข้างใน onerror',
+  },
+  {
+    q: 'snippet `pending` บน `<svelte:boundary>` แสดงอะไร?',
+    options: [
+      'โผล่ซ้ำทุกครั้งที่มี async update ตลอดไป',
+      'UI ที่แสดงจนกว่า await expression ทุกตัวข้างใน boundary จะ resolve ครั้งแรก — update ครั้งต่อไปต้องใช้ $effect.pending()',
+      'มันแทนที่ snippet failed',
+      'ไม่มีอะไรเลย — ไม่ใช่ feature จริง',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วด้านบนด้วย promise ที่หน่วงเวลาจริง: testid loading โผล่ก่อน แล้วหายไปเมื่อค่าที่ await resolve — และตาม docs แสดงแค่ตอน resolve ครั้งแรกเท่านั้น',
   },
 ];
 

@@ -1,6 +1,6 @@
 ---
 title: 'Snippets & Render'
-description: 'Defining reusable markup with {#snippet}, rendering it with {@render}, snippet parameters, and how snippets replaced Svelte 4 slots.'
+description: 'Defining reusable markup with {#snippet}, rendering it with {@render}, snippet parameters (including optional ones), what happens when {@render} is forgotten, and how snippets replaced Svelte 4 slots.'
 sidebar:
   order: 2
 ---
@@ -9,6 +9,7 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Snippets: reusable chunks of markup
 
@@ -43,6 +44,78 @@ export const snippetDiagram = `flowchart LR
   render1 --> out["markup instances"]
   render2 --> out`;
 
+## Snippet parameters, including optional ones
+
+A snippet's parameters work exactly like a function's — including **default values** for parameters the caller might not pass:
+
+```svelte
+<!-- src/lib/OptionalParam.svelte -->
+<script lang="ts">
+  let names: (string | undefined)[] = ['Ada', undefined];
+</script>
+{#snippet greeting(name = 'friend')}
+  <p data-testid="g">Hello, {name}!</p>
+{/snippet}
+{#each names as n}
+  {@render greeting(n)}
+{/each}
+```
+
+```ts
+// src/lib/optionalparam.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import OptionalParam from './OptionalParam.svelte';
+
+test('a snippet parameter can have a default value, used when the argument is undefined', () => {
+  const { container } = render(OptionalParam);
+  const texts = [...container.querySelectorAll('[data-testid="g"]')].map((el) => el.textContent);
+  expect(texts).toEqual(['Hello, Ada!', 'Hello, friend!']);
+});
+```
+
+```text
+✓ a snippet parameter can have a default value, used when the argument is undefined
+```
+
+`greeting(n)` with `n === undefined` falls back to `'friend'`, exactly like a JS default parameter — because that's precisely what it compiles to.
+
+## Forgetting `{@render}`: a real runtime error
+
+Writing a snippet's name as a plain call — `{row(item)}` — instead of `{@render row(item)}` **compiles without any error or warning**, but throws at runtime the moment that line actually executes:
+
+```svelte
+<!-- src/lib/NoRender.svelte -->
+<script lang="ts">
+  let items = [1, 2, 3];
+</script>
+{#snippet row(item: number)}
+  <li data-testid="row">{item}</li>
+{/snippet}
+<ul>
+  {#each items as item}
+    {row(item)}
+  {/each}
+</ul>
+```
+
+```ts
+// src/lib/norender.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import NoRender from './NoRender.svelte';
+
+test('calling a snippet without {@render} throws at runtime', () => {
+  expect(() => render(NoRender)).toThrowError(/invalid_snippet_arguments/);
+});
+```
+
+```text
+✓ calling a snippet without {@render} throws at runtime
+```
+
+The real error: `invalid_snippet_arguments` — "A snippet function was passed invalid arguments. Snippets should only be instantiated via `{@render ...}`" ([svelte.dev/e/invalid_snippet_arguments](https://svelte.dev/e/invalid_snippet_arguments)). Under the hood a snippet compiles to a function whose first parameter is an internal DOM anchor supplied by `{@render}` — calling it directly passes your own argument (`item`, an array index) into that slot instead, which is what trips the check. Since neither the compiler nor `svelte-check` catches this (it's a template-shape mistake, not a type error), this is exactly the kind of thing to check for when reading generated code — see below.
+
 ## Snippets replaced slots
 
 In **Svelte 4**, you passed markup into a component with `<slot>` (and named slots via `<slot name="x">`). **Svelte 5 replaced that entirely with snippets** — they're more powerful because they can take parameters and are just values you pass around.
@@ -53,6 +126,13 @@ In **Svelte 4**, you passed markup into a component with `<slot>` (and named slo
 ```
 
 If you're reading older tutorials that use `<slot>`, the modern equivalent is a snippet rendered with `{@render}`. The next lesson covers exactly how a parent passes snippets (including the special `children` snippet) into a child.
+
+`<slot>` still **compiles and works** in a runes-mode component today (Svelte 5.57.1) — it's backward-compatible, not removed — but the compiler flags it with a real deprecation warning:
+
+```text
+Using `<slot>` to render parent content is deprecated. Use `{@render ...}` tags instead
+https://svelte.dev/e/slot_element_deprecated
+```
 
 ## Snippets are values
 
@@ -71,8 +151,47 @@ Because a snippet is a value, you can pass it to another snippet, store it in a 
 
 This composability — snippets as first-class, parameterized values — is why they replaced the more rigid slot mechanism.
 
+## Mental Model
+
+A snippet is a **function that renders markup** — `{#snippet name(params)}` is the declaration, `{@render name(args)}` is the call. Everything about ordinary functions applies: parameters, defaults, closures over outer variables, passing them around as values. The one thing that's *not* like an ordinary function is calling it directly (`{row(item)}`) — the framework, not your code, supplies the real first argument (the DOM anchor) when you go through `{@render}`, so bypassing `{@render}` hands your own value into a slot meant for Svelte's internals.
+
+## Trade-offs
+
+| What you get | Benefit | Cost |
+|---|---|---|
+| Snippets over `<slot>` | Parameters, first-class values, composable (proven in Snippets are values) | One more concept to learn if you're coming from Svelte 4 tutorials |
+| Snippet default parameters | Caller can omit an argument cleanly, proven above | Easy to forget the default only applies to `undefined`, not `null`/`0`/`''` |
+| `<slot>` backward-compat | Old code and tutorials keep working unmodified | Deprecated (real warning, proven above) — mixing it into new runes-mode code reads as outdated |
+
+## Common Misconceptions
+
+- **"Forgetting `{@render}` gives a compile error, like a type mistake would."** It doesn't — proven above, `{row(item)}` compiles cleanly and only fails once that template line actually runs, with `invalid_snippet_arguments`.
+- **"`<slot>` in a Svelte 5 component is a hard error."** It isn't — proven above, it still compiles and renders correctly; it's a deprecation *warning*, not a removal.
+- **"A snippet with a default parameter behaves like a component prop default."** Similar idea, different mechanism — a snippet's defaults are plain JS default-parameter semantics evaluated at `{@render}` time, not `$props()`'s destructuring.
+
+## Reading AI-generated code
+
+When reviewing generated snippet code, check for:
+
+- Is a `{#snippet ...}` referenced as `{name(args)}` anywhere instead of `{@render name(args)}`? It will compile silently and only fail at runtime, proven above — grep for the snippet's name and confirm every use goes through `{@render}`.
+- Is `<slot>` used inside a component that otherwise uses runes (`$state`, `$props()`, etc.)? It still works (proven above), but mixing Svelte 4's slot with Svelte 5 runes in the same file is inconsistent and a real deprecation warning — should be a snippet-based `children`/named-snippet prop instead.
+- Does a snippet's default parameter assume it covers "falsy" callers (`0`, `''`, `false`), when it only actually triggers for `undefined`?
+- Is a snippet defined but never rendered anywhere (dead markup, or a typo in the name passed to `{@render}`)?
+
+<SpotTheBug code={`<script>
+  let count = $state(0);
+</script>
+
+<div>{count}</div>
+
+<slot />
+
+<button onclick={() => count++}>+1</button>`}>
+This component mixes **runes** (`$state`) with the **Svelte 4 `<slot>`** element. It still compiles and renders parent content correctly — `<slot>` is backward-compatible, not removed — but the compiler emits a real deprecation warning: `Using <slot> to render parent content is deprecated. Use {@render ...} tags instead` (proven above). Generated code that mixes eras like this is a signal the model was trained on a mix of Svelte 4 and 5 examples. The fix: give the component a `children` prop via `$props()` and render it with `{@render children()}`, matching the rest of the file's runes style.
+</SpotTheBug>
+
 <Callout title="The one-line takeaway">
-A **snippet** is a named, parameterized block of markup: define it with **`{#snippet name(params)}…{/snippet}`** and render it with **`{@render name(args)}`**. Snippets keep templates DRY and are **Svelte 5's replacement for `<slot>`** — more powerful because they take parameters and are first-class values you can pass around and choose between.
+A **snippet** is a named, parameterized block of markup: define it with **`{#snippet name(params)}…{/snippet}`** and render it with **`{@render name(args)}`** — parameters support plain JS **default values**, applied when the argument is `undefined`. Calling a snippet directly (`{name(args)}`) instead of through `{@render}` compiles fine but throws a real `invalid_snippet_arguments` error the moment it runs, proven above. Snippets are **Svelte 5's replacement for `<slot>`**, which still compiles and works today but is deprecated (real warning, proven above) — more powerful than slots because they take parameters and are first-class values you can pass around and choose between.
 </Callout>
 
 export const quizSnippets = [
@@ -85,6 +204,7 @@ export const quizSnippets = [
       'With `use:snippet`',
     ],
     answer: 1,
+    explain: 'A snippet is declared with {#snippet}...{/snippet} and only ever rendered via {@render} — calling it any other way is a real runtime error, proven above.',
   },
   {
     q: 'What did snippets replace in Svelte 5?',
@@ -95,26 +215,40 @@ export const quizSnippets = [
       'Events',
     ],
     answer: 1,
+    explain: 'Snippets are the Svelte 5 replacement for <slot> — more powerful because they take parameters and are first-class values.',
   },
   {
-    q: 'Why are snippets more powerful than slots?',
+    q: '```svelte\n{#snippet row(item)}\n  <li>{item}</li>\n{/snippet}\n{row(1)}\n```\nWhat happens when this line runs?',
     options: [
-      'They are faster to type',
-      'They take parameters and are first-class values you can pass around and select between',
-      'They are styled automatically',
-      'They run on the server',
+      'It compiles and renders <li>1</li> normally',
+      'It compiles fine but throws invalid_snippet_arguments at runtime — snippets must be called via {@render}',
+      'It is a compile-time type error',
+      'It silently renders nothing',
     ],
     answer: 1,
+    explain: 'Proven above: calling a snippet directly passes your argument into the slot Svelte reserves for its own DOM anchor, which throws invalid_snippet_arguments the moment that code runs — with zero compile-time warning.',
   },
   {
-    q: 'Can a snippet take parameters?',
+    q: 'Can a snippet parameter have a default value?',
     options: [
       'No',
-      'Yes — like a function, e.g. `{#snippet row(item)}` rendered with `{@render row(x)}`',
-      'Only strings',
-      'Only on the server',
+      'Yes — like a function, e.g. `{#snippet greeting(name = \'friend\')}`, used when the argument is undefined',
+      'Only for the first parameter',
+      'Only in TypeScript files',
     ],
     answer: 1,
+    explain: 'Proven above with a real test: calling greeting(undefined) renders "Hello, friend!" via the plain JS default-parameter mechanism.',
+  },
+  {
+    q: '```svelte\n<script>\n  let count = $state(0);\n</script>\n<slot />\n```\nWhat is true about `<slot>` in a runes-mode Svelte 5 component?',
+    options: [
+      'It is a hard compile error — slots were removed',
+      'It still compiles and works (backward-compatible), but emits a real deprecation warning telling you to use {@render} instead',
+      'It silently does nothing',
+      'It only works with TypeScript',
+    ],
+    answer: 1,
+    explain: 'Proven above: the exact warning is "Using <slot> to render parent content is deprecated. Use {@render ...} tags instead" — and the parent content still renders correctly underneath it.',
   },
 ];
 

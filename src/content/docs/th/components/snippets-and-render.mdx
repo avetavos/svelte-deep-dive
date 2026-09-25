@@ -1,6 +1,6 @@
 ---
 title: 'Snippets & Render'
-description: 'นิยาม markup ที่ reuse ได้ด้วย {#snippet}, render ด้วย {@render}, พารามิเตอร์ของ snippet และ snippet มาแทน slot ของ Svelte 4 อย่างไร'
+description: 'นิยาม markup ที่ใช้ซ้ำได้ด้วย {#snippet}, render ด้วย {@render}, snippet parameter (รวมถึงแบบ optional), เกิดอะไรขึ้นถ้าลืม {@render} และ snippet แทนที่ Svelte 4 slot อย่างไร'
 sidebar:
   order: 2
 ---
@@ -9,10 +9,11 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## Snippets: ก้อน markup ที่ reuse ได้
+## Snippets: ก้อน markup ที่ใช้ซ้ำได้
 
-**snippet** คือ block ของ markup ที่มีชื่อ ซึ่ง render ซ้ำได้หลายครั้ง นิยามด้วย `{#snippet name(params)}…{/snippet}` และ render ด้วย `{@render name(args)}` เป็นวิธีของ Svelte ที่ทำให้ template DRY
+**snippet** คือ block ของ markup ที่มีชื่อ ที่คุณ render ได้หลายครั้ง นิยามด้วย `{#snippet name(params)}…{/snippet}` และ render ด้วย `{@render name(args)}` เป็นวิธีของ Svelte ที่ทำให้ template DRY
 
 ```svelte
 <script>
@@ -33,30 +34,109 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 </table>
 ```
 
-snippet `row` นิยามครั้งเดียวและ render ต่อ item แต่ละตัว snippet รับ **พารามิเตอร์** ได้เหมือนฟังก์ชัน markup เดียวกันจึงปรับตามข้อมูลที่ต่างกันได้
+snippet `row` นิยามครั้งเดียวแล้ว render ต่อ item snippet รับ **parameter** เหมือน function ดังนั้น markup เดียวกันปรับตาม data ต่างกันได้
 
-<Mermaid title="นิยามครั้งเดียว render หลายครั้ง" code={snippetDiagram} />
+<Mermaid title="นิยามครั้งเดียว render ได้หลายครั้ง" code={snippetDiagram} />
 
 export const snippetDiagram = `flowchart LR
-  def["snippet row(item) ... end"] --> render1["render row(a)"]
-  def --> render2["render row(b)"]
-  render1 --> out["instance ของ markup"]
+  def["{#snippet row(item)} ... {/snippet}"] --> render1["{@render row(a)}"]
+  def --> render2["{@render row(b)}"]
+  render1 --> out["markup instances"]
   render2 --> out`;
 
-## Snippets มาแทน slots
+## Snippet parameter รวมถึงแบบ optional
 
-ใน **Svelte 4** เราส่ง markup เข้า component ด้วย `<slot>` (และ named slot ผ่าน `<slot name="x">`) **Svelte 5 แทนที่สิ่งนั้นทั้งหมดด้วย snippets** — ซึ่งทรงพลังกว่าเพราะรับพารามิเตอร์ได้และเป็นแค่ค่าที่ส่งไปมาได้
+parameter ของ snippet ทำงานเหมือน function เป๊ะ ๆ — รวมถึง **default value** สำหรับ parameter ที่ผู้เรียกอาจไม่ส่งมา:
+
+```svelte
+<!-- src/lib/OptionalParam.svelte -->
+<script lang="ts">
+  let names: (string | undefined)[] = ['Ada', undefined];
+</script>
+{#snippet greeting(name = 'friend')}
+  <p data-testid="g">Hello, {name}!</p>
+{/snippet}
+{#each names as n}
+  {@render greeting(n)}
+{/each}
+```
+
+```ts
+// src/lib/optionalparam.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import OptionalParam from './OptionalParam.svelte';
+
+test('a snippet parameter can have a default value, used when the argument is undefined', () => {
+  const { container } = render(OptionalParam);
+  const texts = [...container.querySelectorAll('[data-testid="g"]')].map((el) => el.textContent);
+  expect(texts).toEqual(['Hello, Ada!', 'Hello, friend!']);
+});
+```
+
+```text
+✓ a snippet parameter can have a default value, used when the argument is undefined
+```
+
+`greeting(n)` ที่ `n === undefined` fallback ไปที่ `'friend'` เหมือน default parameter ของ JS เป๊ะ ๆ — เพราะมัน compile ไปเป็นแบบนั้นจริง ๆ
+
+## ลืม `{@render}`: error จริงตอน runtime
+
+การเขียนชื่อ snippet เป็น call ธรรมดา — `{row(item)}` — แทน `{@render row(item)}` **compile ผ่านโดยไม่มี error หรือ warning เลย** แต่ throw ตอน runtime ทันทีที่บรรทัดนั้นถูก execute จริง:
+
+```svelte
+<!-- src/lib/NoRender.svelte -->
+<script lang="ts">
+  let items = [1, 2, 3];
+</script>
+{#snippet row(item: number)}
+  <li data-testid="row">{item}</li>
+{/snippet}
+<ul>
+  {#each items as item}
+    {row(item)}
+  {/each}
+</ul>
+```
+
+```ts
+// src/lib/norender.test.ts
+import { test, expect } from 'vitest';
+import { render } from '@testing-library/svelte';
+import NoRender from './NoRender.svelte';
+
+test('calling a snippet without {@render} throws at runtime', () => {
+  expect(() => render(NoRender)).toThrowError(/invalid_snippet_arguments/);
+});
+```
+
+```text
+✓ calling a snippet without {@render} throws at runtime
+```
+
+error จริง: `invalid_snippet_arguments` — "A snippet function was passed invalid arguments. Snippets should only be instantiated via `{@render ...}`" ([svelte.dev/e/invalid_snippet_arguments](https://svelte.dev/e/invalid_snippet_arguments)) ภายใต้ผิว snippet compile ไปเป็น function ที่ parameter ตัวแรกเป็น DOM anchor ภายในที่ `{@render}` เป็นคนใส่ให้ — การเรียกตรง ๆ ทำให้ argument ของคุณเอง (`item` ซึ่งเป็น array index) เข้าไปแทนที่ตำแหน่งนั้น ซึ่งเป็นสิ่งที่ทำให้ check นี้ทำงาน เพราะทั้ง compiler และ `svelte-check` ไม่จับสิ่งนี้เลย (มันคือความผิดพลาดเชิงรูปแบบ template ไม่ใช่ type error) นี่คือสิ่งที่ควรเช็คตอนอ่านโค้ดที่ generate มา — ดูด้านล่าง
+
+## Snippets แทนที่ slot
+
+ใน **Svelte 4** คุณส่ง markup เข้า component ด้วย `<slot>` (และ named slot ผ่าน `<slot name="x">`) **Svelte 5 แทนที่สิ่งนั้นทั้งหมดด้วย snippet** — มันทรงพลังกว่าเพราะรับ parameter ได้และเป็นแค่ value ที่ส่งต่อกันได้
 
 ```svelte
 <!-- Svelte 4 (old):  a component defined <slot /> and <slot name="header" /> -->
 <!-- Svelte 5 (new):  a component renders {@render children()} and {@render header()} -->
 ```
 
-ถ้าคุณอ่าน tutorial เก่าที่ใช้ `<slot>` ตัวเทียบเท่าสมัยใหม่คือ snippet ที่ render ด้วย `{@render}` บทถัดไปจะอธิบายว่า parent ส่ง snippet (รวมถึง `children` snippet พิเศษ) เข้า child อย่างไร
+ถ้าคุณอ่าน tutorial เก่าที่ใช้ `<slot>` สิ่งที่เทียบเท่าในยุคใหม่คือ snippet ที่ render ด้วย `{@render}` บทถัดไปจะพูดถึงว่า parent ส่ง snippet (รวมถึง snippet พิเศษชื่อ `children`) เข้า child อย่างไรเป๊ะ ๆ
 
-## Snippets เป็นค่า
+`<slot>` ยัง **compile และทำงานได้** ใน component ที่เป็น runes-mode ทุกวันนี้ (Svelte 5.57.1) — มัน backward-compatible ไม่ได้ถูกถอดออก — แต่ compiler จะ flag มันด้วย deprecation warning จริง:
 
-เพราะ snippet เป็นค่า คุณจึงส่ง snippet ไปให้ snippet อื่น เก็บใน variable หรือเลือกระหว่าง snippet แบบมีเงื่อนไขได้:
+```text
+Using `<slot>` to render parent content is deprecated. Use `{@render ...}` tags instead
+https://svelte.dev/e/slot_element_deprecated
+```
+
+## Snippets เป็น value
+
+เพราะ snippet เป็น value คุณส่งมันเข้า snippet อีกตัว, เก็บไว้ในตัวแปร, หรือเลือกระหว่าง snippet แบบมีเงื่อนไขได้:
 
 ```svelte
 {#snippet loading()}<p>Loading…</p>{/snippet}
@@ -69,15 +149,54 @@ export const snippetDiagram = `flowchart LR
 {/if}
 ```
 
-ความ composable นี้ — snippet เป็น first-class value ที่รับพารามิเตอร์ได้ — คือเหตุผลที่มาแทนกลไก slot ที่ยืดหยุ่นน้อยกว่า
+ความ composable นี้ — snippet เป็น first-class parameterized value — คือเหตุผลที่มันแทนที่ slot mechanism ที่แข็งกว่านี้
+
+## Mental Model
+
+snippet คือ **function ที่ render markup** — `{#snippet name(params)}` คือการ declare, `{@render name(args)}` คือการเรียก ทุกอย่างเกี่ยวกับ function ธรรมดาใช้ได้หมด: parameter, default, closure เหนือตัวแปรภายนอก, ส่งต่อเป็น value สิ่งเดียวที่ *ไม่* เหมือน function ธรรมดาคือการเรียกตรง ๆ (`{row(item)}`) — framework ไม่ใช่โค้ดคุณ เป็นคนใส่ argument ตัวแรกจริง (DOM anchor) เมื่อคุณผ่าน `{@render}` ดังนั้นการข้าม `{@render}` ทำให้ value ของคุณเองไปแทนที่ตำแหน่งที่ตั้งใจไว้สำหรับ internal ของ Svelte
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| Snippets แทน `<slot>` | parameter, first-class value, composable (พิสูจน์ใน Snippets เป็น value) | ต้องเรียนรู้ concept เพิ่มถ้ามาจาก tutorial Svelte 4 |
+| default parameter ของ snippet | ผู้เรียกละ argument ได้สะอาด ๆ พิสูจน์แล้วด้านบน | ลืมง่ายว่า default ใช้เฉพาะตอน `undefined` ไม่ใช่ `null`/`0`/`''` |
+| `<slot>` backward-compat | โค้ดเก่าและ tutorial เก่ายังทำงานได้โดยไม่ต้องแก้ | deprecated (warning จริง พิสูจน์แล้วด้านบน) — ผสมเข้าโค้ด runes-mode ใหม่ดูล้าสมัย |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ลืม `{@render}` แล้วได้ compile error เหมือนพิมพ์ type ผิด"** ไม่จริง — พิสูจน์แล้วด้านบน `{row(item)}` compile ผ่านสะอาด และจะ fail ก็ต่อเมื่อบรรทัด template นั้น run จริง ด้วย `invalid_snippet_arguments`
+- **"`<slot>` ใน component Svelte 5 คือ error หนัก"** ไม่จริง — พิสูจน์แล้วด้านบนว่ายัง compile และ render ถูกต้อง มันเป็นแค่ deprecation *warning* ไม่ใช่การถอดออก
+- **"snippet ที่มี default parameter ทำงานเหมือน default ของ component prop"** แนวคิดคล้ายกันแต่กลไกต่าง — default ของ snippet เป็น semantics ของ default parameter แบบ JS ธรรมดา ที่ evaluate ตอน `{@render}` ไม่ใช่ destructuring ของ `$props()`
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิวโค้ด snippet ที่ generate มา ให้เช็ค:
+
+- มี `{#snippet ...}` ที่ถูกอ้างเป็น `{name(args)}` ที่ไหนแทนที่จะเป็น `{@render name(args)}` ไหม? มัน compile ผ่านเงียบ ๆ และ fail ตอน runtime เท่านั้น พิสูจน์แล้วด้านบน — grep หาชื่อ snippet แล้วยืนยันว่าทุกจุดที่ใช้ผ่าน `{@render}`
+- มี `<slot>` ใช้ข้างใน component ที่ใช้ runes อยู่แล้ว (`$state`, `$props()` ฯลฯ) ไหม? มันยังทำงานได้ (พิสูจน์แล้วด้านบน) แต่การผสม slot ของ Svelte 4 เข้ากับ runes ของ Svelte 5 ในไฟล์เดียวกันไม่สม่ำเสมอ และมี deprecation warning จริง — ควรเป็น `children`/named snippet prop แทน
+- default parameter ของ snippet ถูกสมมติว่าครอบคลุมค่า "falsy" ของผู้เรียก (`0`, `''`, `false`) ทั้งที่จริงมัน trigger เฉพาะตอน `undefined` เท่านั้นไหม?
+- มี snippet ที่นิยามไว้แต่ไม่เคย render ที่ไหนเลยไหม (markup ตาย หรือพิมพ์ชื่อผิดตอนส่งให้ `{@render}`)?
+
+<SpotTheBug code={`<script>
+  let count = $state(0);
+</script>
+
+<div>{count}</div>
+
+<slot />
+
+<button onclick={() => count++}>+1</button>`}>
+component นี้ผสม **runes** (`$state`) เข้ากับ element **`<slot>` ของ Svelte 4** มันยัง compile และ render เนื้อหาของ parent ได้ถูกต้อง — `<slot>` backward-compatible ไม่ได้ถูกถอดออก — แต่ compiler จะออก deprecation warning จริง: `Using <slot> to render parent content is deprecated. Use {@render ...} tags instead` (พิสูจน์แล้วด้านบน) โค้ดที่ generate มาผสมยุคแบบนี้เป็นสัญญาณว่าโมเดลถูก train ด้วยตัวอย่างผสมทั้ง Svelte 4 และ 5 วิธีแก้: ให้ component มี prop `children` ผ่าน `$props()` แล้ว render ด้วย `{@render children()}` ให้ตรงกับ style runes ของไฟล์ที่เหลือ
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**snippet** คือ block ของ markup ที่มีชื่อและรับพารามิเตอร์: นิยามด้วย **`{#snippet name(params)}…{/snippet}`** และ render ด้วย **`{@render name(args)}`** snippet ทำให้ template DRY และเป็น **ตัวแทน `<slot>` ใน Svelte 5** — ทรงพลังกว่าเพราะรับพารามิเตอร์และเป็น first-class value ที่ส่งไปมาและเลือกได้
+**snippet** คือ block ของ markup ที่มีชื่อและรับ parameter ได้: นิยามด้วย **`{#snippet name(params)}…{/snippet}`** และ render ด้วย **`{@render name(args)}`** — parameter รองรับ **default value** แบบ JS ธรรมดา ใช้เมื่อ argument เป็น `undefined` การเรียก snippet ตรง ๆ (`{name(args)}`) แทนที่จะผ่าน `{@render}` compile ผ่านสบาย ๆ แต่ throw error จริง `invalid_snippet_arguments` ทันทีที่ run พิสูจน์แล้วด้านบน Snippets คือ **ตัวแทน `<slot>` ของ Svelte 5** ซึ่งยัง compile และทำงานได้ทุกวันนี้แต่ deprecated แล้ว (warning จริง พิสูจน์แล้วด้านบน) — ทรงพลังกว่า slot เพราะรับ parameter ได้และเป็น first-class value ที่ส่งต่อและเลือกได้
 </Callout>
 
 export const quizSnippets = [
   {
-    q: 'นิยามและ render snippet ยังไง?',
+    q: 'นิยามและ render snippet อย่างไร?',
     options: [
       'ด้วย `<slot>` และ `<template>`',
       'นิยามด้วย `{#snippet name()}…{/snippet}`, render ด้วย `{@render name()}`',
@@ -85,36 +204,51 @@ export const quizSnippets = [
       'ด้วย `use:snippet`',
     ],
     answer: 1,
+    explain: 'snippet ถูก declare ด้วย {#snippet}...{/snippet} และ render ได้ผ่าน {@render} เท่านั้น — การเรียกด้วยวิธีอื่นคือ error จริงตอน runtime พิสูจน์แล้วด้านบน',
   },
   {
-    q: 'snippet มาแทนอะไรใน Svelte 5?',
+    q: 'snippet แทนที่อะไรใน Svelte 5?',
     options: [
-      'props',
+      'Props',
       'กลไก `<slot>` ของ Svelte 4',
       'Stores',
-      'events',
+      'Events',
     ],
     answer: 1,
+    explain: 'Snippets คือตัวแทน <slot> ของ Svelte 5 — ทรงพลังกว่าเพราะรับ parameter ได้และเป็น first-class value',
   },
   {
-    q: 'ทำไม snippet ถึงทรงพลังกว่า slot?',
+    q: '```svelte\n{#snippet row(item)}\n  <li>{item}</li>\n{/snippet}\n{row(1)}\n```\nเกิดอะไรขึ้นตอนบรรทัดนี้ run?',
     options: [
-      'พิมพ์เร็วกว่า',
-      'รับพารามิเตอร์ได้และเป็น first-class value ที่ส่งไปมาและเลือกได้',
-      'ถูก style อัตโนมัติ',
-      'run บน server',
+      'compile และ render <li>1</li> ตามปกติ',
+      'compile ผ่านสบาย ๆ แต่ throw invalid_snippet_arguments ตอน runtime — snippet ต้องถูกเรียกผ่าน {@render} เท่านั้น',
+      'เป็น type error ตอน compile',
+      'render อะไรไม่ได้เลยแบบเงียบ ๆ',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้านบน: การเรียก snippet ตรง ๆ ทำให้ argument ของคุณไปแทนที่ตำแหน่งที่ Svelte สงวนไว้สำหรับ DOM anchor ของตัวเอง ซึ่ง throw invalid_snippet_arguments ทันทีที่โค้ดนั้น run — โดยไม่มี warning ตอน compile เลย',
   },
   {
-    q: 'snippet รับพารามิเตอร์ได้ไหม?',
+    q: 'parameter ของ snippet มี default value ได้ไหม?',
     options: [
       'ไม่ได้',
-      'ได้ — เหมือนฟังก์ชัน เช่น `{#snippet row(item)}` render ด้วย `{@render row(x)}`',
-      'ได้แค่ string',
-      'ได้แค่บน server',
+      'ได้ — เหมือน function เช่น `{#snippet greeting(name = \'friend\')}` ใช้เมื่อ argument เป็น undefined',
+      'ได้เฉพาะ parameter ตัวแรก',
+      'ได้เฉพาะไฟล์ TypeScript',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วย test จริง: การเรียก greeting(undefined) render "Hello, friend!" ผ่านกลไก default parameter แบบ JS ธรรมดา',
+  },
+  {
+    q: '```svelte\n<script>\n  let count = $state(0);\n</script>\n<slot />\n```\nอะไรคือความจริงเกี่ยวกับ `<slot>` ใน component Svelte 5 ที่เป็น runes-mode?',
+    options: [
+      'เป็น compile error หนัก — slot ถูกถอดออกแล้ว',
+      'ยัง compile และทำงานได้ (backward-compatible) แต่ออก deprecation warning จริงบอกให้ใช้ {@render} แทน',
+      'ไม่ทำอะไรเลยแบบเงียบ ๆ',
+      'ทำงานเฉพาะไฟล์ TypeScript',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้วด้านบน: warning จริงคือ "Using <slot> to render parent content is deprecated. Use {@render ...} tags instead" — และเนื้อหาของ parent ก็ยัง render ถูกต้องข้างใต้มัน',
   },
 ];
 

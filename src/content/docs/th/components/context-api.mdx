@@ -1,6 +1,6 @@
 ---
 title: 'The Context API'
-description: 'setContext และ getContext สำหรับแชร์ข้อมูลลง component tree โดยไม่ต้อง prop drilling, รวม context กับ runed state และควรใช้เมื่อไร'
+description: 'setContext และ getContext สำหรับแชร์ข้อมูลลง component tree โดยไม่ต้อง prop drilling, ผสม context กับ runed state (พิสูจน์ด้วย test จริง) และควรใช้เมื่อไร'
 sidebar:
   order: 4
 ---
@@ -9,13 +9,14 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## context หลีกเลี่ยง prop drilling
+## Context หลีกเลี่ยง prop drilling
 
-เมื่อ component ที่ nested หลายตัวต้องการข้อมูลเดียวกัน — theme, user ปัจจุบัน, shared state ของ form — การส่งผ่านทุก component กลางในฐานะ props (**prop drilling**) น่ารำคาญและรก **context** ให้ ancestor set ค่าที่ descendant ไหนก็อ่านได้โดยตรง
+เมื่อ component ที่ nest ลึกหลายตัวต้องการข้อมูลเดียวกัน — theme, user ปัจจุบัน, shared state ของฟอร์ม — การส่งผ่านทุก component ตรงกลางเป็น prop (**prop drilling**) น่าเบื่อและรก **Context** ให้ ancestor ตั้งค่าที่ descendant ตัวไหนก็อ่านได้ตรง ๆ
 
-- **`setContext(key, value)`** — เรียกใน component ตอน initialization; ทำให้ `value` ใช้ได้กับ descendant ทุกตัวภายใต้ `key`
-- **`getContext(key)`** — เรียกใน descendant ไหนก็ได้; อ่านค่าของ ancestor ที่ใกล้ที่สุดสำหรับ `key`
+- **`setContext(key, value)`** — เรียกใน component ตอน initialization; ทำให้ `value` ใช้ได้กับทุก descendant ภายใต้ `key`
+- **`getContext(key)`** — เรียกใน descendant ตัวไหนก็ได้; อ่านค่าของ ancestor ที่ใกล้ที่สุดสำหรับ `key`
 
 ```svelte
 <!-- Parent.svelte -->
@@ -36,15 +37,15 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 <div class={theme}>…</div>
 ```
 
-<Mermaid title="context ไหลลงไปหา descendant ทุกตัว" code={ctxDiagram} />
+<Mermaid title="Context ไหลลงถึง descendant ทุกตัว" code={ctxDiagram} />
 
 export const ctxDiagram = `flowchart TB
-  parent["Ancestor: setContext theme value"] --> mid["component กลาง\n(ไม่ต้องใช้ props)"]
-  mid --> child["Descendant: getContext theme"]`;
+  parent["Ancestor: setContext('theme', value)"] --> mid["intermediate components\n(no props needed)"]
+  mid --> child["Descendant: getContext('theme')"]`;
 
-## reactive context ด้วย runes
+## Reactive context ด้วย runes
 
-`setContext` run ครั้งเดียวตอน init — *ค่า* ที่เก็บไม่ reactive ในตัวเอง ถ้าจะแชร์ข้อมูลที่ **reactive** ให้ใส่ runed object เข้า context แล้วอ่าน property ของตัวเองใน descendant; เพราะ `$state` object เป็น deeply reactive การเปลี่ยนแปลงจึงกระจายไป
+`setContext` run ครั้งเดียวตอน init — *value* ที่มันเก็บไม่ reactive ด้วยตัวเอง ถ้าจะแชร์ข้อมูลแบบ **reactive** ให้ใส่ runed object เข้า context แล้วอ่าน property ของมันใน descendant เพราะ `$state` object reactive แบบ deep การเปลี่ยนแปลงจึงกระจายไปได้
 
 ```svelte
 <!-- Store a runed object, not a plain snapshot -->
@@ -55,18 +56,129 @@ export const ctxDiagram = `flowchart TB
 </script>
 ```
 
-pattern ที่พบบ่อยคือ factory เล็ก ๆ ที่สร้าง runed state และจับคู่ `setContext`/`getContext` ไว้หลัง helper function ที่มี type เพื่อให้ผู้ใช้แค่เรียก `getCart()`
+pattern ที่พบบ่อยคือ factory เล็ก ๆ ที่สร้าง runed state แล้วผูก `setContext`/`getContext` ไว้หลัง typed helper function เพื่อให้ consumer เรียกแค่ `getCart()`
 
-## context vs props vs global state
+### พิสูจน์ความต่าง: plain object กับ `$state` object
 
-- **Props** — ดีที่สุดสำหรับข้อมูล parent→child ตรง ๆ ชัดเจนและ trace ง่าย
-- **Context** — ดีที่สุดเมื่อข้อมูลต้องใช้โดย descendant *หลายตัว* ในความลึกต่างกัน (theme, auth, shared state ของ widget) และ scope อยู่ใน subtree
-- **Module state** (`.svelte.js`) — ดีที่สุดสำหรับ state ที่ global จริง ๆ แต่ต้องระวัง SSR (module singleton ถูกแชร์ข้าม request บน server — โมดูล state-management อธิบายเรื่องนี้)
+```svelte
+<!-- src/lib/ContextConsumer.svelte -->
+<script lang="ts">
+  import { getContext } from 'svelte';
+  const cart = getContext<{ items: string[] }>('cart');
+</script>
+<span data-testid="count">{cart.items.length}</span>
+```
 
-สิ่งสำคัญคือ context เป็น **ต่อ component tree และต่อ render** ดังนั้นบน server แต่ละ request จึงได้ context ของตัวเอง — ทำให้ context เป็นวิธีแชร์ state ระดับ request แบบ SSR-safe ไม่เหมือน module-level singleton
+```svelte
+<!-- src/lib/ContextProviderPlain.svelte -->
+<script lang="ts">
+  import { setContext } from 'svelte';
+  import ContextConsumer from './ContextConsumer.svelte';
+  const cart = { items: [] as string[] }; // BUG: plain object, not reactive
+  setContext('cart', cart);
+</script>
+<button data-testid="add" onclick={() => cart.items.push('x')}>add</button>
+<ContextConsumer />
+```
+
+```svelte
+<!-- src/lib/ContextProviderReactive.svelte -->
+<script lang="ts">
+  import { setContext } from 'svelte';
+  import ContextConsumer from './ContextConsumer.svelte';
+  const cart = $state({ items: [] as string[] }); // fixed: runed state
+  setContext('cart', cart);
+</script>
+<button data-testid="add" onclick={() => cart.items.push('x')}>add</button>
+<ContextConsumer />
+```
+
+```ts
+// src/lib/context.test.ts
+import { test, expect } from 'vitest';
+import { render, fireEvent } from '@testing-library/svelte';
+import ContextProviderPlain from './ContextProviderPlain.svelte';
+import ContextProviderReactive from './ContextProviderReactive.svelte';
+
+test('a plain object in context does NOT update the UI on mutation', async () => {
+  const { container } = render(ContextProviderPlain);
+  const count = () => container.querySelector('[data-testid="count"]')!.textContent;
+  expect(count()).toBe('0');
+  await fireEvent.click(container.querySelector('[data-testid="add"]')!);
+  // still '0': the descendant never re-renders because a plain object isn't reactive
+  expect(count()).toBe('0');
+});
+
+test('a $state object in context DOES update the UI on mutation', async () => {
+  const { container } = render(ContextProviderReactive);
+  const count = () => container.querySelector('[data-testid="count"]')!.textContent;
+  expect(count()).toBe('0');
+  await fireEvent.click(container.querySelector('[data-testid="add"]')!);
+  expect(count()).toBe('1');
+});
+```
+
+```text
+✓ a plain object in context does NOT update the UI on mutation
+✓ a $state object in context DOES update the UI on mutation
+```
+
+`setContext`/`getContext` เรียกเหมือนกัน mutation เดียวกัน (`cart.items.push('x')`) — ความต่าง *เดียว* คือ value ที่ส่งให้ `setContext` ถูกห่อด้วย `$state` หรือเปล่า ไม่มี error ไม่มี warning ทั้งสองแบบ: plain object ใน context ไม่ trigger re-render เลยแบบเงียบ ๆ
+
+## Context เทียบ props เทียบ global state
+
+- **Props** — เหมาะกับข้อมูล parent→child ตรง ๆ ชัดเจนและ trace ง่าย
+- **Context** — เหมาะเมื่อข้อมูลถูกต้องการโดย descendant *หลายตัว* ที่ความลึกต่างกัน (theme, auth, shared state ของ widget) และ scope อยู่ที่ subtree
+- **Module state** (`.svelte.js`) — เหมาะกับ state ที่ app-global จริง ๆ แต่ต้องระวัง SSR (module singleton ถูกแชร์ข้าม request บน server — โมดูล state-management พูดถึงเรื่องนี้)
+
+ที่สำคัญคือ context เป็น **ต่อ component tree และต่อ render** ดังนั้นบน server แต่ละ request ได้ context ของตัวเอง — ทำให้มันเป็นวิธีแชร์ request-scoped state ที่ **SSR-safe** ต่างจาก module-level singleton
+
+## Mental Model
+
+Context คือ **read channel ที่ผูกกับ component tree** ไม่ใช่ value store ของตัวมันเอง — `setContext` แค่ลงทะเบียนว่า "นี่คือ value สำหรับ key นี้ สำหรับใครก็ตามที่ render อยู่ข้างล่างฉัน" value นั้น reactive หรือไม่ ขึ้นอยู่กับ *สิ่งที่คุณใส่เข้าไป* ทั้งหมด: plain object คือ snapshot ที่แช่แข็งส่งลงไปครั้งเดียว; `$state` object คือ reference ที่มีชีวิตที่ descendant อ่านจากมันจริง ๆ พิสูจน์แล้วด้านบน context เองไม่เคย run ซ้ำ, เช็คซ้ำ, หรือ diff อะไรเลย — reactivity ทั้งหมดถ้ามี มาจาก rune ของ value เอง
+
+## ข้อแลกเปลี่ยน
+
+| ได้อะไร | ประโยชน์ | ต้นทุน |
+|---|---|---|
+| context แทน prop drilling | ไม่ต้องร้อย value ผ่าน component ที่ไม่ได้ใช้มัน | ชัดเจนน้อยกว่า props — แหล่งข้อมูลของ descendant ไม่เห็นที่ call site |
+| `$state` object ใน context | update สด ๆ กระจายถึงทุก descendant พิสูจน์แล้วด้านบน | ลืม wrapper ง่าย — plain object ไม่ update เลยแบบเงียบ ๆ พิสูจน์แล้วด้านบน ไม่มี error |
+| context แทน module singleton | ต่อ render ต่อ tree — ปลอดภัยสำหรับ request-scoped state บน server | descendant ของ component ที่เรียก setContext เท่านั้นที่เข้าถึงได้; sibling/ancestor อ่านไม่ได้ |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"ใส่ object อะไรก็ได้ใน `setContext` แล้วมันจะ reactive"** ไม่จริง — พิสูจน์แล้วด้านบน plain object ที่ mutate หลัง `setContext` ทำให้ UI update เป็นศูนย์ แบบเงียบ ๆ มีแค่ value ที่ห่อด้วย `$state` เท่านั้นที่มีชีวิตจริง
+- **"ถ้า context ไม่ reactive Svelte จะเตือนคุณ"** ไม่จริง — สอง test case ด้านบน run เหมือนกันทุกอย่างยกเว้น wrapper `$state()` หนึ่งตัว และมีแค่อันเดียวที่ update ไม่ได้ โดยไม่มี console output เลยทั้งคู่
+- **"context ก็แค่ global variable"** context scope อยู่ที่ component tree และ render เดียว โมดูล state-and-stores พูดถึงว่าทำไมสิ่งนี้สำคัญกับ SSR โดยเฉพาะ ที่ module-level singleton จริง ๆ จะรั่วข้าม request
+
+## อ่านโค้ดที่ AI เขียน
+
+เวลารีวิวโค้ด context ที่ generate มา ให้เช็ค:
+
+- value ที่ส่งให้ `setContext` เป็น plain object/array literal (`{ items: [] }`, `[]`) ที่ถูก **mutate** ทีหลัง โดยคาดหวังว่า descendant จะเห็น update ไหม? พิสูจน์แล้วด้านบน: ถ้าไม่มี `$state` จะไม่เห็น
+- component provider แบบ "cart" / "auth" / "theme" reassign context value ทุกครั้งที่เปลี่ยน (`setContext('cart', newCart)` ข้างใน event handler) แทนที่จะ mutate `$state` object ที่ตั้งไว้ครั้งเดียวตอน init ไหม? การเรียก `setContext` ซ้ำหลัง init เป็นสัญญาณว่าโค้ดกำลังฝืนดีไซน์แบบครั้งเดียวตอน init แทนที่จะใช้มัน
+- `getContext` ถูกเรียก**นอก** component initialization ที่ไหนไหม (ข้างใน `setTimeout` หรือหลัง `await`)? เหมือน `setContext` มันต้อง run ระหว่าง init แบบ synchronous ของ component — เรียกช้าเกินไปจะไม่มี "component ปัจจุบัน" ให้ผูกด้วย
+
+<SpotTheBug code={`<!-- CartProvider.svelte -->
+<script>
+  import { setContext } from 'svelte';
+  import CartTotal from './CartTotal.svelte';
+
+  const cart = { items: [] }; // looks fine at a glance
+  setContext('cart', cart);
+
+  function addItem(item) {
+    cart.items.push(item); // mutating the "shared" cart
+  }
+</script>
+
+<button onclick={() => addItem({ name: 'Tea', price: 2 })}>Add tea</button>
+<CartTotal />`}>
+`cart` เป็น plain object literal ไม่เคยถูกห่อด้วย `$state` การเรียก `addItem` push เข้า `cart.items` จริง — ข้อมูลถูกต้อง — แต่เพราะ `cart` ไม่ reactive `<CartTotal>` (ที่อ่านมันผ่าน `getContext('cart')`) ไม่เคย re-render เพื่อสะท้อนยอดรวมใหม่เลย พิสูจน์แล้วด้านบนด้วย repro แบบเดียวกันเป๊ะ ไม่มี error ไม่มี warning เลย ยอดรวมก็แค่ผิดเงียบ ๆ ต่อไปจนกว่าจะมีอะไรอื่นที่ไม่เกี่ยวข้องทำให้ re-render วิธีแก้มีคำเดียว: `const cart = $state({ items: [] });`
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**`setContext(key, value)`** (เรียกตอน init) แชร์ข้อมูลกับ descendant ทุกตัว อ่านผ่าน **`getContext(key)`** — กำจัด prop drilling ค่าที่เก็บไม่ reactive ในตัวเอง จึงต้องใส่ **runed `$state` object** เข้า context เพื่อแชร์ข้อมูลที่ update แบบ live เลือก context เหนือ props เมื่อ descendant หลายตัวต้องการข้อมูล และเพราะ context scope ต่อ tree และต่อ render context จึงเป็นตัวเลือก **SSR-safe** สำหรับ state ระดับ request
+**`setContext(key, value)`** (เรียกตอน init) แชร์ข้อมูลกับ descendant ทุกตัว อ่านผ่าน **`getContext(key)`** — ตัด prop drilling ออกไป value ที่เก็บไม่ reactive ด้วยตัวเอง จึงต้องใส่ **runed `$state` object** เข้า context เพื่อแชร์ข้อมูลแบบ update สด — พิสูจน์แล้วด้านบน: plain object ที่ mutate หลัง `setContext` ทำให้ UI update เป็นศูนย์แบบเงียบ ๆ ไม่มี error หรือ warning ทั้งคู่ เลือก context แทน props เมื่อ descendant หลายตัวต้องการข้อมูลนั้น และเพราะ context scope ต่อ tree และต่อ render มันจึงเป็นตัวเลือกที่ **SSR-safe** สำหรับ shared state ที่ scope ต่อ request
 </Callout>
 
 export const quizContext = [
@@ -74,41 +186,56 @@ export const quizContext = [
     q: 'context แก้ปัญหาอะไร?',
     options: [
       'การจัด style component',
-      'แชร์ข้อมูลกับ descendant หลายตัวโดยไม่ต้อง thread ผ่านทุก component กลางในฐานะ props',
-      'server rendering',
-      'animation',
+      'แชร์ข้อมูลกับ descendant หลายตัวโดยไม่ต้องร้อยมันผ่าน component ตรงกลางทุกตัวเป็น prop',
+      'Server rendering',
+      'Animation',
     ],
     answer: 1,
+    explain: 'context ให้ ancestor ลงทะเบียน value ไว้ใต้ key ที่ descendant ตัวไหนก็อ่านได้ตรง ๆ ด้วย getContext ข้ามการ prop drilling ผ่าน component ที่แค่ส่งต่อ value',
   },
   {
-    q: 'แชร์ข้อมูลที่ reactive ผ่าน context ยังไง?',
+    q: '```svelte\n<script>\n  let cart = $state({ items: [] });\n  setContext(\'cart\', cart);\n</script>\n```\nทำไมการห่อ `cart` ด้วย `$state` ตรงนี้ถึงสำคัญ?',
     options: [
-      'setContext reactive เสมอ',
-      'ใส่ runed `$state` object เข้า context; descendant อ่าน property ของตัวเองและเห็น update แบบ live',
-      'ใช้ store prefix ใน setContext',
-      'แชร์ข้อมูล reactive ไม่ได้',
+      'ไม่สำคัญเลย — setContext ทำให้ value ไหน ๆ reactive อัตโนมัติอยู่แล้ว',
+      'ถ้าไม่ห่อ การ mutate cart.items ทีหลังจะทำให้ descendant ไม่ update UI เลยแบบเงียบ ๆ พิสูจน์แล้วด้านบนด้วย repro แบบเดียวกันเป๊ะ',
+      'สำคัญแค่กับการ type-check ของ TypeScript เท่านั้น',
+      '$state เป็น syntax ที่บังคับสำหรับ setContext และไม่มีผลอย่างอื่นเลย',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้วย test จริงด้านบน: มีแค่ cart ที่ห่อด้วย $state เท่านั้นที่ update UI ตอน mutate; plain object ไม่ update เลย โดยไม่มี error ทั้งคู่',
   },
   {
-    q: 'ทำไม context ถึงปลอดภัยกว่า module-level singleton สำหรับ state ระดับ request บน server?',
+    q: 'ทำไม context ปลอดภัยกว่า module-level singleton สำหรับ request-scoped state บน server?',
     options: [
       'เร็วกว่า',
-      'context scope ต่อ component tree และต่อ render แต่ละ SSR request จึงได้ของตัวเอง — module singleton ถูกแชร์ข้าม request',
+      'context scope ต่อ component tree และต่อ render ดังนั้นแต่ละ request บน SSR ได้ของตัวเอง — module singleton ถูกแชร์ข้าม request',
       'ใช้ memory น้อยกว่า',
-      'ไม่ต่างกัน',
+      'ไม่ต่างกันเลย',
     ],
     answer: 1,
+    explain: 'ตัวแปร module-level คือ instance เดียวที่แชร์ข้ามทุก request ที่ server จัดการ; context ถูกสร้างใหม่ต่อ render ซึ่งตรงกับต่อ request บน server พอดี',
   },
   {
-    q: 'ควรเลือก props เหนือ context เมื่อไร?',
+    q: '```svelte\n<script>\n  const cart = { items: [] };\n  setContext(\'cart\', cart);\n  function addItem(item) { cart.items.push(item); }\n</script>\n```\nเกิดอะไรขึ้นกับ descendant ที่อ่าน `getContext(\'cart\').items.length` หลัง `addItem` run?',
     options: [
-      'เสมอ',
-      'สำหรับข้อมูล parent→child ตรง ๆ ที่ต้องการ flow ที่ชัดและ trace ได้',
-      'ไม่มีวัน',
-      'แค่บน server',
+      'มัน throw error',
+      'มันไม่ update ใน UI เลยแบบเงียบ ๆ — object ไม่เคยถูกห่อด้วย $state พิสูจน์แล้วด้านบน',
+      'มัน update ถูกต้อง',
+      'Svelte log warning เรื่อง context ไม่ reactive',
     ],
     answer: 1,
+    explain: 'พิสูจน์แล้วด้านบนด้วย repro แบบเดียวกันเป๊ะ: การ mutate plain object ที่เก็บผ่าน setContext ทำให้ descendant re-render เป็นศูนย์ และไม่มี warning บอกเหตุผลเลย',
+  },
+  {
+    q: 'ควรเลือก props แทน context เมื่อไร?',
+    options: [
+      'เสมอ',
+      'สำหรับข้อมูล parent-to-child ตรง ๆ ที่ flow ชัดเจน trace ได้',
+      'ไม่ควรใช้ props เลย',
+      'เฉพาะบน server',
+    ],
+    answer: 1,
+    explain: 'props ทำให้แหล่งข้อมูลเห็นที่ call site; context คุ้มค่ากับความอ้อมเมื่อ descendant หลายตัวที่ความลึกต่างกันต้องการ value เดียวกันจริง ๆ',
   },
 ];
 
