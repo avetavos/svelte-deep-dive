@@ -20,3 +20,6 @@ pnpm-debug.log*
 # macOS-specific files
 .DS_Store
 .vercel
+
+# snippet-verification harness probe (scaffolded/regenerated, see tools/verify-snippets.mjs)
+tools/probe/
