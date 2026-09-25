@@ -1,6 +1,6 @@
 ---
 title: 'The Store Contract'
-description: 'store ของ Svelte จริง ๆ คืออะไร — object ใด ๆ ที่มี method subscribe — และ prefix $store ทำ auto-subscribe, re-render และ cleanup ให้ยังไง'
+description: 'store ของ Svelte จริง ๆ คืออะไร — object ที่มี subscribe method — $store auto-subscribe อย่างไร (พิสูจน์แล้ว: เป็น compile error นอก component top level), ทำไม get(store) ไม่ฟรี (พิสูจน์ด้วย start function ที่นับจำนวน) และ derived store ที่ resolve แบบ async'
 sidebar:
   order: 2
 ---
@@ -9,20 +9,24 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## store คือแค่ contract
+## A store is just a contract
 
-Svelte store ไม่มีอะไร magic เลย **store คือ object ใด ๆ ที่มี method `subscribe`** ที่รับ callback แล้วเรียก callback นั้นด้วยค่าปัจจุบัน ทั้งทันทีและทุกครั้งที่ค่าเปลี่ยน — โดย return ฟังก์ชัน *unsubscribe* กลับมา นั่นคือ contract ทั้งหมด:
+ไม่มีอะไรวิเศษเกี่ยวกับ Svelte store เลย **store คือ object ใด ๆ ที่มี `subscribe` method** ที่รับ callback แล้วเรียกมันด้วยค่าปัจจุบัน ทันทีและทุกครั้งที่มีการเปลี่ยนแปลง — แล้วคืนค่าเป็นฟังก์ชัน *unsubscribe* นี่คือ contract ทั้งหมด:
 
 ```js
+// src/lib/hand-rolled-counter.js
 // The minimal store contract, written by hand.
-function createCounter() {
+export function createCounter() {
   let value = 0;
+  /** @type {Set<(value: number) => void>} */
   const subscribers = new Set();
 
   return {
+    /** @param {(value: number) => void} fn */
     subscribe(fn) {
-      fn(value);                       // 1. call immediately with the current value
+      fn(value); // 1. call immediately with the current value
       subscribers.add(fn);
       return () => subscribers.delete(fn); // 2. return an unsubscribe function
     },
@@ -34,13 +38,21 @@ function createCounter() {
 }
 ```
 
-เพราะ contract เล็กขนาดนี้ *อะไรก็ตาม* ที่ทำตาม contract นี้ได้ก็เป็น store — รวมถึง RxJS observable (ที่ก็มี `subscribe` ที่เข้ากันได้) ความ interoperable นี้คือเหตุผลที่ Svelte นิยาม contract ไว้แทนที่จะเป็น class ตายตัว
+เพราะ contract เล็กขนาดนี้ *อะไรก็ตาม* ที่ implement มันคือ store — รวมถึง RxJS observable ด้วย (ซึ่งก็มี `subscribe` ที่เข้ากันได้เช่นกัน) ความสามารถในการ interop นี้แหละคือเหตุผลที่ Svelte นิยาม contract แทนที่จะเป็น concrete class
 
-## prefix `$` ทำ auto-subscribe ให้
+## The `$` prefix auto-subscribes
 
-การเขียน `store.subscribe(...)` เองในทุกคอมโพเนนต์คงน่าเบื่อและ leak ง่าย ในคอมโพเนนต์ Svelte ให้ shorthand **`$store`**: เติม `$` หน้า store แล้ว Svelte จะ subscribe ให้ ให้ค่าปัจจุบัน re-render เมื่อค่าเปลี่ยน และ **unsubscribe ให้อัตโนมัติ** เมื่อคอมโพเนนต์ถูกทำลาย
+การเขียน `store.subscribe(...)` มือทุกครั้งในทุก component คงน่าเบื่อและเสี่ยง leak ภายใน component Svelte ให้ทางลัด **`$store`**: ใส่ `$` นำหน้า store แล้ว Svelte จะ subscribe ให้เอง ให้ค่าปัจจุบัน re-render ตอนมันเปลี่ยน และ **unsubscribe อัตโนมัติ** ตอน component ถูกทำลาย
+
+```js
+// src/lib/counter.js
+import { createCounter } from './hand-rolled-counter.js';
+
+export const counter = createCounter();
+```
 
 ```svelte
+<!-- src/lib/CounterDisplay.svelte -->
 <script>
   import { counter } from './counter.js';
 </script>
@@ -49,68 +61,380 @@ function createCounter() {
 <button onclick={counter.increment}>count is {$counter}</button>
 ```
 
-<Mermaid title="prefix $ ทำอะไรให้บ้าง" code={dollarDiagram} />
+<Mermaid title="สิ่งที่ $ prefix ทำให้คุณ" code={dollarDiagram} />
 
 export const dollarDiagram = `flowchart LR
-  prefix["$store ในคอมโพเนนต์"] --> sub["subscribe ตอน mount"]
-  sub --> val["อ่านค่าปัจจุบัน"]
-  val --> rerender["re-render เมื่อค่าเปลี่ยน"]
-  rerender --> unsub["auto-unsubscribe ตอน destroy"]`;
+  prefix["$store in a component"] --> sub["subscribe on mount"]
+  sub --> val["read the current value"]
+  val --> rerender["re-render on change"]
+  rerender --> unsub["auto-unsubscribe on destroy"]`;
 
-คุณยัง assign ให้ `$store` ได้ด้วย (`$counter = 5`) ถ้า store เป็น writable — Svelte จะ compile เป็นการเรียก `set` ของ store prefix `$` ใช้ได้เฉพาะในไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เพราะเป็น compiler magic ไม่ใช่ฟังก์ชัน runtime
+คุณ assign เข้า `$store` ได้ด้วย (`$counter = 5`) ถ้า store เป็น writable — Svelte จะ compile เป็นการเรียก `set` ของ store `$` prefix ทำงานได้เฉพาะใน `.svelte` file และ `.svelte.js`/`.svelte.ts` module เท่านั้น เพราะมันคือ compiler magic ไม่ใช่ runtime function
+
+## get(): อ่านครั้งเดียว แต่ไม่ฟรี — พิสูจน์แล้ว
+
+`svelte/store` export **`get(store)`** สำหรับอ่านค่าปัจจุบันของ store ครั้งเดียว นอก component โดยไม่ต้องเก็บ subscription ไว้ มันสะดวก แต่**ไม่ใช่**การอ่าน property แบบฟรี ๆ เบื้องหลัง `get` เรียก `store.subscribe(...)` แล้วเรียกฟังก์ชัน unsubscribe ที่ได้กลับมาทันที ทุกการเรียกจ่ายต้นทุนเต็ม ๆ ของ **start → stop** — พิสูจน์ตรง ๆ ด้วย start function ที่นับจำนวน:
+
+```ts
+// src/lib/get-pitfall.test.ts
+import { get, readable, writable } from 'svelte/store';
+import { expect, test } from 'vitest';
+
+test('get(store) subscribes AND immediately unsubscribes — proven with a counting start function', () => {
+  let starts = 0;
+  let stops = 0;
+  const store = readable(0, () => {
+    starts++;
+    return () => {
+      stops++;
+    };
+  });
+
+  get(store);
+  expect(starts).toBe(1);
+  expect(stops).toBe(1); // get() already tore the subscription down before returning
+
+  get(store);
+  get(store);
+  expect(starts).toBe(3); // every get() pays the full start/stop cost again
+  expect(stops).toBe(3);
+});
+
+test('cost in a hot loop: N calls to get() cause N start/stop cycles, not one', () => {
+  let starts = 0;
+  const store = readable(0, () => {
+    starts++;
+    return () => {};
+  });
+
+  for (let i = 0; i < 50; i++) {
+    get(store);
+  }
+  expect(starts).toBe(50); // a real, measurable per-call cost — avoid get() in a loop
+
+  // Contrast: a single long-lived subscription pays the start cost exactly once
+  // no matter how many times the value is read off of it.
+  let subStarts = 0;
+  const store2 = readable(0, () => {
+    subStarts++;
+    return () => {};
+  });
+  let last = 0;
+  const unsub = store2.subscribe((v) => {
+    last = v;
+  });
+  for (let i = 0; i < 50; i++) {
+    void last; // read the already-subscribed value 50 times
+  }
+  expect(subStarts).toBe(1);
+  unsub();
+});
+
+test('a writable store\'s start function is NOT re-run by get() when there is already a live subscriber', () => {
+  let starts = 0;
+  const store = writable(0, () => {
+    starts++;
+    return () => {};
+  });
+  const unsub = store.subscribe(() => {});
+  expect(starts).toBe(1);
+
+  get(store); // reuses the existing subscription, no extra start/stop cycle
+  expect(starts).toBe(1);
+
+  unsub();
+});
+```
+
+```text
+✓ get(store) subscribes AND immediately unsubscribes — proven with a counting start function
+✓ cost in a hot loop: N calls to get() cause N start/stop cycles, not one
+✓ a writable store's start function is NOT re-run by get() when there is already a live subscriber
+
+Test Files  1 passed (1)
+     Tests  3 passed (3)
+```
+
+สำหรับ `writable`/`readable` ที่ไม่มี start function ต้นทุนนี้แทบไม่มีนัยสำคัญ (แค่ add/remove จาก `Set`) แต่สำหรับ `readable` ที่ห่อสิ่งที่แพงตอน start — การเชื่อมต่อ WebSocket, `setInterval`, listener ของ `MediaQuery` — การเรียก `get()` ใน loop หรือทุกครั้งที่ render จะเปิดแล้วปิด resource นั้นจริง ๆ ทุกครั้ง `$store` (หรือ subscription จริงที่เก็บไว้) จ่ายต้นทุน start แค่ครั้งเดียว ส่วน `get()` ใน hot path จ่ายทุกครั้งที่เรียก
+
+## Derived store ที่ resolve แบบ async
+
+`fn` ที่ส่งเข้า `derived` รับ **argument ตัวที่สองคือ `set`** แทนการ return ค่าตรง ๆ ได้ เมื่อทำแบบนี้ `derived` จะหยุด auto-set ค่าที่ return ให้คุณ — คุณเรียก `set` เองเมื่อพร้อม รวมถึงจากใน `setTimeout`/`fetch`/promise callback นี่คือวิธีที่ derived store แทนสถานะ "กำลังโหลด แล้วค่อย resolve" แทนค่าที่พร้อมใช้แบบ synchronous เสมอ:
+
+```ts
+// src/lib/derived-async-set.test.ts
+import { derived, get, writable } from 'svelte/store';
+import { expect, test, vi } from 'vitest';
+
+test('derived with a 2-arg fn (values, set) can set its value asynchronously, keeping the initial value until then', async () => {
+  vi.useFakeTimers();
+  const id = writable(1);
+
+  type UserState = { loading: boolean; name: string | null };
+  const user = derived<typeof id, UserState>(id, ($id, set) => {
+    set({ loading: true, name: null }); // sync initial value
+    const timer = setTimeout(() => {
+      set({ loading: false, name: `user-${$id}` }); // async set, later
+    }, 100);
+    return () => clearTimeout(timer); // cleanup cancels the in-flight "request"
+  }, { loading: true, name: null });
+
+  const seen: unknown[] = [];
+  const unsub = user.subscribe((v) => seen.push(v));
+
+  expect(get(user)).toEqual({ loading: true, name: null });
+
+  await vi.advanceTimersByTimeAsync(100);
+  expect(get(user)).toEqual({ loading: false, name: 'user-1' });
+
+  unsub();
+  vi.useRealTimers();
+});
+
+test('derived async: changing the source before the async set fires cancels the stale one via cleanup', async () => {
+  vi.useFakeTimers();
+  const id = writable(1);
+  const cancelled: number[] = [];
+
+  const user = derived(id, ($id, set) => {
+    const timer = setTimeout(() => set(`user-${$id}`), 100);
+    return () => {
+      clearTimeout(timer);
+      cancelled.push($id);
+    };
+  }, 'loading');
+
+  const unsub = user.subscribe(() => {});
+
+  id.set(2); // fires cleanup for the id=1 run before starting id=2's
+  expect(cancelled).toEqual([1]);
+
+  await vi.advanceTimersByTimeAsync(100);
+  expect(get(user)).toBe('user-2'); // only the CURRENT source's async set landed
+
+  unsub();
+  vi.useRealTimers();
+});
+```
+
+```text
+✓ derived with a 2-arg fn (values, set) can set its value asynchronously, keeping the initial value until then
+✓ derived async: changing the source before the async set fires cancels the stale one via cleanup
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+test ที่สองคือส่วนสำคัญด้าน correctness: `fn` ของ `derived` ถูกเรียกใหม่ทุกครั้งที่ source store เปลี่ยน และอะไรก็ตามที่มัน return จะถูกปฏิบัติเป็น **cleanup สำหรับ invocation นั้นโดยเฉพาะ** — ถูกเรียกก่อน invocation ถัดไปจะเริ่ม นี่คือสิ่งที่ยกเลิก timer/fetch ที่ค้างอยู่ของ `id=1` ทันทีที่ `id` กลายเป็น `2` request แรกที่ช้าจึงไม่มีทางไปทับ request ที่สองที่เร็วกว่าได้ การข้าม cleanup นี้ — เริ่ม `set` แบบ async ใหม่โดยไม่ยกเลิกอันเก่า — คือต้นเหตุของบั๊กแบบ "ชื่อ user ผิดคนกระพริบขึ้นจอ" พอดี
+
+## `$store` auto-subscribe เฉพาะที่ top level ของ component เท่านั้น
+
+`$store` shorthand ถูก compile ด้วยการเขียน `$name` ใหม่เป็น managed subscription ที่ตั้งค่าครั้งเดียวที่ top level ของ component ถ้า *ตัวแปร store เอง* ถูกประกาศใน scope ที่ซ้อนอยู่ข้างใน — ฟังก์ชัน, block `if`, อะไรก็ตามที่ไม่ใช่ instance หรือ module scope ของ component — Svelte เชื่อม subscription นั้นไม่ได้ และมันคือ **compile error** ไม่ใช่ runtime warning:
+
+```svelte
+<!-- @expect-error store declared inside a function, not at the component top level -->
+<!-- src/lib/BadNestedStore.svelte -->
+<script lang="ts">
+  import { writable } from 'svelte/store';
+
+  function makeIt() {
+    const count = writable(0); // declared INSIDE a function, not at the component top level
+    console.log($count);
+  }
+  makeIt();
+</script>
+```
+
+พิสูจน์แล้ว — นี่คือ error จริงที่ `svelte-check` รายงาน:
+
+```text
+$ svelte-check --tsconfig ./tsconfig.json
+src/lib/BadNestedStore.svelte:6:17
+Cannot subscribe to stores that are not declared at the top level of the component
+https://svelte.dev/e/store_invalid_scoped_subscription
+```
+
+การเรียก `compile()` ตัวเดียวกัน (ฟังก์ชัน compiler ที่ขับเคลื่อน `svelte-check`) throw error นี้ตรง ๆ และโค้ดแบบเดียวกันที่ประกาศ store ที่ top level compile ผ่านสะอาด:
+
+```ts
+// src/lib/store-in-function.test.ts
+import { compile } from 'svelte/compiler';
+import { expect, test } from 'vitest';
+
+test('$store auto-subscription is a COMPILE ERROR when the STORE ITSELF is declared inside a function (not at component top level)', () => {
+  const source = `
+<script>
+  import { writable } from 'svelte/store';
+
+  function makeIt() {
+    const count = writable(0); // declared INSIDE a function, not at top level
+    console.log($count);
+  }
+  makeIt();
+</script>
+`;
+  let thrown: any;
+  try {
+    compile(source, { filename: 'Bad.svelte' });
+  } catch (e) {
+    thrown = e;
+  }
+  expect(thrown).toBeDefined();
+  expect(thrown.code).toBe('store_invalid_scoped_subscription');
+  expect(thrown.message).toContain('Cannot subscribe to stores that are not declared at the top level of the component');
+});
+
+test('control: the exact same $store read at the component TOP LEVEL compiles fine', () => {
+  const source = `
+<script>
+  import { writable } from 'svelte/store';
+  const count = writable(0);
+  console.log($count); // top level: fine
+</script>
+`;
+  expect(() => compile(source, { filename: 'Good.svelte' })).not.toThrow();
+});
+```
+
+```text
+✓ $store auto-subscription is a COMPILE ERROR when the STORE ITSELF is declared inside a function (not at component top level)
+✓ control: the exact same $store read at the component TOP LEVEL compiles fine
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+สังเกตให้ชัดว่ากำลังเช็คอะไร: มันคือ *ตำแหน่งที่ตัวแปร store ถูกประกาศ* ที่สำคัญ ไม่ใช่ตำแหน่งที่ `$store` ถูกอ่าน store ที่ถูกสร้างที่ top level แล้วแค่*อ่าน*ใน callback ที่ซ้อนอยู่ข้างใน (เช่น event handler) เป็นเรื่องปกติทั่วไปและ compile ผ่านสบาย ๆ — นั่นคือสิ่งที่ตัวอย่าง `CounterDisplay.svelte` ข้างบนทำอยู่แล้วด้วย `onclick={counter.increment}` ที่อ่าน `$counter` ใน template error นี้พูดถึงเฉพาะ store ที่ไม่เคยมี binding ระดับ top level ที่ compiler รู้ได้แบบ static ให้ผูก subscription เข้าไป
 
 ## ทำไม contract ยังสำคัญใน Svelte 5
 
-ถึงแม้ runes จะครอบคลุม shared-state ส่วนใหญ่แล้ว (บทถัด ๆ ไป) store contract ก็ยังมีค่า:
+แม้ว่า rune ตอนนี้จะครอบคลุมความต้องการ shared-state ส่วนใหญ่แล้ว (บทถัดไป) store contract ยังมีคุณค่าอยู่:
 
-- **interop** source ใด ๆ ที่คล้าย observable และมี `subscribe` ที่เข้ากันได้ก็ใช้กับ `$` ได้ — RxJS, custom event stream, third-party library
-- **async source** `readable` (บทถัดไป) ห่อ source แบบ push (WebSocket, geolocation watcher) ไว้หลัง contract ง่าย ๆ อันเดียวกัน
-- **code เดิม** Svelte หลายล้านบรรทัดใช้ stores การเข้าใจ contract ช่วยให้คุณอ่านและดูแล code เหล่านั้นได้
+- **Interop** แหล่งข้อมูลแบบ observable ใด ๆ ที่มี `subscribe` เข้ากันได้ ทำงานกับ `$` ได้ — RxJS, custom event stream, library ภายนอก บท [Runes vs Stores](/svelte/th/state-and-stores/runes-vs-stores) พูดถึงสะพานนี้ทั้งสองทิศทางด้วย `fromStore`/`toStore`
+- **Async source** `readable` (บทถัดไป) ห่อ push-based source (WebSocket, geolocation watcher) ไว้ใน contract ง่าย ๆ เดียวกัน
+- **โค้ดเดิมที่มีอยู่แล้ว** โค้ด Svelte หลายล้านบรรทัดใช้ store การเข้าใจ contract ทำให้คุณอ่านและดูแลมันได้
+
+## Mental Model
+
+store ไม่ใช่ type พิเศษของ framework — มันคือ **protocol**: "เรียกฉันด้วยค่าปัจจุบันตอนนี้ แล้วเรียกอีกทุกครั้งที่มีการเปลี่ยนแปลงในอนาคต และให้ทางหยุดฉันด้วย" `$store` ไม่มีอะไรมากไปกว่า `subscribe`/`unsubscribe` คู่หนึ่งที่ compiler สร้างให้แล้วผูกกับ lifecycle ของ component — นี่คือเหตุผลพอดีที่มันต้องการ store binding ที่มองเห็นได้แบบ static ที่ top level ไม่มีทางผูก "unsubscribe ตอน component ถูกทำลาย" เข้ากับ binding ที่มีอยู่แค่ในฟังก์ชันบางอันที่อาจจะรันหรือไม่รันก็ได้ `get()` คือ subscribe/unsubscribe คู่เดียวกัน แค่รันครั้งเดียวแบบ synchronous ติดกัน — นี่แหละคือเหตุผลพอดีที่มันไม่ฟรี: มันไม่ได้อ่าน field ที่ cache ไว้ มันรัน lifecycle ทั้งหมดของ subscription แบบย่อ ทุกครั้งที่เรียก
+
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ประโยชน์ | ต้นทุน |
+| --- | --- | --- |
+| `$store` ใน component | Auto subscribe/unsubscribe ผูกกับ lifecycle ไม่มี boilerplate | Store ต้องถูก bind ที่ top level ของ component — พิสูจน์แล้วว่าเป็น compile error ถ้าไม่ทำแบบนั้น |
+| `get(store)` สำหรับอ่านครั้งเดียว | ง่าย ไม่ต้องจัดการ subscription มือ | พิสูจน์แล้ว: จ่ายต้นทุน start/stop เต็ม ๆ ทุกครั้งที่เรียก — ต้นทุนจริงที่วัดได้ถ้าอยู่ใน loop หรือ hot path |
+| `subscribe()`/`$store` ที่อยู่ยาว | จ่ายต้นทุน start แค่ครั้งเดียว ไม่ว่าจะอ่านค่ากี่ครั้ง | ต้องจำ unsubscribe (หรือให้ `$store` ทำให้) — `subscribe` มือที่ไม่มี cleanup จะ leak |
+| `derived` ที่ set แบบ async | แทนสถานะ loading/resolved ได้เป็นธรรมชาติ ยกเลิกงานค้างผ่าน cleanup | พิธีการมากกว่า form auto (1-arg) ลืม return cleanup จะกลับมาเจอบั๊ก stale-response |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"`get(store)` เป็นแค่การอ่าน property ราคาถูก เรียกที่ไหนก็ได้อย่างปลอดภัย"** พิสูจน์แล้วว่าผิด: มันรัน cycle subscribe-then-unsubscribe เต็ม ๆ ของ store ทุกครั้งที่เรียก — โอเคถ้าเรียกเป็นครั้งคราว แต่แพงถ้าอยู่ใน loop หรือฟังก์ชันที่ถูกเรียกบ่อย
+- **"`$store` ใช้ได้ทุกที่ที่คุณเขียน identifier ที่มี `$` นำหน้า"** พิสูจน์แล้วว่าผิด: *ตัวแปร store* ต้องถูกประกาศที่ top level ของ component (instance หรือ module scope) ประกาศมันในฟังก์ชันแล้ว `svelte-check`/compiler จะปฏิเสธตรง ๆ ด้วย `store_invalid_scoped_subscription`
+- **"callback ของ `derived` store จะ return ค่าหรือไม่ก็ไม่สำคัญ"** มันสำคัญมากสำหรับงาน async: การ return ค่าตรง ๆ ทำให้ derived value คือค่านั้น การรับ `set` เป็น argument ตัวที่สองสลับไปเป็นโหมด manual และการ*ไม่*return cleanup function จากโหมดนั้นทำให้ผลลัพธ์ async ที่ค้างอยู่ทับผลลัพธ์ใหม่กว่าได้เมื่อ source เปลี่ยนเร็ว ๆ
+- **"object ใด ๆ ที่มี method บางอย่างก็เป็น store โดยพื้นฐาน"** มีแค่ `subscribe(fn)` — ที่ถูกเรียกทันทีด้วยค่าปัจจุบัน แล้ว return unsubscribe — เท่านั้นที่ทำให้อะไรบางอย่างเป็น store สำหรับ Svelte และสำหรับ `$` `subscribe` ที่ไม่เรียก `fn` ทันที หรือไม่ return unsubscribe function จะทำลาย contract แบบเงียบ ๆ
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อเจอ store ที่เขียนมือ, `$store` หรือ `get(store)` ให้เช็คสิ่งเหล่านี้:
+
+- `get(store)` ถูกเรียกซ้ำ ๆ ใน loop, ใน `$effect` ที่รันบ่อย หรือทุกครั้งที่กดคีย์ — แทนที่จะ subscribe ครั้งเดียว (หรือใช้ `$store`) แล้วอ่านค่าที่อัปเดตอยู่แล้วหรือเปล่า?
+- `$store` ถูกอ่านที่ไหนสักที่นอกเหนือจาก top level ของ component หรือ top level ของ module `.svelte.js`/`.svelte.ts` — ในฟังก์ชัน, block `if` หรือ callback ที่ compiler ผูก subscription ไม่ได้หรือเปล่า?
+- `derived` store ที่เรียก `set` แบบ async (`fetch`, `setTimeout`) return cleanup function จริงเพื่อยกเลิกงานที่ยังค้างอยู่ตอน source เปลี่ยนอีกครั้งก่อนมัน resolve ไหม?
+- `subscribe` ของ store ที่เขียนมือเรียก callback **ทันที** ด้วยค่าปัจจุบัน แล้ว return unsubscribe function จริงไหม — หรือมัน notify แค่ตอนเปลี่ยน*ครั้งถัดไป*เท่านั้น (ทำให้ทุก consumer ที่อ่าน `$store` ครั้งเดียวและคาดว่าจะได้ค่าปัจจุบันแบบ synchronous พังหมด)?
+- `store.subscribe(...)` มือ (ไม่ใช่ `$` shorthand) เคยถูกทิ้งไว้โดยไม่เก็บและเรียก unsubscribe function ที่ return มา เช่นใน `onMount` ที่ไม่มี teardown คู่กัน หรือเปล่า?
+
+<SpotTheBug code={`function useUserName(userStore) {
+  // "Read the store fresh every time we need it, no need to keep a subscription"
+  $effect(() => {
+    const user = get(userStore);
+    document.title = user.name;
+  });
+}`}>
+การเรียก `get(userStore)` **ข้างใน `$effect`** ดูไม่มีพิษภัยแต่ผิดสองต่อ อย่างแรก `get()` ไม่ใช่ tracked read — การอ่านมันข้างใน `$effect` ไม่ได้ลงทะเบียน `userStore` เป็น dependency แบบที่ `$userStore` หรือ subscription จริงจะทำ ดังนั้น effect จะ**ไม่**รันใหม่เมื่อค่าของ store เปลี่ยน `document.title` จะเก่าไปเงียบ ๆ อย่างที่สอง แม้จะมีอะไรบางอย่างทำให้ effect รันใหม่ตามจังหวะที่ถูกต้อง แต่ละครั้งที่รันก็จ่ายต้นทุน subscribe-then-unsubscribe เต็ม ๆ ของ `get()` ที่พิสูจน์ไว้ข้างบน — สำหรับ store ที่ห่ออะไรมากกว่าค่าธรรมดา (เช่น `readable` รอบ WebSocket) นั่นหมายถึงการเปิดแล้วปิด connection ทุกครั้งที่รัน ทางแก้คือให้อ่าน store ตามที่ Svelte ออกแบบไว้: `$userStore` ข้างใน component (auto-subscribe ครั้งเดียว, tracked, auto-unsubscribe ตอน destroy) หรือนอก component ก็ `userStore.subscribe(...)` จริงที่เก็บไว้ตลอดอายุของ effect แล้วเลิกใน cleanup ของมัน
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-Svelte **store** คือ object ใด ๆ ที่มี method **`subscribe(fn)`** ที่เรียก `fn` ด้วยค่าปัจจุบันทันทีและทุกครั้งที่เปลี่ยน โดย return ฟังก์ชัน **unsubscribe** — contract เล็ก ๆ นี้คือเหตุผลที่ observable อย่าง RxJS ทำงานร่วมกันได้ ในคอมโพเนนต์ prefix **`$store`** ทำ auto-subscribe, อ่านค่าปัจจุบัน, re-render เมื่อเปลี่ยน และ **auto-unsubscribe ตอน destroy** (และ `$store = x` จะเรียก `set` ของ store)
+Svelte **store** คือ object ใด ๆ ที่มี method **`subscribe(fn)`** ที่เรียก `fn` ด้วยค่าปัจจุบันทันทีและทุกครั้งที่เปลี่ยน แล้ว return function **unsubscribe** — contract เล็ก ๆ นี้แหละคือเหตุผลที่ observable อย่าง RxJS interop ได้ ภายใน component **`$store`** prefix auto-subscribe อ่านค่าปัจจุบัน re-render ตอนเปลี่ยน และ **auto-unsubscribe ตอน destroy** — แต่พิสูจน์แล้วว่า store ต้องถูกประกาศที่ **top level** ของ component ไม่งั้นจะเป็น compile error (`store_invalid_scoped_subscription`) **`get(store)`** ไม่ใช่การอ่านฟรี — พิสูจน์แล้ว: มันรัน subscribe/unsubscribe cycle เต็ม ๆ ทุกครั้งที่เรียก จึงควรเลี่ยงใน loop หรือ hot path callback ของ `derived` store รับ argument ตัวที่สองคือ `set` เพื่อ resolve แบบ async ได้ — พิสูจน์แล้ว: cleanup ที่ return ยกเลิกงานค้างเมื่อ source เปลี่ยนอีกครั้งก่อนมัน resolve
 </Callout>
 
 export const quizContract = [
   {
-    q: 'อะไรทำให้บางอย่างเป็น Svelte store?',
+    q: 'อะไรทำให้บางสิ่งเป็น Svelte store?',
     options: [
-      'การ extend คลาส Store',
-      'การมี method `subscribe(fn)` ที่เรียก fn ด้วยค่าปัจจุบันและเมื่อเปลี่ยน โดย return ฟังก์ชัน unsubscribe',
-      'การถูกสร้างด้วย `writable`',
+      'การ extend Store base class',
+      'การมี method `subscribe(fn)` ที่เรียก fn ด้วยค่าปัจจุบันและทุกครั้งที่เปลี่ยน แล้ว return unsubscribe function',
+      'การถูกสร้างโดย `writable`',
       'การอยู่ในไฟล์ .store.js',
     ],
     answer: 1,
+    explain: 'store contract เป็นเรื่องโครงสร้างล้วน ๆ: object ใด ๆ ที่มี subscribe method ที่เข้ากันได้คือ store สำหรับ Svelte และสำหรับ `$` ไม่ว่ามันจะถูกสร้างมาอย่างไร',
   },
   {
-    q: 'prefix `$store` ทำอะไรในคอมโพเนนต์?',
+    q: '`$store` prefix ทำอะไรข้างใน component?',
     options: [
-      'ไม่ทำอะไร — เป็นแค่การตกแต่ง',
-      'auto-subscribe, ให้ค่าปัจจุบัน, re-render เมื่อเปลี่ยน และ auto-unsubscribe ตอน destroy',
+      'ไม่มีอะไร — มันแค่ตกแต่ง',
+      'Auto-subscribe ให้ค่าปัจจุบัน re-render ตอนเปลี่ยน และ auto-unsubscribe ตอน destroy',
       'ทำให้ store เป็น global',
-      'แปลงเป็น rune',
+      'แปลงมันเป็น rune',
     ],
     answer: 1,
+    explain: '`$store` ถูก compile เป็น managed subscription ที่ผูกกับ lifecycle ของ component instance — ตั้งค่าครั้งเดียว เลิกอัตโนมัติตอน destroy',
   },
   {
-    q: 'ทำไม RxJS observable ถึงใช้กับ syntax `$` ของ Svelte ได้?',
+    q: 'ทำไม RxJS observable ถึงทำงานกับ syntax `$` ของ Svelte ได้?',
     options: [
-      'Svelte ทำเคสพิเศษให้ RxJS',
-      'observable มี method `subscribe` ที่เข้ากันได้ ซึ่งตรงตาม store contract',
-      'ใช้ไม่ได้ — RxJS เข้ากันไม่ได้',
-      'ได้หลังแปลงเป็น writable เท่านั้น',
+      'Svelte special-case ให้ RxJS',
+      'Observable implement `subscribe` method ที่เข้ากันได้ ทำให้ผ่าน store contract',
+      'ทำไม่ได้ — RxJS เข้ากันไม่ได้',
+      'ทำได้หลัง convert เป็น writable เท่านั้น',
     ],
     answer: 1,
+    explain: 'ไม่ต้อง special-case เลย: store contract คือแค่ "มี subscribe ที่เข้ากันได้" และ RxJS observable ก็ทำตามนั้นพอดี',
   },
   {
-    q: 'prefix `$store` ใช้ได้ที่ไหน?',
+    q: '`$store` prefix ใช้ได้ที่ไหนบ้าง?',
     options: [
       'ที่ไหนก็ได้ในไฟล์ .js ใด ๆ',
-      'เฉพาะในไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เพราะเป็น compiler magic',
+      'เฉพาะไฟล์ `.svelte` และ module `.svelte.js`/`.svelte.ts` เท่านั้น เพราะมันคือ compiler magic',
       'เฉพาะใน browser console',
-      'เฉพาะภายใน store เอง',
+      'เฉพาะข้างใน store เอง',
     ],
     answer: 1,
+    explain: '`$store` ถูกเขียนใหม่ตอน compile time เท่านั้น จึงใช้ได้แค่ในไฟล์ที่ Svelte compiler ประมวลผลจริง ๆ',
+  },
+  {
+    q: '```ts\nlet starts = 0;\nconst store = readable(0, () => { starts++; return () => {}; });\nfor (let i = 0; i < 50; i++) get(store);\nconsole.log(starts);\n```\nโค้ดนี้ log อะไร?',
+    options: [
+      '1 — get() ใช้ subscription เดียวซ้ำ',
+      '50 — พิสูจน์แล้ว: ทุกการเรียก get() รัน cycle subscribe/unsubscribe เต็ม ๆ ของตัวเอง',
+      '0 — get() ไม่เรียก start function',
+      'มันจะ throw',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ในโปรบแล้ว: 50 ครั้งของ get() ทำให้ start ถูกเรียก 50 ครั้ง (และ stop 50 ครั้ง) — get() คือ subscribe-then-unsubscribe cycle จริงทุกครั้ง ไม่ใช่การอ่านค่าที่ cache ไว้',
+  },
+  {
+    q: '```svelte\n<script lang="ts">\n  import { writable } from \'svelte/store\';\n  function makeIt() {\n    const count = writable(0);\n    console.log($count);\n  }\n  makeIt();\n</script>\n```\nเกิดอะไรขึ้นตอน compile โค้ดนี้?',
+    options: [
+      'Compile ผ่านสบาย — $ ใช้ได้ทุกที่ที่มี store',
+      'Compile error: `store_invalid_scoped_subscription` เพราะ `count` ถูกประกาศในฟังก์ชัน ไม่ใช่ top level ของ component',
+      'มีแค่ runtime warning โค้ดยังรันได้',
+      'อ่าน undefined แบบเงียบ ๆ',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ด้วย svelte-check และการเรียก compile() ของ compiler เอง: การประกาศตัวแปร store ในฟังก์ชัน (ไม่ใช่ top level ของ component/module) คือ compile error จริง ไม่ใช่แค่ข้อเสนอแนะของ linter',
+  },
+  {
+    q: 'callback ของ `derived` store รับ `(values, set) => {...}` แทนที่จะ return ค่าตรง ๆ แล้วเรียก `set` ข้างใน `setTimeout` มันต้องทำอะไรเพิ่มเพื่อไม่ให้เกิดบั๊ก stale-response?',
+    options: [
+      'ไม่ต้องทำอะไร — derived store ไม่มีทางค้างได้',
+      'Return cleanup function ที่ยกเลิก timer/request ที่ค้างอยู่ เพราะมันถูกรันก่อน invocation ถัดไปตอน source เปลี่ยนอีกครั้ง',
+      'เรียก `set` สองครั้ง',
+      'ใช้ `get()` แทน',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์แล้ว: derived เรียก callback ใหม่ทุกครั้งที่ source เปลี่ยน และรันสิ่งที่ invocation ก่อนหน้า return ไว้เป็น cleanup ก่อนเสมอ — การข้าม cleanup นั้นทำให้ผลลัพธ์ async ที่ช้าและค้างอยู่ไปทับผลลัพธ์ใหม่กว่าได้',
   },
 ];
 

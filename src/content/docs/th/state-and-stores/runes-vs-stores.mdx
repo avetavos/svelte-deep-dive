@@ -1,6 +1,6 @@
 ---
 title: 'Runes vs Stores'
-description: 'การเปลี่ยนแปลงใน Svelte 5 — $state ใน .svelte.js module ให้ shared reactive state โดยไม่ต้องมีพิธีของ store พร้อมเปรียบเทียบและเมื่อไรควรใช้อะไร'
+description: '$state ใน module .svelte.js เทียบพิธีการของ store, class instance singleton เทียบ factory (พิสูจน์แล้ว), fromStore/toStore เชื่อมสองทิศทาง (พิสูจน์แล้ว) และเมื่อไร store — ไม่ใช่ rune — ยังเป็นตัวเลือกที่ถูกต้อง'
 sidebar:
   order: 4
 ---
@@ -9,112 +9,374 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## counter ตัวเดียวกัน สองวิธี
+## Counter เดิม สองแบบ
 
-ก่อน Svelte 5 การ share reactive state ข้ามคอมโพเนนต์หมายถึง store ตอนนี้คุณเอา `$state` ไปไว้ใน module แล้ว export ได้ runes ทำงานนอกคอมโพเนนต์ได้ — แต่เฉพาะในไฟล์นามสกุล **`.svelte.js`** หรือ **`.svelte.ts`** ซึ่งบอก compiler ให้เปิดการประมวลผล rune
+ก่อน Svelte 5 การแชร์ reactive state ข้าม component หมายถึง store โดยพื้นฐาน ตอนนี้คุณใส่ `$state` ใน module แล้ว export ได้เลย Rune ทำงานนอก component ได้ — แต่เฉพาะไฟล์ที่มี extension **`.svelte.js`** หรือ **`.svelte.ts`** เท่านั้น ซึ่งบอก compiler ให้เปิดการประมวลผล rune
 
 **เวอร์ชัน store:**
 
 ```js
-// counter.js
+// src/lib/counter-store.js
 import { writable } from 'svelte/store';
 export const count = writable(0);
 ```
 
 ```svelte
+<!-- src/lib/CounterStoreDisplay.svelte -->
 <script>
-  import { count } from './counter.js';
+  import { count } from './counter-store.js';
 </script>
 <button onclick={() => count.update((n) => n + 1)}>{$count}</button>
 ```
 
-**เวอร์ชัน runes:**
+**เวอร์ชัน rune:**
 
 ```js
-// counter.svelte.js  ← note the .svelte.js extension
+// src/lib/counter-runes.svelte.js
 export const counter = $state({ value: 0 });
 ```
 
 ```svelte
+<!-- src/lib/CounterRunesDisplay.svelte -->
 <script>
-  import { counter } from './counter.svelte.js';
+  import { counter } from './counter-runes.svelte.js';
 </script>
 <button onclick={() => counter.value++}>{counter.value}</button>
 ```
 
-ไม่มี `writable` ไม่มี `set`/`update` ไม่มี prefix `$` — คุณอ่านและ mutate `counter.value` เหมือน object ธรรมดา และ reactive ทุกที่ที่ใช้
+ไม่มี `writable` ไม่มี `set`/`update` ไม่มี `$` prefix — คุณอ่านและ mutate `counter.value` เหมือน object ธรรมดา แล้วมัน reactive ทุกที่ที่ใช้
 
-## ทำไมต้อง export object ไม่ใช่ค่าเปล่า ๆ
+## ทำไมต้อง export object ไม่ใช่ค่าเปล่า
 
-สังเกตว่าเวอร์ชัน runes export `{ value: 0 }` ไม่ใช่ `0` การ export `let x = $state(0)` เปล่า ๆ จะคง link ข้าม module boundary ไว้ไม่ได้ — การ import จะ copy ค่าและเสีย reactivity ไป การ export **object** (หรือฟังก์ชันที่ return reactive state) ทำให้ทุกคนยังชี้ไปที่ reactive proxy ตัวเดียวกัน ดังนั้น mutation ที่ `counter.value` จึงกระจายไป นี่คือ gotcha ข้อเดียวของ module-level runes
+สังเกตว่าเวอร์ชัน rune export `{ value: 0 }` ไม่ใช่ `0` `let x = $state(0)` เปล่า ๆ ที่ export ออกไปเชื่อมข้าม module boundary ไม่ได้ — การ import มันคัดลอกค่า ทำให้ reactivity หายไป การ export **object** (หรือฟังก์ชันที่ return reactive state) ทำให้ทุกคนชี้ไปที่ proxy reactive ตัวเดียวกัน ดังนั้นการ mutate `counter.value` จึงกระจายไปทั่ว นี่คือกับดักเดียวของ rune ระดับ module
 
-## เทียบกันข้าง ๆ
+## Class instance singleton เทียบ factory ที่พิสูจน์แล้ว
+
+กับดัก object-vs-ค่าเปล่าแบบเดียวกันปรากฏในรูปแบบอื่นทันทีที่คุณเปลี่ยนไปใช้ **class** แทน object literal ธรรมดา class ที่ field เป็น rune reactive อยู่แล้วไม่ว่าจะแบบไหน — คำถามคือคุณทำอะไรกับ *instance* ของมัน:
+
+```ts
+// src/lib/class-vs-factory.svelte.ts
+export class Counter {
+  count = $state(0);
+  double = $derived(this.count * 2);
+  increment() {
+    this.count++;
+  }
+}
+
+// Module-level: an INSTANCE of the class, exported directly — a singleton,
+// exactly like exporting `$state({...})` directly from a module.
+export const singletonCounter = new Counter();
+
+// A factory: calling it creates a brand-new instance every time.
+export function createCounter() {
+  return new Counter();
+}
+```
+
+ทั้งสองแบบใช้ได้จริงทั้งคู่ — แค่ตอบคำถามคนละอย่าง `export const singletonCounter = new Counter()` ให้ทุกคนที่ import **object เดียวกัน** เหมือนกับการ export `$state({...})` ตรง ๆ (ประเด็นทั้งหมดของ module นี้ข้างบน) `export function createCounter()` ให้ทุก *caller* ได้ instance ของ**ตัวเอง แยกกัน** — พิสูจน์ตรง ๆ:
+
+```ts
+// src/lib/class-vs-factory.svelte.test.ts
+import { flushSync } from 'svelte';
+import { expect, test } from 'vitest';
+import { Counter, createCounter, singletonCounter } from './class-vs-factory.svelte.js';
+
+test('a class instance exported directly from module scope is a SHARED singleton (same object for every importer)', () => {
+  const destroy = $effect.root(() => {
+    const a = singletonCounter;
+    const b = singletonCounter; // "two importers" of the same module export
+    a.increment();
+    expect(b.count).toBe(1); // b sees a's change: same instance
+    expect(a).toBe(b);
+  });
+  destroy();
+});
+
+test('a factory function creates INDEPENDENT instances — no shared state between callers', () => {
+  const destroy = $effect.root(() => {
+    const a = createCounter();
+    const b = createCounter();
+    a.increment();
+    expect(a.count).toBe(1);
+    expect(b.count).toBe(0); // b is unaffected: a separate instance
+    expect(a).not.toBe(b);
+  });
+  destroy();
+});
+
+test('class fields declared with runes are reactive exactly like plain $state/$derived variables', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    const counter = createCounter();
+    $effect(() => {
+      log.push(counter.double);
+    });
+    flushSync();
+    expect(log).toEqual([0]);
+    counter.increment();
+    flushSync();
+    expect(log).toEqual([0, 2]);
+  });
+  destroy();
+});
+```
+
+```text
+✓ a class instance exported directly from module scope is a SHARED singleton (same object for every importer)
+✓ a factory function creates INDEPENDENT instances — no shared state between callers
+✓ class fields declared with runes are reactive exactly like plain $state/$derived variables
+
+Test Files  1 passed (1)
+     Tests  3 passed (3)
+```
+
+กติกาคือแบบเดียวกับส่วนข้างบน แค่เอามาใช้กับ class แทน object literal: **สิ่งที่ถูกแชร์คือสิ่งที่คุณ export ไม่ใช่ว่ามันเป็น class หรือเปล่า** Export instance ที่สร้างแล้ว (`new Counter()`) แล้วทุกคนที่ import จะแชร์มัน — เหมาะกับ state ที่ global จริง ๆ instance เดียว (แพทเทิร์นที่ใช้ตลอดตัวอย่าง module ในบท [Cross-Component State](/svelte/th/state-and-stores/cross-component-state)) Export factory (`createCounter`) แล้วทุก *จุดที่เรียก* จะได้ของตัวเอง — เหมาะเมื่อมี instance อิสระมากกว่าหนึ่งตัวพร้อมกันได้ (form, modal, แถวต่อ item) shape เดียวกับที่ `setContext`/`getContext` ใช้ต่อ subtree ในบทเดียวกันนั้น
+
+## เทียบข้าง ๆ กัน
 
 | | Store (`writable`) | Runes (`.svelte.js`) |
 |---|---|---|
-| อ่านในคอมโพเนนต์ | `$count` | `counter.value` |
-| อัปเดต | `count.set(x)` / `count.update(fn)` | `counter.value = x` |
-| นอกคอมโพเนนต์ | ใช้ได้ทุกที่ | ต้องใช้ `.svelte.js`/`.svelte.ts` |
-| subscribe contract | มี (interop, observable) | ไม่มี |
+| อ่านใน component | `$count` | `counter.value` |
+| Update | `count.set(x)` / `count.update(fn)` | `counter.value = x` |
+| นอก component | ใช้ได้ทุกที่ | ต้องการ `.svelte.js`/`.svelte.ts` |
+| Subscribe contract | มี (interop, observable) | ไม่มี |
 | พิธีการ | มากกว่า (method, `$`) | น้อยกว่า (อ่าน/เขียนตรง ๆ) |
 
-<Mermaid title="เลือก runes หรือ stores" code={chooseDiagram} />
+<Mermaid title="เลือก rune หรือ store" code={chooseDiagram} />
 
 export const chooseDiagram = `flowchart TB
-  q["share reactive state ไหม"] --> interop["ต้องการ subscribe contract ไหม (observable, external push source)"]
-  interop --> yes["ใช่: ใช้ store"]
-  interop --> no["ไม่: export state จาก .svelte.js module"]`;
+  q["Sharing reactive state?"] --> interop["Need the subscribe contract\n(observables, external push source)?"]
+  interop --> yes["Yes: use a store"]
+  interop --> no["No: export $state from a .svelte.js module"]`;
 
-## เมื่อไรควรใช้อะไร
+## เชื่อมสองโลก: fromStore กับ toStore
 
-- **runes (default)** app state ที่ share ส่วนใหญ่ — cart, theme, current-user object ง่ายกว่า boilerplate น้อยกว่า และ mental model เดียวกับ component-local state
-- **stores** เมื่อคุณต้องการ *contract*: ห่อ WebSocket หรือ push source อื่นด้วย `readable`, interop กับ observable แบบ RxJS หรือดูแล code ที่ใช้ store อยู่แล้ว stores ไม่ใช่ของเก่า — แต่เป็นเครื่องมือเฉพาะทาง
+Rune กับ store ไม่จำเป็นต้องเลือกอย่างใดอย่างหนึ่งในโค้ดเบสเดียว — `svelte/store` export **`fromStore`** และ **`toStore`** เพื่อข้าม boundary ทั้งสองทิศทางโดยเฉพาะ พิสูจน์ที่นี่ครบทั้งสองทาง:
 
-<Callout title="สรุปหนึ่งบรรทัด">
-Svelte 5 ให้คุณ **export `$state` จาก `.svelte.js`/`.svelte.ts` module** สำหรับ shared reactive state — อ่านและ mutate ได้เหมือน object ธรรมดา ไม่ต้องมีพิธี `writable`/`set`/`$` ให้ export เป็น **object** (ไม่ใช่ค่าเปล่า ๆ) เพื่อให้ reactive link รอดจากการ import ใช้ **runes สำหรับ shared app state ส่วนใหญ่** และเลือก **stores เมื่อต้องการ subscribe contract** (external push source, observable interop, code เดิม)
+```ts
+// src/lib/from-to-store.svelte.test.ts
+import { flushSync } from 'svelte';
+import { fromStore, get, toStore, writable } from 'svelte/store';
+import { expect, test } from 'vitest';
+
+test('fromStore: bridges a store into a reactive { current } object, both directions', () => {
+  const store = writable(0);
+  const destroy = $effect.root(() => {
+    const count = fromStore(store);
+    const log: number[] = [];
+
+    $effect(() => {
+      log.push(count.current);
+    });
+
+    flushSync();
+    expect(log).toEqual([0]);
+
+    store.set(1); // store -> rune direction
+    flushSync();
+    expect(log).toEqual([0, 1]);
+
+    count.current = 2; // rune -> store direction (fromStore's .current is settable)
+    expect(get(store)).toBe(2);
+    flushSync();
+    expect(log).toEqual([0, 1, 2]);
+  });
+  destroy();
+});
+
+test('toStore: bridges $state into a store, both directions', () => {
+  const destroy = $effect.root(() => {
+    let count = $state(0);
+    const store = toStore(
+      () => count,
+      (v) => (count = v),
+    );
+
+    const seen: number[] = [];
+    const countLog: number[] = [];
+    const unsub = store.subscribe((v) => seen.push(v));
+    $effect(() => {
+      countLog.push(count); // tracked read, proves the rune side too
+    });
+    flushSync();
+    expect(seen).toEqual([0]);
+    expect(countLog).toEqual([0]);
+
+    count = 1; // rune -> store direction
+    flushSync();
+    expect(seen).toEqual([0, 1]);
+
+    store.set(2); // store -> rune direction
+    flushSync();
+    expect(countLog).toEqual([0, 1, 2]);
+
+    unsub();
+  });
+  destroy();
+});
+
+test('toStore with only a getter produces a read-only store (no set/update)', () => {
+  const destroy = $effect.root(() => {
+    let count = $state(5);
+    const store = toStore(() => count);
+    expect((store as { set?: unknown }).set).toBeUndefined();
+    expect(get(store)).toBe(5);
+    count = 6;
+    flushSync();
+    expect(get(store)).toBe(6);
+  });
+  destroy();
+});
+```
+
+```text
+✓ fromStore: bridges a store into a reactive { current } object, both directions
+✓ toStore: bridges $state into a store, both directions
+✓ toStore with only a getter produces a read-only store (no set/update)
+
+Test Files  1 passed (1)
+     Tests  3 passed (3)
+```
+
+`fromStore(store)` แปลง store ใด ๆ ให้เป็น `{ current }` — shape ที่เป็นมิตรกับ rune ที่คุณอ่านใน `$derived`/template ได้ และถ้า store เป็น writable ก็ assign ตรง ๆ ได้ `toStore(get, set)` ไปทางกลับกัน: ให้ getter (และ setter ถ้าอยาก) ที่ closure ทับ `$state` มันสร้าง store จริงที่มี `subscribe` เพื่อส่งให้ API ใด ๆ ที่คาดหวัง store contract (library ที่ใช้ store อยู่แล้ว, โค้ด shape แบบ `$app/stores`, prop ของ component ที่ type เป็น `Readable<T>`) ไม่มีตัวไหน duplicate state เลย — ทั้งคู่รักษา single source of truth เดียวและแปลการอ่าน/เขียนข้าม boundary แบบ live
+
+## เมื่อไรควรใช้อันไหน
+
+- **Rune (ค่า default)** shared app state ส่วนใหญ่ — cart, theme, current-user object ง่ายกว่า boilerplate น้อยกว่า และ mental model เดียวกับ component-local state **Class instance singleton** หรือ **factory** ที่พิสูจน์ข้างบนครอบคลุมสอง shape ที่มันเป็นได้: แชร์โดย default เทียบกับอิสระต่อ caller
+- **Store** เมื่อคุณต้องการ*contract*: ห่อ WebSocket หรือ push source อื่นด้วย `readable` (หรือ `createSubscriber` จากบท [Built-in Stores](/svelte/th/state-and-stores/built-in-stores)), interop กับ observable แบบ RxJS หรือดูแลโค้ดที่ใช้ store อยู่แล้ว
+- **โค้ดเก่าที่คุณจะเจอ ไม่ใช่เขียนเอง** `$app/stores` ของ SvelteKit เอง — `page`, `navigating`, `updated` เป็น store ที่มี `$` นำหน้า — เป็นตัวอย่างจริงของ "โค้ดที่ใช้ store อยู่แล้ว" ที่คุณจะเจอในโค้ดเบสเก่าและโค้ดที่ AI generate จากมัน ตั้งแต่ SvelteKit 2.12 docs ของ framework เองพูดตรง ๆ ว่า: *"`$app/stores` is deprecated and subject to be removed in SvelteKit 3"* ตัวแทนคือ `$app/state` ซึ่งเป็น rune-based — ข้อมูลเดิม ไม่มี `$` prefix และ fine-grained กว่า (update `page.state` ไม่ invalidate `page.data` อีกต่อไป) `npx sv migrate app-state` ทำการเขียนใหม่เชิงกลไกส่วนใหญ่ให้อัตโนมัติ การจำ `import { page } from '$app/stores'` ให้ออกว่าเป็นรูปแบบเก่า — ไม่ใช่บั๊ก แต่เป็นสัญญาณให้ migrate — คือสิ่งที่ section "อ่านโค้ดที่ AI เขียน" ของคอร์สนี้มีไว้เพื่อสิ่งนี้พอดี
+
+<Callout title="การเปลี่ยน mental model">
+ก่อน Svelte 5 shared reactive state โดยพื้นฐานคือ store ตอนนี้ export `$state` จาก module `.svelte.js` มักง่ายกว่า — ไม่มี `subscribe` ไม่มี `$` prefix แค่ reactive value ที่คุณ import store ยังเป็นเครื่องมือที่ถูกต้องสำหรับ*contract*ของ subscribe (interop กับ observable, async source ที่กำหนดเอง) และสำหรับโค้ดที่ใช้มันอยู่แล้ว — และ `fromStore`/`toStore` ที่พิสูจน์ข้างบน แปลว่าคุณไม่ต้อง duplicate state เพื่อใช้ทั้งสองอย่างในแอปเดียวกันเลย
 </Callout>
+
+## Mental Model
+
+Module ที่ถือ `$state` กับ store คือคำตอบสองแบบต่อคำถามเดียวกัน: "single source of truth อยู่ที่ไหน และผู้อ่านรู้ได้ยังไงว่ามันเปลี่ยน" คำตอบของ rune เป็นเชิงโครงสร้าง: compiler ผูกผู้อ่านเข้ากับ signal graph เดียวกับตัวค่าเองตรง ๆ จึงไม่มีขั้นตอนแจ้งเตือนแยกให้ต้อง opt-in คำตอบของ store เป็นเชิงพฤติกรรม: object สัญญาว่าจะเรียก callback ของคุณ และทุกอย่างที่เหลือ — น้ำตาล `$`, `fromStore`, `subscribe` มือ — คือวิธีทำตามหรือใช้สัญญานั้น class instance ก็แค่มัด field ที่เป็น rune ไว้ด้วยกัน — มันจะทำตัวเหมือน singleton ของ module rune หรือ instance ใหม่ต่อการใช้งาน ขึ้นอยู่กับว่าคุณ export *instance* หรือ*ฟังก์ชันที่สร้างมัน* เป๊ะเหมือนกับ object literal ธรรมดา
+
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ได้อะไร | เสียอะไร |
+| --- | --- | --- |
+| `$state` ใน module `.svelte.js` (object literal หรือ class instance) | ไม่มีพิธีการ mental model เดียวกับ component state semantics ของ singleton ที่พิสูจน์แล้ว | ต้องจำกฎ object-ไม่ใช่-ค่าเปล่า; instance เดียวสำหรับทั้ง process |
+| Factory function (`createCounter()`) | Instance อิสระต่อการเรียก พิสูจน์แล้ว — ไม่มี cross-talk โดยไม่ตั้งใจระหว่าง caller | Caller ต้องตัดสินใจว่าจะเรียกเมื่อไรและเก็บผลลัพธ์ไว้ที่ไหน |
+| `writable`/`readable`/`derived` | Subscribe contract สำหรับ interop; ใช้ได้ในไฟล์ .js ใดก็ได้ | พิธีการมากกว่า rune สำหรับ app state ธรรมดา |
+| `fromStore`/`toStore` | ข้าม boundary โดยไม่ duplicate state พิสูจน์แล้วทั้งสองทิศทาง | มีการเรียกเพิ่มที่ boundary; ยังต้องถือ mental model สองแบบพร้อมกัน |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"การ export class instance ต่างจากการ export `$state({...})` โดยพื้นฐาน"** พิสูจน์แล้วว่าผิด: ทั้งคู่คือแค่ "module export object เดียว" — class instance singleton ถูกแชร์ข้ามทุก importer ด้วยเหตุผลเดียวกันเป๊ะกับที่ `$state({...})` เปล่า ๆ ที่ export ถูกแชร์
+- **"factory function อย่าง `createCounter()` แชร์ state กับแพทเทิร์น singleton ระดับ module"** พิสูจน์แล้วว่าผิด: `createCounter()` ที่เรียกสองครั้งสร้าง counter อิสระสองตัวที่ไม่แทรกแซงกัน — มีแค่การ export instance ตรง ๆ (หรือ object เปล่า) เท่านั้นที่ถูกแชร์
+- **"`fromStore`/`toStore` copy ค่าครั้งเดียว ดังนั้นสองฝั่งอาจ drift ไม่ตรงกันได้"** พิสูจน์แล้วว่าผิดทั้งสองทิศทาง: การเขียนที่ฝั่งไหนของสะพาน (store หรือ rune) มองเห็นได้ทันทีจากอีกฝั่ง ไม่มี polling หรือ re-sync มือ
+- **"`$app/stores` เป็นแค่ชื่อเก่าของสิ่งเดียวกับ `$app/state`"** มันคือข้อมูลเบื้องหลังเดียวกัน แต่ docs ของ framework เองเรียก `$app/stores` ว่า deprecated ตั้งแต่ SvelteKit 2.12 จะถูกลบใน SvelteKit 3 — มันคือเป้าหมายให้ migrate ไม่ใช่ทางเลือกเชิงสไตล์
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อเจอ `$state` ระดับ module, class instance, factory function หรือ `$app/stores` ให้เช็คสิ่งเหล่านี้:
+
+- Class instance ถูก export **ตรง ๆ** (`export const foo = new Thing()`) ตอนที่โค้ดต้องการ instance ใหม่ต่อการใช้งานจริง ๆ (object ต่อแถว, ต่อ modal, ต่อ request) — หรือกลับกัน **factory** ถูกเรียกในแบบที่สร้าง instance ใหม่โดยไม่ตั้งใจทุก render ทั้งที่ตั้งใจให้เป็น singleton ที่แชร์?
+- `export let x = $state(0)` เปล่า ๆ (ไม่ใช่ object ไม่ใช่ class instance) ถูก import ที่อื่นแล้วคาดว่าจะ update สด ๆ ไหม? พิสูจน์ในบทนี้แล้ว: มีแค่ object/instance export เท่านั้นที่รักษา reactive link ไว้
+- `import { page } from '$app/stores'` (พร้อมการอ่าน `$page`) ปรากฏในโค้ดที่ตั้งเป้า SvelteKit เวอร์ชันล่าสุดไหม — สัญญาณชัดว่าเป็น training data ของ AI ที่มาก่อนการ migrate ไป `$app/state` ใน 2.12 คุ้มที่จะ flag แม้ว่ามันจะยังทำงานได้อยู่วันนี้?
+- โค้ด duplicate ข้อมูลเดียวกันเข้าทั้ง store และตัวแปร `$state` มือ แล้วคอย sync กันเองไหม — แทนที่จะใช้ `fromStore`/`toStore` เชื่อมค่าที่*เดียวกัน*เข้าด้วยกัน?
+
+<SpotTheBug code={`// src/lib/current-user.svelte.ts
+class CurrentUser {
+  name = $state('');
+  isAdmin = $state(false);
+}
+
+export const currentUser = new CurrentUser();
+
+// Usage in a SvelteKit route:
+// src/routes/+page.server.ts
+export async function load({ locals }) {
+  currentUser.name = locals.user.name;
+  currentUser.isAdmin = locals.user.isAdmin;
+  return {};
+}`}>
+`currentUser` คือ class instance ที่ export **ตรง ๆ** จาก module — singleton ที่แชร์กันทั้ง server process ด้วยเหตุผลเดียวกันเป๊ะกับที่ `$state({...})` เปล่า ๆ ระดับ module ที่ export ตรง ๆ เป็น (พิสูจน์แล้วในบท [Cross-Component State](/svelte/th/state-and-stores/cross-component-state) ซึ่งพิสูจน์กับดักเดียวกันเป๊ะสำหรับ object ธรรมดา) การ mutate `currentUser.name`/`currentUser.isAdmin` ข้างใน `load` function — ฝั่ง server ต่อ request — เขียนลง instance ที่แชร์ตัวเดียวนั้น ดังนั้น request ที่สอง ที่เกิดพร้อมกันสำหรับ user *คนละคน* อาจเห็นชื่อและ admin flag ของ user คนแรกก่อนที่ `load` ของตัวเองจะเสร็จด้วยซ้ำ การใช้ class แทน plain object ไม่เปลี่ยนความเสี่ยงนี้เลย — สิ่งที่สำคัญคือ instance เป็น module-level export ไม่ใช่ว่ามันเป็น class หรือเปล่า ทางแก้คือแบบเดียวกับที่พิสูจน์แล้วสำหรับ module `$state`: สร้าง state ของ user ใหม่ต่อ request — factory สไตล์ `createCounter()` ที่เรียกข้างใน `load`/layout หรือ `setContext`/`getContext` ตามแพทเทิร์นในบทเดียวกันนั้น ไม่ใช่ instance ที่ export ตรง ๆ ที่ถือข้อมูลต่อ user
+</SpotTheBug>
 
 export const quizVs = [
   {
-    q: 'คุณใช้ runes สำหรับ state นอกคอมโพเนนต์ยังไง?',
+    q: 'ใช้ rune สำหรับ state นอก component ได้ยังไง?',
     options: [
-      'ไฟล์ .js ใด ๆ ก็ใช้ได้',
-      'เอา `$state` ไปไว้ในไฟล์นามสกุล `.svelte.js` หรือ `.svelte.ts`',
-      'ห่อด้วย writable ก่อน',
-      'ใช้ runes นอกคอมโพเนนต์ไม่ได้',
+      'ไฟล์ .js ใดก็ได้ใช้ได้หมด',
+      'ใส่ `$state` ในไฟล์ที่มี extension `.svelte.js` หรือ `.svelte.ts`',
+      'ห่อมันด้วย writable ก่อน',
+      'ใช้ rune นอก component ไม่ได้',
     ],
     answer: 1,
+    explain: 'Extension .svelte.js/.svelte.ts คือสิ่งที่บอก Svelte compiler ให้ประมวลผล rune ใน module ธรรมดา เหมือนที่มันประมวลผลไฟล์ .svelte',
   },
   {
-    q: 'ทำไมต้อง export object อย่าง `$state({ value: 0 })` แทน `$state(0)` เปล่า ๆ?',
+    q: 'ทำไม export object อย่าง `$state({ value: 0 })` แทน `$state(0)` เปล่า ๆ?',
     options: [
-      'object เร็วกว่า',
-      'การ import ค่าเปล่า ๆ จะ copy ค่าออกมาและเสีย reactivity ส่วน object ทำให้ทุกคนยังชี้ไปที่ reactive proxy ตัวเดียวกัน',
-      'ค่าเปล่า ๆ ใช้ไม่ได้',
+      'Object เร็วกว่า',
+      'Import ค่าเปล่า ๆ จะคัดลอกมันแล้วทำให้ reactivity หาย; object ทำให้ทุกคนชี้ไป reactive proxy เดียวกัน',
+      'ค่าเปล่า ๆ ห้าม export',
       'ไม่มีผลอะไร',
     ],
     answer: 1,
+    explain: 'ค่าเปล่า ๆ ที่ export ถูกคัดลอกที่จุด import (semantics ของ JS ธรรมดา); การ export object/instance แชร์ reactive proxy เดียวที่ทุกคนอ่านและ mutate',
   },
   {
-    q: 'ในเวอร์ชัน runes คุณอัปเดต shared state ยังไง?',
+    q: 'ในเวอร์ชัน rune update shared state ยังไง?',
     options: [
       'เรียก `counter.set(x)`',
-      'mutate ตรง ๆ: `counter.value = x` (หรือ `counter.value++`)',
-      'dispatch action',
+      'Mutate ตรง ๆ: `counter.value = x` (หรือ `counter.value++`)',
+      'Dispatch action',
       'ใช้ `$counter = x`',
     ],
     answer: 1,
+    explain: 'ไม่มี store API มาเกี่ยวข้องเลย — runed object แค่ถูกอ่านและ mutate เหมือน JS object ธรรมดา โดย compiler ผูก reactivity ให้',
   },
   {
-    q: 'เมื่อไรที่ stores เป็นตัวเลือกที่ดีกว่า runes?',
+    q: '```ts\nexport const singletonCounter = new Counter(); // Counter has $state fields\n\nexport function createCounter() {\n  return new Counter();\n}\n```\nไฟล์สองไฟล์ต่าง `import { singletonCounter } from \'./x\'` แล้วเรียก `.increment()` จากไฟล์หนึ่ง อีกไฟล์เห็นการเปลี่ยนแปลงไหม?',
     options: [
-      'สำหรับ state ทั้งหมด',
-      'เมื่อคุณต้องการ subscribe contract — ห่อ external push source, observable interop หรือ code ที่ใช้ store อยู่แล้ว',
-      'ไม่มีวัน',
-      'เฉพาะสำหรับตัวเลข',
+      'ไม่เห็น — แต่ละ import ได้สำเนาของตัวเอง',
+      'เห็น — พิสูจน์แล้ว: การ export class instance ที่ construct แล้วตรง ๆ คือ singleton ที่แชร์ เหมือนกับการ export $state({...}) ตรง ๆ',
+      'เห็นก็ต่อเมื่อเรียก createCounter() ก่อน',
+      'เห็นเฉพาะในไฟล์ .svelte ไม่ใช่ไฟล์ .ts',
     ],
     answer: 1,
+    explain: 'พิสูจน์ตรง ๆ: ทั้งสอง import ชี้ไป object เดียวกันเป๊ะ (`a === b`) ดังนั้น a().increment() มองเห็นได้จาก b — การ export class instance แชร์ state เป๊ะเหมือนการ export $state({...}) แบบ object literal เปล่า ๆ',
+  },
+  {
+    q: '```ts\nconst a = createCounter();\nconst b = createCounter();\na.increment();\nconsole.log(a.count, b.count);\n```\nโค้ดนี้ log อะไร?',
+    options: [
+      '1 1 — factory ก็แชร์ state เหมือนกัน',
+      '1 0 — พิสูจน์แล้ว: factory สร้าง instance ที่เป็นอิสระทุกครั้งที่เรียก',
+      '0 0 — increment() ใช้นอก component ไม่ได้',
+      'มัน throw',
+    ],
+    answer: 1,
+    explain: 'พิสูจน์ตรง ๆ: การเรียก createCounter() สองครั้งสร้าง object แยกกันสองตัว (a !== b); การ mutate ตัวหนึ่งไม่แตะอีกตัวเลย',
+  },
+  {
+    q: 'เมื่อไร store เป็นตัวเลือกที่ดีกว่า rune?',
+    options: [
+      'สำหรับ state ทุกแบบ',
+      'เมื่อคุณต้องการ subscribe contract — ห่อ external push source, interop กับ observable หรือโค้ดที่ใช้ store อยู่แล้ว',
+      'ไม่มีวันที่ดีกว่าเลย',
+      'สำหรับตัวเลขเท่านั้น',
+    ],
+    answer: 1,
+    explain: 'Rune ครอบคลุม shared app state ส่วนใหญ่แบบง่ายกว่า แต่ store contract ยังเป็นสิ่งที่ interop (RxJS, library ที่มีอยู่แล้ว) และ external push source บางตัวถูกสร้างขึ้นบน',
+  },
+  {
+    q: 'เอกสารทางการของ SvelteKit พูดถึง `$app/stores` ว่ายังไงตั้งแต่เวอร์ชัน 2.12?',
+    options: [
+      'มันถูกลบไปแล้วทั้งหมด',
+      'มัน deprecated แล้วและจะถูกลบใน SvelteKit 3 — `$app/state` (rune-based) คือตัวแทน',
+      'มันคือ API ที่แนะนำและถูกส่งเสริมอย่างจริงจัง',
+      'มันใช้ได้แค่กับโปรเจกต์ Svelte 4 เท่านั้น',
+    ],
+    answer: 1,
+    explain: 'อ้างตรง ๆ จาก migration guide ของ SvelteKit 2 บน svelte.dev: "$app/stores is deprecated and subject to be removed in SvelteKit 3" — จำ `import { page } from \'$app/stores\'` ให้ออกว่าเป็นเป้าหมายให้ migrate ไม่ใช่บั๊ก',
   },
 ];
 

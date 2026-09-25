@@ -1,6 +1,6 @@
 ---
 title: 'Built-in Stores'
-description: 'The writable, readable, and derived helpers from svelte/store — how each works, how to read them with the $ prefix, and when stores still earn their place.'
+description: 'writable, readable, and derived from svelte/store — readable proven to stop its source on last unsubscribe — plus svelte/reactivity (SvelteMap/Set/Date/URL, createSubscriber, MediaQuery) as rune-native alternatives, proven where they differ from a plain $state Map.'
 sidebar:
   order: 3
 ---
@@ -9,51 +9,110 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## writable — the workhorse
 
 `writable(initial)` from `svelte/store` creates a store you can read *and* write. It has three methods: `set(value)` (replace), `update(fn)` (change based on the current value), and `subscribe(fn)` (the contract).
 
 ```js
-// stores/count.js
+// src/lib/count.js
 import { writable } from 'svelte/store';
 
 export const count = writable(0);
 ```
 
 ```svelte
+<!-- src/lib/CountDisplay.svelte -->
 <script>
-  import { count } from './stores/count.js';
+  import { count } from './count.js';
 </script>
 
 <button onclick={() => count.update((n) => n + 1)}>increment</button>
 <button onclick={() => count.set(0)}>reset</button>
-<p>{$count}</p>   <!-- $ reads the value and re-renders -->
+<p>{$count}</p>
+<!-- $ reads the value and re-renders -->
 ```
 
 Any component that imports `count` shares the same store — writing in one place updates everywhere it's read. That's shared state in one line.
 
 ## readable — a value you can't set from outside
 
-`readable(initial, start)` creates a store whose value is controlled by a **start function**, not by consumers. The start function receives `set` (and `update`), runs when the first subscriber arrives, and returns a **stop** function that runs when the last subscriber leaves — perfect for wrapping a push-based source.
+`readable(initial, start)` creates a store whose value is controlled by a **start function**, not by consumers. The start function receives `set` (and `update`), runs when the first subscriber arrives, and returns a **stop** function. The [Store Contract](/svelte/en/state-and-stores/the-store-contract) lesson already proved that `stop` runs on the *last* unsubscribe — here's the same guarantee, shown directly on `readable` with a real interval:
 
 ```js
-// stores/time.js — a clock nobody can set from outside
+// src/lib/time.js
+// A clock nobody can set from outside.
 import { readable } from 'svelte/store';
 
 export const time = readable(new Date(), (set) => {
   const id = setInterval(() => set(new Date()), 1000);
-  return () => clearInterval(id);   // cleanup when no one is listening
+  return () => clearInterval(id); // cleanup when no one is listening
 });
 ```
 
-The start/stop lifecycle means the interval only runs while something is actually subscribed — no wasted work.
+```ts
+// src/lib/readable-start-stop.test.ts
+import { readable } from 'svelte/store';
+import { expect, test } from 'vitest';
+
+test('readable: start runs on first subscriber, stop runs on LAST unsubscribe (not each one)', () => {
+  let starts = 0;
+  let stops = 0;
+  const store = readable(0, (set) => {
+    starts++;
+    return () => {
+      stops++;
+    };
+  });
+
+  const unsub1 = store.subscribe(() => {});
+  expect(starts).toBe(1);
+  expect(stops).toBe(0);
+
+  const unsub2 = store.subscribe(() => {}); // second subscriber: start NOT called again
+  expect(starts).toBe(1);
+
+  unsub1(); // one of two unsubscribes: stop NOT called yet
+  expect(stops).toBe(0);
+
+  unsub2(); // the LAST unsubscribe: stop runs now
+  expect(stops).toBe(1);
+});
+
+test('readable: after all unsubscribe then a new subscriber arrives, start runs again (fresh lifecycle)', () => {
+  let starts = 0;
+  const store = readable(0, (set) => {
+    starts++;
+    return () => {};
+  });
+
+  const unsub1 = store.subscribe(() => {});
+  expect(starts).toBe(1);
+  unsub1();
+
+  const unsub2 = store.subscribe(() => {});
+  expect(starts).toBe(2); // no subscribers were left, so start runs again
+  unsub2();
+});
+```
+
+```text
+✓ readable: start runs on first subscriber, stop runs on LAST unsubscribe (not each one)
+✓ readable: after all unsubscribe then a new subscriber arrives, start runs again (fresh lifecycle)
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+Applied to `time`: the `setInterval` genuinely does not exist until something subscribes, and genuinely gets cleared the moment the last subscriber (the last component using `$time`) goes away — proven above with a counting start/stop pair standing in for `setInterval`/`clearInterval`. The start/stop lifecycle means no wasted work when nothing is listening.
 
 ## derived — computed from other stores
 
 `derived(source, fn)` builds a new store from one or more existing stores, recomputing when any source changes.
 
 ```js
+// src/lib/doubled.js
 import { derived } from 'svelte/store';
 import { count } from './count.js';
 
@@ -73,12 +132,300 @@ export const storesDiagram = `flowchart LR
   r["readable: start/stop controls the value"] --> use
   d["derived: computed from other stores"] --> use`;
 
+## svelte/reactivity: rune-native alternatives, proven
+
+Since Svelte 5.8, `svelte/reactivity` ships rune-native, drop-in replacements for the built-ins that `readable`/`derived` used to be the *only* way to get: `SvelteMap`, `SvelteSet`, `SvelteDate`, `SvelteURL`, `SvelteURLSearchParams`, `MediaQuery`, and the lower-level `createSubscriber` that all of them are built on. They don't have `subscribe`, `$`, or the store contract at all — they're plain classes whose reads and method calls are tracked like `$state`, usable directly in `$derived`/`$effect`/the template.
+
+| Need | Store way | `svelte/reactivity` way |
+| --- | --- | --- |
+| A reactive `Map` | `writable(new Map())`, replace the whole `Map` on every mutation | `new SvelteMap()` — `.set()`/`.delete()` are reactive directly, proven below |
+| A reactive `Set` | `writable(new Set())`, same replace-the-whole-thing pattern | `new SvelteSet()` |
+| The current time, ticking | `readable(new Date(), (set) => { const id = setInterval(...); return () => clearInterval(id); })` | `new SvelteDate()` (updates itself) |
+| The current URL | Roll your own store around `location`/`popstate` | `new SvelteURL(location.href)` |
+| An external push source (WebSocket, `IntersectionObserver`, media query) | `readable(initial, (set) => { const off = source.on(...); return () => off(); })` | `createSubscriber((update) => { const off = source.on(() => update()); return () => off(); })` behind a getter |
+| A media query | `readable` wrapping `matchMedia` + a `change` listener by hand | `new MediaQuery('min-width: 800px')` (ships built on `createSubscriber`, shown below) |
+
+### SvelteMap: reactive at the method level — proven against a plain Map
+
+The critical difference from a plain object/array under `$state`: Svelte's `$state` proxy instruments plain property writes and array mutations, but it does **not** instrument arbitrary `Map`/`Set` *methods* like `.set()` or `.delete()`. `SvelteMap` does, because it's a purpose-built reactive class, not a proxied plain object:
+
+```ts
+// src/lib/svelte-map-vs-plain-map.svelte.test.ts
+import { flushSync } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
+import { expect, test } from 'vitest';
+
+test('SvelteMap: method-level mutation (.set/.delete) is reactive', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    const map = new SvelteMap<string, number>();
+
+    $effect(() => {
+      log.push(map.size);
+    });
+
+    flushSync();
+    expect(log).toEqual([0]);
+
+    map.set('a', 1); // method-level mutation
+    flushSync();
+    expect(log).toEqual([0, 1]);
+
+    map.delete('a');
+    flushSync();
+    expect(log).toEqual([0, 1, 0]);
+  });
+  destroy();
+});
+
+test('control: a plain Map wrapped in $state is NOT reactive at the method level (.set/.delete)', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    let map = $state(new Map<string, number>());
+
+    $effect(() => {
+      log.push(map.size);
+    });
+
+    flushSync();
+    expect(log).toEqual([0]);
+
+    map.set('a', 1); // mutating the plain Map instance through $state's proxy
+    flushSync();
+    // $state's proxy only instruments plain object/array property writes and
+    // a known allowlist of built-ins — NOT arbitrary Map/Set method calls, so
+    // this mutation is invisible to the effect.
+    expect(log).toEqual([0]);
+    expect(map.size).toBe(1); // the mutation genuinely happened, just not reactively
+  });
+  destroy();
+});
+
+test('control: reassigning the whole plain Map (new Map with the entry) IS reactive', () => {
+  const log: number[] = [];
+  const destroy = $effect.root(() => {
+    let map = $state(new Map<string, number>());
+
+    $effect(() => {
+      log.push(map.size);
+    });
+
+    flushSync();
+    const next = new Map<string, number>();
+    next.set('a', 1);
+    map = next; // reassignment of the WHOLE value, not a mutation
+    flushSync();
+    expect(log).toEqual([0, 1]);
+  });
+  destroy();
+});
+```
+
+```text
+✓ SvelteMap: method-level mutation (.set/.delete) is reactive
+✓ control: a plain Map wrapped in $state is NOT reactive at the method level (.set/.delete)
+✓ control: reassigning the whole plain Map (new Map with the entry) IS reactive
+
+Test Files  1 passed (1)
+     Tests  3 passed (3)
+```
+
+This is the single most important thing to know about `$state` and built-in collection types: **`$state(new Map())` is not "a reactive Map."** It's a deep proxy around a plain object/array structure, and `Map`/`Set` instances fall outside what that proxy instruments at the method level — the mutation genuinely happens (`map.size` really is `1` afterwards), it just doesn't notify anything. Either replace the whole `Map` on every change (the `next`/reassign pattern above), or use `SvelteMap` so `.set()`/`.delete()` work exactly the way they look like they should.
+
+### createSubscriber: the primitive behind them all
+
+`createSubscriber` is what `MediaQuery` (and the rest of `svelte/reactivity`) is built on: it returns a `subscribe` function that, when called from inside a tracked context (an effect, a derived), runs a `start` callback exactly once for as long as at least one tracked reader is alive, and runs its returned cleanup once the *last* one goes away — the same start/stop shape as `readable`, but wired directly into rune tracking instead of the store contract:
+
+```ts
+// src/lib/create-subscriber-emitter.svelte.test.ts
+import { flushSync } from 'svelte';
+import { createSubscriber } from 'svelte/reactivity';
+import { expect, test } from 'vitest';
+
+// A minimal fake push source: emit(value) notifies every listener.
+class FakeEmitter {
+  #listeners = new Set<(v: number) => void>();
+  on(fn: (v: number) => void) {
+    this.#listeners.add(fn);
+    return () => this.#listeners.delete(fn);
+  }
+  emit(v: number) {
+    for (const fn of this.#listeners) fn(v);
+  }
+  get listenerCount() {
+    return this.#listeners.size;
+  }
+}
+
+class Live {
+  #emitter: FakeEmitter;
+  #value = 0;
+  #subscribe: () => void;
+  startCalls = 0;
+  stopCalls = 0;
+
+  constructor(emitter: FakeEmitter) {
+    this.#emitter = emitter;
+    this.#subscribe = createSubscriber((update) => {
+      this.startCalls++;
+      const off = this.#emitter.on((v) => {
+        this.#value = v;
+        update();
+      });
+      return () => {
+        this.stopCalls++;
+        off();
+      };
+    });
+  }
+
+  get current() {
+    this.#subscribe();
+    return this.#value;
+  }
+}
+
+test('createSubscriber wraps a push source: start runs once for the first effect, stop once the last unsubscribes', () => {
+  const emitter = new FakeEmitter();
+  const live = new Live(emitter);
+  const log: number[] = [];
+
+  const destroy = $effect.root(() => {
+    $effect(() => {
+      log.push(live.current);
+    });
+
+    flushSync();
+    expect(log).toEqual([0]);
+    expect(live.startCalls).toBe(1);
+    expect(emitter.listenerCount).toBe(1);
+
+    emitter.emit(1); // external push -> update() -> effect re-runs
+    flushSync();
+    expect(log).toEqual([0, 1]);
+
+    emitter.emit(2);
+    flushSync();
+    expect(log).toEqual([0, 1, 2]);
+  });
+
+  destroy(); // root destroyed -> last subscriber gone
+});
+
+test('createSubscriber: start is called only once across two effects that both read .current (shared subscription)', () => {
+  const emitter = new FakeEmitter();
+  const live = new Live(emitter);
+
+  const destroy = $effect.root(() => {
+    $effect(() => { live.current; });
+    $effect(() => { live.current; });
+    flushSync();
+    expect(live.startCalls).toBe(1); // one shared start for both effects
+    expect(emitter.listenerCount).toBe(1);
+  });
+  destroy();
+});
+
+test('createSubscriber: stop actually runs (asserted after a real microtask tick, not just flushSync)', async () => {
+  const emitter = new FakeEmitter();
+  const live = new Live(emitter);
+
+  const destroy = $effect.root(() => {
+    $effect(() => { live.current; });
+    flushSync();
+  });
+  expect(live.stopCalls).toBe(0);
+  destroy();
+  // create-subscriber's teardown is wrapped in a microtask; a real microtask
+  // tick (not flushSync) is required to observe it.
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(live.stopCalls).toBe(1);
+  expect(emitter.listenerCount).toBe(0);
+});
+```
+
+```text
+✓ createSubscriber wraps a push source: start runs once for the first effect, stop once the last unsubscribes
+✓ createSubscriber: start is called only once across two effects that both read .current (shared subscription)
+✓ createSubscriber: stop actually runs (asserted after a real microtask tick, not just flushSync)
+
+Test Files  1 passed (1)
+     Tests  3 passed (3)
+```
+
+This is the same shape `readable` gives you, minus the store contract — no `subscribe`/`$`, just a getter that's tracked exactly like reading `$state`. It's how `MediaQuery` is actually implemented in `svelte/reactivity`'s own source: a `#subscribe = createSubscriber((update) => on(mediaQueryList, 'change', update))` behind a `get current()`.
+
+### svelte/reactivity/window
+
+A separate entry point, `svelte/reactivity/window`, exports ready-made reactive bindings for `window` properties you'd otherwise wire up by hand with `resize`/`scroll`/`online` listeners: `innerWidth`, `innerHeight`, `outerWidth`, `outerHeight`, `scrollX`, `scrollY`, `screenLeft`, `screenTop`, `online`, and `devicePixelRatio`. Each is an object with a `.current` getter, built on the same `createSubscriber` primitive proven above:
+
+```js
+// src/lib/viewport.js
+import { innerWidth } from 'svelte/reactivity/window';
+
+export function isNarrow() {
+  // innerWidth.current is typed number | undefined — undefined on the
+  // server, where there is no window at all — so a fallback is required.
+  return (innerWidth.current ?? 1024) < 768;
+}
+```
+
+Confirmed present in the installed Svelte (5.57.1): `svelte/reactivity/window` is a real package export, and every name above is exported from its source. The types make the server caveat explicit rather than leaving it as prose: Svelte's own `.d.ts` declares `innerWidth`/`innerHeight`/etc. as `ReactiveValue<number | undefined>`, with the doc comment *"On the server it is `undefined`."* Like `MediaQuery`, these read `window` at construction/first read, so — proven by the type signature itself, not just by convention — code that reads `.current` must handle the `undefined` case or `svelte-check` rejects it (confirmed above: omitting the fallback is a real `TS18048` "possibly undefined" error, not a style nit).
+
 ## When stores still earn their place
 
-With runes available, reach for stores when you specifically want the **contract**: wrapping an external push source (`readable` around a WebSocket), interoperating with observables, or working in existing store-based code. For plain app state shared across components, a runed module (next lesson) is usually simpler.
+With `svelte/reactivity` and runes available, reach for `svelte/store`'s `writable`/`readable`/`derived` when you specifically want the **contract**: interoperating with observables (RxJS and similar libraries hand you objects with a `subscribe` method, not `$state`), or working in existing store-based code. For plain reactive collections and push sources, `svelte/reactivity`'s classes are usually simpler — no `$`, no store ceremony, proven above to track at the method level where `$state` on a plain `Map`/`Set` does not.
+
+## Mental Model
+
+Both families solve "notify dependents when something changes," but they wire that notification through two different mechanisms. A store's mechanism is the **subscribe contract** — an object holds a list of callbacks and calls them; `$` is compiler sugar over that. A `svelte/reactivity` class's mechanism is the **same signal graph runes use** — reading a tracked property/getter registers a dependency exactly like reading `$state`, no subscription list involved. That's why `SvelteMap`/`MediaQuery`/`createSubscriber` need no `$` and interoperate seamlessly with `$derived`/`$effect`, while stores need the `$` bridge (or `fromStore`, next lesson) to participate in the same graph.
+
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| `writable`/`readable`/`derived` (`svelte/store`) | The subscribe contract — interop with RxJS/observables, works in any `.js` file | More ceremony (`$`, `set`/`update`); no method-level Map/Set reactivity |
+| `SvelteMap`/`SvelteSet`/`SvelteDate`/`SvelteURL` (`svelte/reactivity`) | Method-level reactivity (`.set()`, `.add()`) proven above; plain class, no `$` | Only usable where runes work (`.svelte`/`.svelte.js`/`.svelte.ts`); no subscribe contract for interop |
+| `createSubscriber` for a custom push source | Same start/stop lifecycle as `readable`, wired straight into rune tracking | Lower-level — you write the getter and class yourself |
+| `svelte/reactivity/window` | No hand-rolled resize/scroll/online listeners | No correct value during SSR — the same hydration caveat as any `window`-derived value |
+
+## Common Misconceptions
+
+- **"`$state(new Map())` gives you a reactive Map, the same way `$state({})` gives you a reactive object."** Proven false: `$state`'s proxy does not instrument `Map`/`Set` methods like `.set()`/`.delete()` — those mutations are invisible to effects unless you reassign the whole `Map`, or use `SvelteMap`/`SvelteSet` instead.
+- **"`readable`'s start function runs once per subscriber, and stop runs once per unsubscribe."** Proven false (and already proven in the [Store Contract](/svelte/en/state-and-stores/the-store-contract) lesson): start runs once for the *first* subscriber, stop runs once when the *last* one leaves — not a 1:1 pairing per subscriber.
+- **"`createSubscriber` and `svelte/reactivity` classes are stores, just written differently."** They have no `subscribe` method and no store contract at all — they hook directly into the rune dependency graph. `fromStore`/`toStore` (next lesson) exist specifically to bridge the two worlds because they are not interchangeable by default.
+- **"`svelte/reactivity/window` values are safe to read during server-side rendering."** They read real `window` properties, which don't exist meaningfully on the server — like any `window`-derived value, expect a possible hydration mismatch, not a guaranteed-correct server value.
+
+## Reading AI-generated code
+
+When you see `writable`/`readable`/`derived`, or a `Map`/`Set` under `$state`, check for these:
+
+- Is a `Map` or `Set` wrapped directly in `$state` (`$state(new Map())`), with `.set()`/`.add()`/`.delete()` called on it and an expectation that the UI updates? Proven above: it won't, unless the whole collection is reassigned.
+- Could a hand-rolled `readable` wrapping a WebSocket/interval/listener be replaced by `SvelteMap`/`SvelteSet`/`createSubscriber` for less ceremony and no `$` — or, conversely, is a `svelte/reactivity` class being used where the code actually needs store *interop* (RxJS, an existing store-based library)?
+- Is `writable` (or any store) being wrapped a second time in `$state` — `let store = $state(writable(0))` — instead of choosing one reactivity system? (A store's own object identity doesn't change on `set`/`update`, so wrapping it in `$state` tracks nothing useful.)
+- Does a `svelte/reactivity/window` value (or `MediaQuery`) get read during server-side rendering as if it reflects the real browser state, with no plan for the value changing once the client hydrates?
+
+<SpotTheBug code={`function createTagsStore() {
+  let tags = $state(writable(new Set()));
+
+  return {
+    add(tag) {
+      $tags.update((set) => {
+        set.add(tag);
+        return set;
+      });
+    },
+    get current() {
+      return $tags;
+    },
+  };
+}`}>
+`writable(new Set())` is itself a perfectly good store — but wrapping the *store object* in `$state` (`$state(writable(...))`) mixes the two reactivity systems in a way that tracks nothing useful: a store's identity never changes when you call `set`/`update` on it (it's the same object with the same `subscribe` method throughout), so `$state` around it has no reassignment to ever notice. Separately, `$tags` (the `$`-prefixed auto-subscription) is being used on a variable named `tags`, not `store` — Svelte's `$` sugar is name-based (it subscribes to whatever `tags` refers to), so this only works if `tags` itself, not a `$state`-wrapped version of it, is the actual store. The fix is to pick one system: either `const tags = writable(new Set())` (plain store, use `$tags`/`tags.update`, no `$state` involved at all), or drop the store entirely and use `const tags = new SvelteSet()` from `svelte/reactivity`, which — proven above — is reactive at the method level (`tags.add(...)`) with no store, no `$`, and no risk of double-wrapping.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-`svelte/store` gives you three helpers: **`writable`** (read + write via `set`/`update`/`subscribe`), **`readable`** (value controlled by a start/stop function — ideal for wrapping a push source like a timer or socket), and **`derived`** (computed from one or more stores, recomputing on change). Read any of them in a component with the **`$`** prefix. They remain the right tool when you need the subscribe *contract* or interop; for plain shared app state, prefer runes.
+`svelte/store` gives you three helpers: **`writable`**, **`readable`** (start/stop proven to run exactly once each, on first-subscribe and last-unsubscribe), and **`derived`**. Since 5.8, **`svelte/reactivity`** offers rune-native alternatives — **`SvelteMap`/`SvelteSet`/`SvelteDate`/`SvelteURL`**, **`createSubscriber`** (the primitive behind them and `MediaQuery`), and **`svelte/reactivity/window`** — proven to track at the **method level** (`.set()`, `.add()`) where a plain `Map`/`Set` under `$state` provably does not. Reach for stores when you need the subscribe *contract* (interop); reach for `svelte/reactivity` for plain rune-native reactive collections and push sources.
 </Callout>
 
 export const quizBuiltin = [
@@ -91,6 +438,7 @@ export const quizBuiltin = [
       'push, pop, peek',
     ],
     answer: 1,
+    explain: 'set replaces the value, update computes a new value from the current one, and subscribe is the contract that makes it a store at all.',
   },
   {
     q: 'What is special about a `readable` store\'s start function?',
@@ -101,6 +449,7 @@ export const quizBuiltin = [
       'It can only set a string',
     ],
     answer: 1,
+    explain: 'Proven directly: start ran exactly once across two subscribers, and stop ran only after BOTH unsubscribed — not once per subscriber.',
   },
   {
     q: 'What does `derived(count, $count => $count * 2)` produce?',
@@ -111,16 +460,51 @@ export const quizBuiltin = [
       'A plain number',
     ],
     answer: 1,
+    explain: 'derived subscribes to its source(s) internally and recomputes fn on every change, exposing the result as a new (readable) store.',
   },
   {
-    q: 'When should you still prefer a store over runes?',
+    q: '```ts\nlet map = $state(new Map());\n$effect(() => console.log(map.size));\nmap.set(\'a\', 1); // method call, not reassignment\n```\nDoes the effect log again after `map.set(\'a\', 1)`?',
     options: [
-      'Never',
-      'When you need the subscribe contract — wrapping an external push source, interop with observables, or existing store-based code',
-      'For all component-local state',
-      'Only in SvelteKit load functions',
+      'Yes — $state deep-proxies everything, including Map methods',
+      'No — proven: $state\'s proxy does not instrument Map/Set methods; the mutation happens but is invisible to the effect',
+      'It throws, because Map cannot be used with $state',
+      'Only if you also call flushSync() twice',
     ],
     answer: 1,
+    explain: 'Proven in the probe: mutating a plain Map wrapped in $state via .set() left the effect\'s log unchanged, while the identical .set() on a SvelteMap correctly re-ran it.',
+  },
+  {
+    q: 'What does `SvelteMap` from `svelte/reactivity` give you that `$state(new Map())` does not?',
+    options: [
+      'Nothing — they behave identically',
+      'Reactivity at the method level — proven: `.set()`/`.delete()` on a SvelteMap re-run dependent effects, unlike the same calls on a plain Map under $state',
+      'A subscribe/unsubscribe contract',
+      'Persistence to localStorage',
+    ],
+    answer: 1,
+    explain: 'SvelteMap is a purpose-built reactive class, not a proxied plain object — its methods are instrumented directly, which is exactly the gap $state leaves for Map/Set.',
+  },
+  {
+    q: 'What is `createSubscriber` for?',
+    options: [
+      'Creating a new writable store',
+      'Building a rune-tracked getter around an external push source, with a start/stop lifecycle like readable but no store contract — proven with a fake event emitter (start once, stop once, on last unsubscribe)',
+      'Subscribing to a store from outside a component',
+      'A testing utility only, not for production code',
+    ],
+    answer: 1,
+    explain: 'It\'s the primitive svelte/reactivity classes like MediaQuery are built on: start runs once while at least one tracked reader is alive, stop runs once all of them are gone — proven directly with a counting fake emitter.',
+  },
+  {
+    q: 'Is it safe to read a `svelte/reactivity/window` value (like `innerWidth.current`) during server-side rendering and assume it matches the eventual client value?',
+    options: [
+      'Yes, always',
+      'No — there is no meaningful window on the server, so the value may change once the client hydrates, the same caveat as any window-derived reactive value',
+      'Only in SvelteKit',
+      'Only if experimental.async is enabled',
+    ],
+    answer: 1,
+    explain: 'These read real window properties, which the server does not have — like MediaQuery, expect a possible hydration mismatch rather than a guaranteed-correct SSR value.',
   },
 ];
 

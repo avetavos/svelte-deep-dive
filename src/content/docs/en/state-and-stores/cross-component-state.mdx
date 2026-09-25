@@ -1,6 +1,6 @@
 ---
 title: 'Cross-Component State'
-description: 'Patterns for sharing state across components — module-level runes, per-subtree instances with context, the SSR singleton trap, and a decision guide.'
+description: 'Patterns for sharing state across components — module-level runes, the SSR singleton trap (proven in the $state Rune lesson), per-subtree instances with context (proven fresh per mount), a real SvelteKit +layout.svelte doing it per-request, and a decision guide.'
 sidebar:
   order: 5
 ---
@@ -9,13 +9,14 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
 ## Pattern 1: a shared module
 
 The simplest cross-component state is a reactive value exported from a `.svelte.js` module. Every importer shares one instance:
 
 ```js
-// theme.svelte.js
+// src/lib/theme.svelte.js
 export const theme = $state({ mode: 'light' });
 
 export function toggle() {
@@ -29,6 +30,8 @@ Any component imports `theme` and `toggle` and stays in sync. This is ideal for 
 
 There's a catch that matters the moment you use SvelteKit (or any SSR). A module-level `$state` is a **single instance shared by everything that imports it** — including, on the server, *every user request handled by the same process*. Put a logged-in user in a module-level singleton and, under SSR, one request can see another user's data.
 
+This exact mechanism — one process-wide object, mutated by "request 1," silently visible to a component that never touched request 1 — is already proven directly, with a real effect and two simulated "requests," in the [$state Rune](/svelte/en/reactivity/state-rune) lesson. It's the same trap whether the shared value holds one field or, as here, is used to coordinate several components: **the risk comes from the export being module-level, not from how many components read it.**
+
 <Callout title="Never put per-user state in a module singleton under SSR">
 On the server, one process handles many requests. A module-level `$state` is shared across all of them, so per-request or per-user data (the current user, a session, a cart tied to a login) can leak between users. Module singletons are safe for truly global, non-user data; for per-user state under SSR, use context (below).
 </Callout>
@@ -38,31 +41,125 @@ On the server, one process handles many requests. A module-level `$state` is sha
 When you need state that is shared *within a subtree* but **isolated per instance** — and safe under SSR — combine a runed class/object with **`setContext`** / **`getContext`**. The parent creates the state and puts it in context; descendants read it. Each component instance gets its own, created during that request's render.
 
 ```svelte
-<!-- Parent.svelte -->
+<!-- src/lib/CartProvider.svelte -->
 <script>
   import { setContext } from 'svelte';
+  import CartItemAdder from './CartItemAdder.svelte';
 
   // created fresh per instance / per request — not a module singleton
   const cart = $state({ items: [] });
   setContext('cart', cart);
+</script>
+
+<CartItemAdder />
+<span data-testid="parent-count">{cart.items.length}</span>
+```
+
+```svelte
+<!-- src/lib/CartItemAdder.svelte -->
+<script>
+  import { getContext } from 'svelte';
+  const cart = getContext('cart'); // the same reactive object the parent set
+</script>
+
+<button data-testid="add" onclick={() => cart.items.push({ id: cart.items.length })}>
+  add ({cart.items.length})
+</button>
+```
+
+Because the state is created inside the component tree (not at module load), each render — and each SSR request — gets its own copy. Proven directly: mounting `CartProvider` twice in a row (standing in for two separate "requests") never carries state over from one mount to the next, and two instances mounted **at the same time** never see each other's changes either:
+
+```ts
+// src/lib/context-isolation.test.ts
+import { render, fireEvent, cleanup, within } from '@testing-library/svelte';
+import { afterEach, expect, test } from 'vitest';
+import CartProvider from './CartProvider.svelte';
+
+afterEach(() => cleanup());
+
+test('context-provided state is created fresh PER MOUNT (per "request"), unlike a module singleton', async () => {
+  // "Request 1"
+  const r1 = render(CartProvider);
+  await fireEvent.click(within(r1.container).getByTestId('add'));
+  expect(within(r1.container).getByTestId('parent-count').textContent).toBe('1');
+  r1.unmount();
+
+  // "Request 2" — a brand new mount. If cart were a module-level $state
+  // singleton (like the SSR trap proven in reactivity/state-rune), this would
+  // start at 1 (leaked from request 1). With context, it starts fresh.
+  const r2 = render(CartProvider);
+  expect(within(r2.container).getByTestId('parent-count').textContent).toBe('0');
+  r2.unmount();
+});
+
+test('two concurrently mounted instances never see each other\'s context state', async () => {
+  const a = render(CartProvider);
+  const b = render(CartProvider);
+
+  await fireEvent.click(within(a.container).getByTestId('add'));
+  await fireEvent.click(within(a.container).getByTestId('add'));
+
+  expect(within(a.container).getByTestId('parent-count').textContent).toBe('2');
+  expect(within(b.container).getByTestId('parent-count').textContent).toBe('0'); // untouched
+
+  a.unmount();
+  b.unmount();
+});
+```
+
+```text
+✓ context-provided state is created fresh PER MOUNT (per "request"), unlike a module singleton
+✓ two concurrently mounted instances never see each other's context state
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+A component mount standing in for a "request" is of course a simplification — it doesn't exercise SvelteKit's real server request pipeline. But it proves the actual mechanism context relies on for SSR safety: state declared inside a component's `<script>` is instantiated fresh every time that component is rendered, with no shared object connecting separate render passes. That's precisely what makes it safe across concurrent SSR requests, each of which renders the component tree independently. A common idiom is a small factory (`createCart()`, proven independent-per-call in the [Runes vs Stores](/svelte/en/state-and-stores/runes-vs-stores) lesson) that returns runed state, called in the parent and shared via context.
+
+## Per-request state in SvelteKit: setContext in +layout.svelte
+
+The pattern above is exactly what a real SvelteKit app uses `+layout.svelte` for: a layout's `<script>` runs fresh on every render of that layout, so state created and put into context there is naturally per-request, never a cross-request singleton.
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script>
+  import { setContext } from 'svelte';
 
   let { children } = $props();
+
+  // Created fresh on EVERY render of this layout — never a module singleton,
+  // so it can never leak between concurrent requests on the server.
+  const cart = $state({ items: [] });
+  setContext('cart', cart);
 </script>
 
 {@render children()}
 ```
 
 ```svelte
-<!-- DeepChild.svelte -->
+<!-- src/routes/+page.svelte -->
 <script>
   import { getContext } from 'svelte';
-  const cart = getContext('cart');   // the same reactive object the parent set
+  const cart = getContext('cart');
 </script>
 
-<button onclick={() => cart.items.push(item)}>add ({cart.items.length})</button>
+<button onclick={() => cart.items.push({ id: cart.items.length })}>
+  add to cart ({cart.items.length})
+</button>
 ```
 
-Because the state is created inside the component tree (not at module load), each render — and each SSR request — gets its own copy. A common idiom is a small factory (`createCart()`) that returns runed state, called in the parent and shared via context.
+Every route nested under this layout shares the same `cart` instance via context — exactly the subtree-sharing behavior demonstrated above with `CartProvider`/`CartItemAdder` — but scoped to one request's render of the layout, not to the module. Contrast this directly with the trap two sections up: `export const cart = $state({ items: [] })` in a `.svelte.js` module imported by `+layout.svelte` would create exactly one `cart` for the whole server process; `setContext` inside the layout's own `<script>` creates one per render instead.
+
+## The decision guide
+
+1. **Local** — `$state` in the component. Start here.
+2. **Lift** — move `$state` to the closest common parent, pass down as props. For a handful of related components.
+3. **Context** — `setContext`/`getContext` with runed state for a subtree that needs its own instance (and SSR safety) — proven above to be created fresh per render, never shared across mounts.
+4. **Module** — export `$state` from a `.svelte.js` module for truly global, single-instance state.
+5. **Store** — when you need the subscribe contract (interop, external push sources).
+
+Reach for the *lowest* level that solves your problem; escalate only when you must.
 
 <Mermaid title="Where each sharing pattern fits" code={decideDiagram} />
 
@@ -72,18 +169,56 @@ export const decideDiagram = `flowchart TB
   ctx --> mod["Truly global, single instance? export $state from a .svelte.js module"]
   mod --> store["Need the subscribe contract? a store"]`;
 
-## The decision guide
+## Mental Model
 
-1. **Local** — `$state` in the component. Start here.
-2. **Lift** — move `$state` to the closest common parent, pass down as props. For a handful of related components.
-3. **Context** — `setContext`/`getContext` with runed state for a subtree that needs its own instance (and SSR safety).
-4. **Module** — export `$state` from a `.svelte.js` module for truly global, single-instance state.
-5. **Store** — when you need the subscribe contract (interop, external push sources).
+Every one of these patterns answers the same question — "where does this reactive object get *created*?" — with a different scope. A module-level export is created once, at import time, for the life of the process: that's exactly why it's shared by everything, forever, including across unrelated server requests. State created inside a component's `<script>` (context included) is created fresh every time that component instance is set up — so context isn't "safer" by some special SvelteKit magic, it's safer because it's built on ordinary component instantiation, which already happens once per render/request by construction. Lifting to a parent is the same idea at the smallest possible scope: the parent component instance is the "container" the state is created inside.
 
-Reach for the *lowest* level that solves your problem; escalate only when you must.
+## Trade-offs
+
+| Choice | Benefit | Cost |
+| --- | --- | --- |
+| Local `$state` | Simplest; nothing to wire up | Only visible to the one component |
+| Lift to parent + props | Still simple; explicit data flow | Prop-drilling grows with tree depth |
+| `setContext`/`getContext` | Fresh per subtree instance, proven safe across separate mounts/requests | Slightly more ceremony (provider + consumer); implicit (not visible in props) |
+| Module `.svelte.js` singleton | Zero ceremony, reachable from anywhere | One instance for the whole process — proven unsafe for per-user data under SSR |
+| Store (`writable`/`readable`) | The subscribe contract, for interop | More ceremony than runes for plain app state |
+
+## Common Misconceptions
+
+- **"Context and module state are both just `$state`, so they behave the same way under SSR."** Proven false (via the [$state Rune](/svelte/en/reactivity/state-rune) lesson's SSR test plus the mount-isolation proof above): module state is one instance for the whole process; context-provided state is created fresh every render, so two concurrent renders never share an instance.
+- **"`setContext` in `+layout.svelte` needs some SvelteKit-specific per-request API to be safe."** It doesn't — it's safe for exactly the same reason any component-local state is safe: the layout's `<script>` runs fresh every time the layout renders, which is once per relevant request.
+- **"Lifting state to a parent and using context are basically the same amount of ceremony, so pick whichever."** Lifting means passing props down explicitly (visible, but grows with depth); context is implicit (no props) but requires both a provider and a consumer to agree on a key — different trade-offs, not equivalent ceremony.
+- **"A factory function used inside context (`createCart()`) shares state with a factory used at module scope."** Proven false in the [Runes vs Stores](/svelte/en/state-and-stores/runes-vs-stores) lesson: a factory always returns an independent instance per call, regardless of where that call happens — what determines sharing vs. isolation is the call site and export shape, not the factory itself.
+
+## Reading AI-generated code
+
+When you see shared state wired across components, check for these:
+
+- Is state that should be **per-user or per-request** (a logged-in user, a session, a cart tied to a login) exported directly from a `.svelte.js` module, instead of created inside a component/layout and shared via context? Proven above: the module version is one instance for the whole server process.
+- In a SvelteKit app, is `setContext` called inside a `+layout.svelte`'s own `<script>` (safe, fresh per render) — or does the state it sets actually come from an imported module-level singleton (unsafe, defeats the point of using context at all)?
+- Does a deeply nested component receive the same three or four values as props through five layers of components that don't use them themselves — a sign that `setContext`/`getContext` (or lifting less far) would remove real, unnecessary ceremony?
+- Is `getContext` called for a key that was never actually set by an ancestor on the path that will render — returning `undefined` at runtime with no compile-time check to catch it?
+
+<SpotTheBug code={`// src/lib/session.svelte.ts
+export const session = $state({ user: null });
+
+// src/routes/+layout.svelte
+<script>
+  import { setContext } from 'svelte';
+  import { session } from '../lib/session.svelte.ts';
+
+  // "Make the session available to the whole app via context"
+  setContext('session', session);
+
+  let { children } = $props();
+</script>
+
+{@render children()}`}>
+This looks like it's using context for per-request safety, but it isn't: `session` is imported from a `.svelte.js`/`.svelte.ts` **module**, where it was already created as a single, process-wide instance — proven in the [$state Rune](/svelte/en/reactivity/state-rune) lesson to be shared by every importer, for the whole server process. Wrapping that same shared object in `setContext` doesn't create a new instance per request; it just hands descendants a reference to the *same* module-level singleton, one layer removed. Every concurrent request on this server process gets the identical `session` object, so one user's `session.user` overwrites the value every other concurrent request sees — exactly the SSR leak the context pattern exists to prevent, still present, just harder to spot because `setContext`/`getContext` are involved. The fix is to create the state **inside** the layout's own `<script>` — `const session = $state({ user: null })` written directly in `+layout.svelte`, not imported from a module — so a fresh instance exists per render, the same as the proven-safe `CartProvider`/`+layout.svelte` examples above.
+</SpotTheBug>
 
 <Callout title="The one-line takeaway">
-Share state across components with the **lowest tool that works**: local `$state` → lift to a parent → **`setContext`/`getContext`** with runed state for a per-instance subtree → a **`.svelte.js` module singleton** for truly global data → a **store** for the subscribe contract. Crucially, **never put per-user state in a module singleton under SSR** — the module is shared across all requests in a process and will leak between users; use context (created per render) instead.
+Share state across components with the **lowest tool that works**: local `$state` → lift to a parent → **`setContext`/`getContext`** with runed state created inside a component/layout (proven fresh per mount, safe across concurrent SvelteKit requests when done in `+layout.svelte`) → a **`.svelte.js` module singleton** for truly global data → a **store** for the subscribe contract. Crucially, **never put per-user state in a module singleton under SSR** — proven in the [$state Rune](/svelte/en/reactivity/state-rune) lesson — the module is shared across all requests in a process and will leak between users; use context (created per render) instead.
 </Callout>
 
 export const quizCross = [
@@ -96,6 +231,7 @@ export const quizCross = [
       'SSR disables runes',
     ],
     answer: 1,
+    explain: 'Proven directly in the $state Rune lesson: a module-level $state export is one instance for the whole process, so mutating it during one "request" is visible to every other importer, including unrelated later requests.',
   },
   {
     q: 'How do you share state within a subtree safely per instance / per request?',
@@ -106,6 +242,7 @@ export const quizCross = [
       'Copy props by hand at every level',
     ],
     answer: 1,
+    explain: 'Proven above: mounting the same provider component twice never carries state from one mount to the next, and two concurrent mounts never see each other\'s state either.',
   },
   {
     q: 'What kind of state is a `.svelte.js` module singleton appropriate for?',
@@ -116,6 +253,18 @@ export const quizCross = [
       'Only numbers',
     ],
     answer: 1,
+    explain: 'A module export is created once for the whole process — fine for data that really is global and not tied to any one user or request.',
+  },
+  {
+    q: '```svelte\n<!-- src/routes/+layout.svelte -->\n<script>\n  import { setContext } from \'svelte\';\n  const cart = $state({ items: [] }); // declared HERE, inside the layout\n  setContext(\'cart\', cart);\n  let { children } = $props();\n</script>\n{@render children()}\n```\nIs this `cart` safe from leaking between two different users\' concurrent requests?',
+    options: [
+      'No — setContext always shares state across requests',
+      'Yes — the layout\'s script (and therefore `cart`) runs fresh on every render, unlike a module-level export',
+      'Only if SvelteKit is deployed with a single worker',
+      'Only in development mode',
+    ],
+    answer: 1,
+    explain: 'Because cart is created inside the layout component\'s own script (not imported from a module), a new instance exists for every render — the same mechanism proven safe with mount-isolation tests above.',
   },
   {
     q: 'What is the guiding principle for choosing a sharing pattern?',
@@ -126,6 +275,18 @@ export const quizCross = [
       'Always lift to the root',
     ],
     answer: 1,
+    explain: 'Each escalation (local -> lift -> context -> module -> store) trades simplicity for reach; use the smallest scope that actually solves the sharing problem at hand.',
+  },
+  {
+    q: 'A `.svelte.js` module exports `export const session = $state({ user: null })`. A `+layout.svelte` then does `setContext(\'session\', session)`. Does wrapping it in setContext make it safe per-request?',
+    options: [
+      'Yes — setContext always isolates state per request',
+      'No — proven: session is still the one module-level instance; setContext only hands out a reference to that same shared singleton',
+      'Yes, but only if getContext is called in every child',
+      'It depends on the adapter used to deploy',
+    ],
+    answer: 1,
+    explain: 'The state\'s creation site is what matters: it was created once at module load, not inside the layout\'s script, so setContext cannot retroactively make it per-request — the fix is creating the $state directly inside +layout.svelte.',
   },
 ];
 

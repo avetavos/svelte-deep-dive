@@ -1,6 +1,6 @@
 ---
 title: 'Cross-Component State'
-description: 'แพทเทิร์นสำหรับ share state ข้ามคอมโพเนนต์ — module-level runes, per-subtree instance ด้วย context, กับดัก SSR singleton และ decision guide'
+description: 'แพทเทิร์นแชร์ state ข้าม component — module-level rune, กับดัก SSR singleton (พิสูจน์แล้วในบท $state Rune), instance ต่อ subtree ด้วย context (พิสูจน์แล้วว่าสดใหม่ทุก mount), +layout.svelte จริงของ SvelteKit ที่ทำแบบต่อ request และ decision guide'
 sidebar:
   order: 5
 ---
@@ -9,13 +9,14 @@ import Mermaid from '../../../../components/Mermaid.astro';
 import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+import SpotTheBug from '../../../../components/SpotTheBug.astro';
 
-## แพทเทิร์น 1: shared module
+## แพทเทิร์นที่ 1: module ที่แชร์กัน
 
-cross-component state ที่ง่ายที่สุดคือค่า reactive ที่ export จาก `.svelte.js` module ทุกคนที่ import จะ share instance เดียว:
+Cross-component state ที่ง่ายที่สุดคือ reactive value ที่ export จาก module `.svelte.js` ทุกคนที่ import แชร์ instance เดียวกัน:
 
 ```js
-// theme.svelte.js
+// src/lib/theme.svelte.js
 export const theme = $state({ mode: 'light' });
 
 export function toggle() {
@@ -23,109 +24,269 @@ export function toggle() {
 }
 ```
 
-คอมโพเนนต์ใด ๆ import `theme` และ `toggle` แล้วจะ sync กัน เหมาะกับ state ที่ global จริง ๆ และมี instance เดียว: color theme, toast queue, feature-flag set
+component ไหนก็ตาม import `theme` และ `toggle` แล้ว sync กันเสมอ นี่เหมาะกับ state ที่ global จริง ๆ มี instance เดียว: สีธีม, toast queue, feature-flag set
 
 ## กับดัก SSR singleton
 
-มีข้อควรระวังที่สำคัญทันทีที่คุณใช้ SvelteKit (หรือ SSR ใด ๆ) module-level `$state` คือ **instance เดียวที่ทุกคนที่ import แชร์กัน** — รวมถึงบน server ที่ *ทุก request ที่ถูกจัดการโดย process เดียวกัน* เอา logged-in user ไปไว้ใน module-level singleton แล้วภายใต้ SSR request หนึ่งอาจเห็นข้อมูลของ user อีกคนได้
+มีข้อควรระวังที่สำคัญทันทีที่คุณใช้ SvelteKit (หรือ SSR ใด ๆ) `$state` ระดับ module คือ **instance เดียวที่แชร์โดยทุกอย่างที่ import มัน** — รวมถึงบน server *ทุก user request ที่ process เดียวกันจัดการ* เอา user ที่ login ใส่ใน module-level singleton แล้วภายใต้ SSR request หนึ่งอาจเห็นข้อมูลของอีก user ได้
 
-<Callout title="อย่าเอา per-user state ไปไว้ใน module singleton ภายใต้ SSR">
-บน server หนึ่ง process จัดการหลาย request module-level `$state` ถูก share ข้ามทุก request ดังนั้นข้อมูลแบบ per-request หรือ per-user (current user, session, cart ที่ผูกกับ login) อาจรั่วข้าม user กันได้ module singleton ปลอดภัยสำหรับข้อมูลที่ global จริง ๆ และไม่ใช่ per-user สำหรับ per-user state ภายใต้ SSR ให้ใช้ context (ด้านล่าง)
+กลไกเดียวกันเป๊ะนี้ — object เดียวทั้ง process ที่ถูก mutate โดย "request 1" มองเห็นได้แบบเงียบ ๆ จาก component ที่ไม่เคยแตะ request 1 เลย — พิสูจน์ตรง ๆ ไปแล้วด้วย effect จริงและ "request" จำลองสองอันในบท [$state Rune](/svelte/th/reactivity/state-rune) มันคือกับดักเดียวกันไม่ว่า shared value จะถือ field เดียวหรือ ใช้ coordinate หลาย component แบบที่นี่: **ความเสี่ยงมาจากการที่ export เป็น module-level ไม่ใช่จากจำนวน component ที่อ่านมัน**
+
+<Callout title="อย่าเอา per-user state ใส่ module singleton ภายใต้ SSR เด็ดขาด">
+บน server process เดียวจัดการหลาย request `$state` ระดับ module ถูกแชร์ข้ามทุก request ดังนั้นข้อมูลต่อ request หรือต่อ user (user ปัจจุบัน, session, cart ที่ผูกกับ login) รั่วระหว่าง user ได้ Module singleton ปลอดภัยสำหรับข้อมูล global จริง ๆ ที่ไม่ใช่ของ user คนใดคนหนึ่ง สำหรับ per-user state ภายใต้ SSR ให้ใช้ context (ข้างล่าง)
 </Callout>
 
-## แพทเทิร์น 2: per-subtree instance ด้วย context
+## แพทเทิร์นที่ 2: instance ต่อ subtree ด้วย context
 
-เมื่อคุณต้องการ state ที่ share *ภายใน subtree* แต่ **แยกกันต่อ instance** — และปลอดภัยภายใต้ SSR — ให้ผสม runed class/object กับ **`setContext`** / **`getContext`** parent สร้าง state แล้วเอาไปไว้ใน context ส่วน descendant อ่านค่าไปใช้ แต่ละ instance ของคอมโพเนนต์ได้ของตัวเอง สร้างตอน render ของ request นั้น
+เมื่อคุณต้องการ state ที่แชร์กัน*ภายใน subtree*แต่**แยกกันต่อ instance** — และปลอดภัยภายใต้ SSR — ให้รวม runed class/object กับ **`setContext`** / **`getContext`** parent สร้าง state แล้วใส่เข้า context; descendant อ่านมัน component instance แต่ละตัวได้ของตัวเอง ที่ถูกสร้างระหว่าง render ของ request นั้น
 
 ```svelte
-<!-- Parent.svelte -->
+<!-- src/lib/CartProvider.svelte -->
 <script>
   import { setContext } from 'svelte';
+  import CartItemAdder from './CartItemAdder.svelte';
 
   // created fresh per instance / per request — not a module singleton
   const cart = $state({ items: [] });
   setContext('cart', cart);
+</script>
+
+<CartItemAdder />
+<span data-testid="parent-count">{cart.items.length}</span>
+```
+
+```svelte
+<!-- src/lib/CartItemAdder.svelte -->
+<script>
+  import { getContext } from 'svelte';
+  const cart = getContext('cart'); // the same reactive object the parent set
+</script>
+
+<button data-testid="add" onclick={() => cart.items.push({ id: cart.items.length })}>
+  add ({cart.items.length})
+</button>
+```
+
+เพราะ state ถูกสร้างข้างในต้นไม้ component (ไม่ใช่ตอน module load) แต่ละ render — และแต่ละ SSR request — ได้สำเนาของตัวเอง พิสูจน์ตรง ๆ: การ mount `CartProvider` สองครั้งติดกัน (แทน "request" สองอัน) ไม่เคยพา state ข้ามจาก mount หนึ่งไปอีก mount และสอง instance ที่ mount **พร้อมกัน** ก็ไม่เคยเห็นการเปลี่ยนแปลงของกันและกันเลย:
+
+```ts
+// src/lib/context-isolation.test.ts
+import { render, fireEvent, cleanup, within } from '@testing-library/svelte';
+import { afterEach, expect, test } from 'vitest';
+import CartProvider from './CartProvider.svelte';
+
+afterEach(() => cleanup());
+
+test('context-provided state is created fresh PER MOUNT (per "request"), unlike a module singleton', async () => {
+  // "Request 1"
+  const r1 = render(CartProvider);
+  await fireEvent.click(within(r1.container).getByTestId('add'));
+  expect(within(r1.container).getByTestId('parent-count').textContent).toBe('1');
+  r1.unmount();
+
+  // "Request 2" — a brand new mount. If cart were a module-level $state
+  // singleton (like the SSR trap proven in reactivity/state-rune), this would
+  // start at 1 (leaked from request 1). With context, it starts fresh.
+  const r2 = render(CartProvider);
+  expect(within(r2.container).getByTestId('parent-count').textContent).toBe('0');
+  r2.unmount();
+});
+
+test('two concurrently mounted instances never see each other\'s context state', async () => {
+  const a = render(CartProvider);
+  const b = render(CartProvider);
+
+  await fireEvent.click(within(a.container).getByTestId('add'));
+  await fireEvent.click(within(a.container).getByTestId('add'));
+
+  expect(within(a.container).getByTestId('parent-count').textContent).toBe('2');
+  expect(within(b.container).getByTestId('parent-count').textContent).toBe('0'); // untouched
+
+  a.unmount();
+  b.unmount();
+});
+```
+
+```text
+✓ context-provided state is created fresh PER MOUNT (per "request"), unlike a module singleton
+✓ two concurrently mounted instances never see each other's context state
+
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+```
+
+การ mount component แทน "request" แน่นอนว่าเป็นการทำให้ง่ายขึ้น — มันไม่ได้ทดสอบ server request pipeline จริงของ SvelteKit แต่มันพิสูจน์กลไกจริงที่ context พึ่งพาสำหรับความปลอดภัยของ SSR: state ที่ประกาศข้างใน `<script>` ของ component ถูก instantiate ใหม่ทุกครั้งที่ component นั้นถูก render โดยไม่มี object ที่แชร์เชื่อม render pass ที่แยกกันเลย นั่นแหละคือสิ่งที่ทำให้มันปลอดภัยข้าม concurrent SSR request ซึ่งแต่ละอัน render component tree แยกจากกัน แพทเทิร์นทั่วไปคือ factory เล็ก ๆ (`createCart()` ที่พิสูจน์แล้วว่าอิสระต่อการเรียกในบท [Runes vs Stores](/svelte/th/state-and-stores/runes-vs-stores)) ที่ return runed state เรียกใน parent แล้วแชร์ผ่าน context
+
+## Per-request state ใน SvelteKit: setContext ใน +layout.svelte
+
+แพทเทิร์นข้างบนคือสิ่งที่แอป SvelteKit จริงใช้ `+layout.svelte` ทำพอดี: `<script>` ของ layout รันใหม่ทุกครั้งที่ layout นั้นถูก render ดังนั้น state ที่สร้างและใส่เข้า context ที่นั่นเป็น per-request โดยธรรมชาติ ไม่มีทางเป็น singleton ข้าม request เลย
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script>
+  import { setContext } from 'svelte';
 
   let { children } = $props();
+
+  // Created fresh on EVERY render of this layout — never a module singleton,
+  // so it can never leak between concurrent requests on the server.
+  const cart = $state({ items: [] });
+  setContext('cart', cart);
 </script>
 
 {@render children()}
 ```
 
 ```svelte
-<!-- DeepChild.svelte -->
+<!-- src/routes/+page.svelte -->
 <script>
   import { getContext } from 'svelte';
-  const cart = getContext('cart');   // the same reactive object the parent set
+  const cart = getContext('cart');
 </script>
 
-<button onclick={() => cart.items.push(item)}>add ({cart.items.length})</button>
+<button onclick={() => cart.items.push({ id: cart.items.length })}>
+  add to cart ({cart.items.length})
+</button>
 ```
 
-เพราะ state ถูกสร้างภายใน component tree (ไม่ใช่ตอน module load) แต่ละ render — และแต่ละ SSR request — ได้ copy ของตัวเอง idiom ที่พบบ่อยคือ factory เล็ก ๆ (`createCart()`) ที่ return runed state เรียกใน parent แล้ว share ผ่าน context
+ทุก route ที่ซ้อนอยู่ใต้ layout นี้แชร์ instance `cart` เดียวกันผ่าน context — พฤติกรรมการแชร์ใน subtree แบบเดียวกับที่โชว์ข้างบนด้วย `CartProvider`/`CartItemAdder` — แต่ scope อยู่แค่ render ของ request เดียวของ layout ไม่ใช่ของ module เทียบตรง ๆ กับกับดักสองส่วนก่อนหน้า: `export const cart = $state({ items: [] })` ใน module `.svelte.js` ที่ `+layout.svelte` import จะสร้าง `cart` แค่ตัวเดียวสำหรับทั้ง server process; `setContext` ข้างใน `<script>` ของ layout เองสร้างตัวใหม่ต่อ render แทน
 
-<Mermaid title="แต่ละแพทเทิร์นเหมาะกับที่ไหน" code={decideDiagram} />
+## Decision guide
+
+1. **Local** — `$state` ใน component เริ่มที่นี่
+2. **Lift** — ย้าย `$state` ไปที่ parent ร่วมที่ใกล้ที่สุด ส่งลงมาเป็น props สำหรับ component ที่เกี่ยวข้องกันไม่กี่ตัว
+3. **Context** — `setContext`/`getContext` กับ runed state สำหรับ subtree ที่ต้องการ instance ของตัวเอง (และ SSR safety) — พิสูจน์ข้างบนแล้วว่าถูกสร้างใหม่ทุก render ไม่เคยแชร์ข้าม mount
+4. **Module** — export `$state` จาก module `.svelte.js` สำหรับ state ที่ global จริง ๆ instance เดียว
+5. **Store** — เมื่อคุณต้องการ subscribe contract (interop, external push source)
+
+เลือกระดับ*ต่ำที่สุด*ที่แก้ปัญหาได้ ค่อยขยับขึ้นเมื่อจำเป็นเท่านั้น
+
+<Mermaid title="แพทเทิร์นแชร์ state แต่ละแบบเหมาะกับอะไร" code={decideDiagram} />
 
 export const decideDiagram = `flowchart TB
-  local["แค่คอมโพเนนต์เดียว: local state"] --> up["ไม่กี่คอมโพเนนต์ที่เกี่ยวกัน: lift state ไป parent แล้วส่ง props"]
-  up --> ctx["subtree แบบ per-instance หรือ per-user: setContext + runed state"]
-  ctx --> mod["global จริง ๆ instance เดียว: export state จาก .svelte.js module"]
-  mod --> store["ต้องการ subscribe contract: ใช้ store"]`;
+  local["Just one component? local $state"] --> up["A few related components? lift $state to the parent, pass props"]
+  up --> ctx["A subtree, per-instance / per-user? setContext + runed state"]
+  ctx --> mod["Truly global, single instance? export $state from a .svelte.js module"]
+  mod --> store["Need the subscribe contract? a store"]`;
 
-## decision guide
+## Mental Model
 
-1. **Local** — `$state` ในคอมโพเนนต์ เริ่มที่นี่
-2. **Lift** — ย้าย `$state` ไปที่ parent ร่วมที่ใกล้ที่สุด ส่งลงเป็น props สำหรับคอมโพเนนต์ที่เกี่ยวกันไม่กี่ตัว
-3. **Context** — `setContext`/`getContext` กับ runed state สำหรับ subtree ที่ต้องการ instance ของตัวเอง (และความปลอดภัยแบบ SSR)
-4. **Module** — export `$state` จาก `.svelte.js` module สำหรับ state ที่ global จริง ๆ instance เดียว
-5. **Store** — เมื่อต้องการ subscribe contract (interop, external push source)
+ทุกแพทเทิร์นข้างบนตอบคำถามเดียวกัน — "reactive object นี้ถูก*สร้าง*ที่ไหน" — ด้วย scope ที่ต่างกัน Module-level export ถูกสร้างครั้งเดียวตอน import time สำหรับอายุของ process ทั้งหมด — นั่นแหละคือเหตุผลพอดีที่มันถูกแชร์โดยทุกอย่างตลอดไป รวมถึงข้าม server request ที่ไม่เกี่ยวข้องกันเลย State ที่สร้างข้างใน `<script>` ของ component (รวมถึง context) ถูกสร้างใหม่ทุกครั้งที่ component instance นั้นถูกตั้งค่า — ดังนั้น context จึง"ปลอดภัยกว่า"ไม่ใช่เพราะ SvelteKit magic พิเศษอะไร แต่เพราะมันสร้างบนการ instantiate component ธรรมดา ที่เกิดขึ้นครั้งเดียวต่อ render/request อยู่แล้วโดยโครงสร้าง การ lift ไป parent ก็คือไอเดียเดียวกันที่ scope เล็กที่สุดเท่าที่จะเป็นได้: parent component instance คือ "container" ที่ state ถูกสร้างข้างใน
 
-ให้เลือกระดับ *ต่ำที่สุด* ที่แก้ปัญหาได้ แล้วค่อยเลื่อนขึ้นเมื่อจำเป็นเท่านั้น
+## ข้อแลกเปลี่ยน
+
+| ตัวเลือก | ได้อะไร | เสียอะไร |
+| --- | --- | --- |
+| Local `$state` | ง่ายที่สุด; ไม่ต้องต่ออะไรเลย | มองเห็นได้แค่ component เดียว |
+| Lift ไป parent + props | ยังง่าย; data flow ชัดเจน | Prop-drilling โตตามความลึกของ tree |
+| `setContext`/`getContext` | Instance ใหม่ต่อ subtree พิสูจน์แล้วว่าปลอดภัยข้าม mount/request แยกกัน | พิธีการมากขึ้นนิดหน่อย (provider + consumer); implicit (ไม่เห็นใน props) |
+| Module `.svelte.js` singleton | ไม่มีพิธีการเลย เข้าถึงได้จากทุกที่ | Instance เดียวสำหรับทั้ง process — พิสูจน์แล้วว่าไม่ปลอดภัยสำหรับข้อมูลต่อ user ภายใต้ SSR |
+| Store (`writable`/`readable`) | Subscribe contract สำหรับ interop | พิธีการมากกว่า rune สำหรับ app state ธรรมดา |
+
+## ความเข้าใจผิดที่พบบ่อย
+
+- **"Context กับ module state ก็แค่ `$state` เหมือนกัน เลยพฤติกรรมเหมือนกันภายใต้ SSR"** พิสูจน์แล้วว่าผิด (ผ่าน test SSR ของบท [$state Rune](/svelte/th/reactivity/state-rune) บวกกับ proof การแยก mount ข้างบน): module state คือ instance เดียวสำหรับทั้ง process; state ที่มาจาก context ถูกสร้างใหม่ทุก render ดังนั้นสอง render ที่เกิดพร้อมกันไม่เคยแชร์ instance เลย
+- **"`setContext` ใน `+layout.svelte` ต้องการ API เฉพาะของ SvelteKit สำหรับ per-request ถึงจะปลอดภัย"** ไม่จริง — มันปลอดภัยด้วยเหตุผลเดียวกันเป๊ะกับที่ component-local state ใด ๆ ปลอดภัย: `<script>` ของ layout รันใหม่ทุกครั้งที่ layout render ซึ่งคือครั้งเดียวต่อ request ที่เกี่ยวข้อง
+- **"การ lift state ไป parent กับการใช้ context มีพิธีการพอ ๆ กัน เลือกอันไหนก็ได้"** การ lift หมายถึงส่ง props ลงมาแบบชัดเจน (มองเห็นได้ แต่โตตามความลึก) context เป็น implicit (ไม่มี props) แต่ต้องการทั้ง provider และ consumer ที่ตกลง key เดียวกัน — trade-off ต่างกัน ไม่ใช่พิธีการเท่ากัน
+- **"factory function ที่ใช้ใน context (`createCart()`) แชร์ state กับ factory ที่ใช้ที่ module scope"** พิสูจน์แล้วว่าผิดในบท [Runes vs Stores](/svelte/th/state-and-stores/runes-vs-stores): factory return instance อิสระทุกครั้งที่เรียกเสมอ ไม่ว่าการเรียกนั้นจะเกิดที่ไหน — สิ่งที่กำหนดว่าจะแชร์หรือแยกกันคือจุดที่เรียกกับ shape ของ export ไม่ใช่ตัว factory เอง
+
+## อ่านโค้ดที่ AI เขียน
+
+เมื่อเจอ shared state ที่ต่อข้าม component ให้เช็คสิ่งเหล่านี้:
+
+- State ที่ควรจะเป็น**ต่อ user หรือต่อ request** (user ที่ login, session, cart ที่ผูกกับ login) ถูก export ตรง ๆ จาก module `.svelte.js` แทนที่จะถูกสร้างข้างใน component/layout แล้วแชร์ผ่าน context ไหม? พิสูจน์ข้างบนแล้ว: เวอร์ชัน module คือ instance เดียวสำหรับทั้ง server process
+- ในแอป SvelteKit `setContext` ถูกเรียกข้างใน `<script>` ของ `+layout.svelte` เอง (ปลอดภัย สดใหม่ทุก render) — หรือ state ที่มัน set จริง ๆ มาจาก module-level singleton ที่ import เข้ามา (ไม่ปลอดภัย ทำลายจุดประสงค์ของการใช้ context ไปเลย)?
+- Component ที่ซ้อนลึกได้รับค่าสามสี่ตัวเดิมผ่าน props ผ่านห้าชั้นของ component ที่ไม่ได้ใช้มันเองเลยไหม — สัญญาณว่า `setContext`/`getContext` (หรือ lift น้อยกว่านี้) จะลดพิธีการที่ไม่จำเป็นออกได้จริง?
+- `getContext` ถูกเรียกด้วย key ที่ไม่เคยถูก set จริงโดย ancestor บนเส้นทางที่จะ render ไหม — return `undefined` ตอน runtime โดยไม่มีการเช็คตอน compile-time เลย?
+
+<SpotTheBug code={`// src/lib/session.svelte.ts
+export const session = $state({ user: null });
+
+// src/routes/+layout.svelte
+<script>
+  import { setContext } from 'svelte';
+  import { session } from '../lib/session.svelte.ts';
+
+  // "Make the session available to the whole app via context"
+  setContext('session', session);
+
+  let { children } = $props();
+</script>
+
+{@render children()}`}>
+โค้ดนี้ดูเหมือนกำลังใช้ context เพื่อความปลอดภัยต่อ request แต่ไม่ใช่เลย: `session` ถูก import จาก **module** `.svelte.js`/`.svelte.ts` ซึ่งมันถูกสร้างไปแล้วเป็น instance เดียวทั้ง process — พิสูจน์แล้วในบท [$state Rune](/svelte/th/reactivity/state-rune) ว่าถูกแชร์โดยทุก importer สำหรับทั้ง server process การห่อ object เดียวกันนั้นด้วย `setContext` ไม่ได้สร้าง instance ใหม่ต่อ request เลย มันแค่ส่ง reference ไปยัง singleton ระดับ module ตัวเดิมให้ descendant ห่างออกไปอีกชั้นหนึ่งเท่านั้น ทุก request ที่เกิดพร้อมกันบน server process นี้ได้ `session` object เดียวกันเป๊ะ ดังนั้น `session.user` ของ user คนหนึ่งจะเขียนทับค่าที่ทุก concurrent request อื่นเห็น — นี่คือ SSR leak แบบเดียวกับที่ context pattern มีไว้ป้องกันพอดี แค่ยังอยู่ตรงนั้น เพียงแต่สังเกตยากขึ้นเพราะมี `setContext`/`getContext` มาเกี่ยวข้อง ทางแก้คือสร้าง state **ข้างใน** `<script>` ของ layout เอง — `const session = $state({ user: null })` เขียนตรง ๆ ใน `+layout.svelte` ไม่ใช่ import จาก module — เพื่อให้มี instance ใหม่ต่อ render เหมือนตัวอย่าง `CartProvider`/`+layout.svelte` ที่พิสูจน์แล้วว่าปลอดภัยข้างบน
+</SpotTheBug>
 
 <Callout title="สรุปหนึ่งบรรทัด">
-share state ข้ามคอมโพเนนต์ด้วย **เครื่องมือระดับต่ำที่สุดที่ใช้ได้**: local `$state` → lift ไป parent → **`setContext`/`getContext`** กับ runed state สำหรับ per-instance subtree → **`.svelte.js` module singleton** สำหรับข้อมูล global จริง ๆ → **store** สำหรับ subscribe contract ที่สำคัญคือ **อย่าเอา per-user state ไปไว้ใน module singleton ภายใต้ SSR** — module ถูก share ข้ามทุก request ใน process และจะรั่วข้าม user กัน ให้ใช้ context (สร้างต่อ render) แทน
+แชร์ state ข้าม component ด้วย**เครื่องมือที่ต่ำที่สุดที่ใช้ได้**: local `$state` → lift ไป parent → **`setContext`/`getContext`** กับ runed state ที่สร้างข้างใน component/layout (พิสูจน์แล้วว่าสดใหม่ทุก mount ปลอดภัยข้าม concurrent SvelteKit request เมื่อทำใน `+layout.svelte`) → **`.svelte.js` module singleton** สำหรับข้อมูล global จริง ๆ → **store** สำหรับ subscribe contract ที่สำคัญที่สุด **อย่าเอา per-user state ใส่ module singleton ภายใต้ SSR เด็ดขาด** — พิสูจน์แล้วในบท [$state Rune](/svelte/th/reactivity/state-rune) — module ถูกแชร์ข้ามทุก request ใน process เดียวและจะรั่วระหว่าง user ใช้ context แทน (สร้างต่อ render)
 </Callout>
 
 export const quizCross = [
   {
     q: 'กับดัก SSR singleton คืออะไร?',
     options: [
-      'module โหลดช้าเกินไป',
-      'module-level `$state` ถูก share ข้ามทุก request ใน server process ดังนั้น per-user data อาจรั่วข้าม user กัน',
-      'context ใช้บน server ไม่ได้',
-      'SSR ปิดการใช้ runes',
+      'Module โหลดช้าเกินไป',
+      '`$state` ระดับ module ถูกแชร์ข้ามทุก request ใน server process ดังนั้นข้อมูลต่อ user รั่วระหว่าง user ได้',
+      'Context ใช้บน server ไม่ได้',
+      'SSR ปิด rune',
     ],
     answer: 1,
+    explain: 'พิสูจน์ตรง ๆ ในบท $state Rune แล้ว: module-level $state export คือ instance เดียวสำหรับทั้ง process ดังนั้นการ mutate มันระหว่าง "request" หนึ่งมองเห็นได้จากทุก importer อื่น รวมถึง request ที่ไม่เกี่ยวข้องกันในภายหลัง',
   },
   {
-    q: 'คุณ share state ภายใน subtree อย่างปลอดภัยแบบ per-instance / per-request ยังไง?',
+    q: 'แชร์ state ภายใน subtree แบบปลอดภัยต่อ instance/ต่อ request ทำยังไง?',
     options: [
-      'module singleton',
-      'สร้าง runed state ใน parent แล้ว share ผ่าน `setContext` / `getContext`',
-      'global window variable',
-      'copy props เองทุกระดับ',
+      'Module singleton',
+      'สร้าง runed state ใน parent แล้วแชร์ผ่าน `setContext` / `getContext`',
+      'ตัวแปร window แบบ global',
+      'Copy props มือทุกชั้น',
     ],
     answer: 1,
+    explain: 'พิสูจน์ข้างบนแล้ว: การ mount provider component เดิมสองครั้งไม่เคยพา state จาก mount หนึ่งไปอีก mount และสอง mount ที่เกิดพร้อมกันก็ไม่เคยเห็น state ของกันและกันเลย',
   },
   {
-    q: '`.svelte.js` module singleton เหมาะกับ state แบบไหน?',
+    q: 'Module `.svelte.js` singleton เหมาะกับ state แบบไหน?',
     options: [
-      'per-user session data ภายใต้ SSR',
-      'ข้อมูล global จริง ๆ instance เดียว ไม่ใช่ per-user อย่าง color theme หรือ toast queue',
-      'state ทุกชิ้น',
-      'เฉพาะตัวเลข',
+      'ข้อมูล session ต่อ user ภายใต้ SSR',
+      'ข้อมูลที่ global จริง ๆ instance เดียว ไม่ใช่ของ user คนไหน เช่นสีธีมหรือ toast queue',
+      'State ทุกชนิด',
+      'ตัวเลขเท่านั้น',
     ],
     answer: 1,
+    explain: 'Module export ถูกสร้างครั้งเดียวสำหรับทั้ง process — โอเคสำหรับข้อมูลที่ global จริง ๆ ไม่ผูกกับ user หรือ request คนใดคนหนึ่ง',
   },
   {
-    q: 'อะไรคือหลักในการเลือกแพทเทิร์น sharing?',
+    q: '```svelte\n<!-- src/routes/+layout.svelte -->\n<script>\n  import { setContext } from \'svelte\';\n  const cart = $state({ items: [] }); // declared HERE, inside the layout\n  setContext(\'cart\', cart);\n  let { children } = $props();\n</script>\n{@render children()}\n```\n`cart` นี้ปลอดภัยจากการรั่วระหว่าง request ของ user สองคนที่เกิดพร้อมกันไหม?',
+    options: [
+      'ไม่ปลอดภัย — setContext แชร์ state ข้าม request เสมอ',
+      'ปลอดภัย — script ของ layout (และ cart) รันใหม่ทุก render ต่างจาก module-level export',
+      'ปลอดภัยเฉพาะตอน deploy SvelteKit ด้วย worker เดียว',
+      'ปลอดภัยเฉพาะใน development mode',
+    ],
+    answer: 1,
+    explain: 'เพราะ cart ถูกสร้างข้างใน script ของ layout component เอง (ไม่ได้ import จาก module) instance ใหม่จึงเกิดขึ้นทุก render — กลไกเดียวกับที่พิสูจน์แล้วว่าปลอดภัยด้วย test แยก mount ข้างบน',
+  },
+  {
+    q: 'หลักการนำทางในการเลือกแพทเทิร์นแชร์ state คืออะไร?',
     options: [
       'ใช้ global store เสมอ',
-      'เลือกระดับต่ำที่สุดที่แก้ปัญหาได้ แล้วค่อยเลื่อนขึ้นเมื่อจำเป็นเท่านั้น',
+      'เลือกระดับต่ำที่สุดที่แก้ปัญหาได้ ค่อยขยับขึ้นเมื่อจำเป็นเท่านั้น',
       'ใช้ context เสมอ',
-      'lift ไป root เสมอ',
+      'Lift ไป root เสมอ',
     ],
     answer: 1,
+    explain: 'แต่ละการขยับขึ้น (local -> lift -> context -> module -> store) แลกความง่ายกับ reach ที่กว้างขึ้น ใช้ scope เล็กที่สุดที่แก้ปัญหาการแชร์ตรงหน้าได้จริง',
+  },
+  {
+    q: 'Module `.svelte.js` export `export const session = $state({ user: null })` แล้ว `+layout.svelte` เรียก `setContext(\'session\', session)` การห่อมันด้วย setContext ทำให้ปลอดภัยต่อ request ไหม?',
+    options: [
+      'ปลอดภัย — setContext แยก state ต่อ request เสมอ',
+      'ไม่ปลอดภัย — พิสูจน์แล้ว: session ยังเป็น instance เดียวระดับ module; setContext แค่ส่ง reference ไปยัง singleton ที่แชร์ตัวเดิม',
+      'ปลอดภัย แต่เฉพาะตอน getContext ถูกเรียกในทุก child',
+      'ขึ้นอยู่กับ adapter ที่ใช้ deploy',
+    ],
+    answer: 1,
+    explain: 'จุดที่ state ถูกสร้างต่างหากที่สำคัญ: มันถูกสร้างครั้งเดียวตอน module load ไม่ใช่ข้างใน script ของ layout ดังนั้น setContext ย้อนกลับไปทำให้มันเป็น per-request ไม่ได้ — ทางแก้คือสร้าง $state ข้างใน +layout.svelte ตรง ๆ',
   },
 ];
 
