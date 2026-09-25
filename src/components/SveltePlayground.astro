@@ -1,0 +1,190 @@
+---
+// SveltePlayground: renders a Svelte 5 component source (read-only, syntax
+// highlighted) plus a toolbar that lazily loads `svelte/compiler` from
+// esm.sh (same isomorphic-package approach the official REPL uses) and runs
+// `compile()` in the browser — so readers can SEE what `$state`/`$derived`/
+// `$effect`/the template actually compile to, not just take the lesson's
+// word for it. See svelte-playground-runtime.ts for the architecture write-up
+// and the manual browser proof this was built against (module doc comment).
+//
+// Two stages (spec §3.3):
+//   Stage 1 "Compile" — always available. Shows compiled JS + warnings/errors.
+//   Stage 2 "Run" — only enabled after a successful `client`-target compile;
+//   mounts the real compiled component in a sandboxed iframe via an import
+//   map pinned to the same Svelte version.
+import { Code } from 'astro-expressive-code/components';
+
+interface Props {
+  code: string;
+  id?: string;
+  title?: string;
+}
+
+const { code, id, title } = Astro.props;
+---
+
+<div class="svp not-content" data-code={code} id={id}>
+  {title && <p class="svp__title">{title}</p>}
+  <Code code={code} lang="svelte" />
+  <div class="svp__bar">
+    <label class="svp__toggle"><input type="checkbox" data-server />
+      <span data-server-label></span></label>
+    <label class="svp__toggle"><input type="checkbox" data-dev />
+      <span data-dev-label></span></label>
+    <button class="svp__compile" data-compile type="button">Compile</button>
+    <button class="svp__run" data-run type="button" disabled>Run ▸</button>
+    <span class="svp__badge" data-badge></span>
+  </div>
+  <p class="svp__hint" data-hint hidden></p>
+  <pre class="svp__err" data-err hidden><code></code></pre>
+  <div class="svp__warn" data-warn hidden></div>
+  <div class="svp__out" data-out hidden>
+    <div class="svp__out-bar">
+      <span data-out-label></span>
+      <button class="svp__copy" data-copy type="button"></button>
+    </div>
+    <pre><code></code></pre>
+  </div>
+  <iframe class="svp__frame" data-frame hidden sandbox="allow-scripts" title="SveltePlayground output"></iframe>
+</div>
+
+<script>
+  import {
+    loadSvelteCompiler,
+    compileSvelte,
+    buildRunSrcdoc,
+    isRunMessage,
+    copyFor,
+    VERSION_BADGE,
+    SVELTE_CDN_VERSION,
+  } from './svelte-playground-runtime';
+
+  const lang = document.documentElement.lang;
+  const T = copyFor(lang);
+  const th = lang?.startsWith('th');
+
+  document.querySelectorAll<HTMLElement>('.svp').forEach((svp) => {
+    if (svp.dataset.wired) return;
+    svp.dataset.wired = '1';
+
+    const code = svp.dataset.code || '';
+    const serverCheck = svp.querySelector<HTMLInputElement>('[data-server]');
+    const devCheck = svp.querySelector<HTMLInputElement>('[data-dev]');
+    const serverLabel = svp.querySelector<HTMLElement>('[data-server-label]');
+    const devLabel = svp.querySelector<HTMLElement>('[data-dev-label]');
+    const compileBtn = svp.querySelector<HTMLButtonElement>('[data-compile]');
+    const runBtn = svp.querySelector<HTMLButtonElement>('[data-run]');
+    const badge = svp.querySelector<HTMLElement>('[data-badge]');
+    const hint = svp.querySelector<HTMLElement>('[data-hint]');
+    const errBox = svp.querySelector<HTMLElement>('[data-err]');
+    const warnBox = svp.querySelector<HTMLElement>('[data-warn]');
+    const outBox = svp.querySelector<HTMLElement>('[data-out]');
+    const outLabel = svp.querySelector<HTMLElement>('[data-out-label]');
+    const copyBtn = svp.querySelector<HTMLButtonElement>('[data-copy]');
+    const frame = svp.querySelector<HTMLIFrameElement>('[data-frame]');
+
+    if (serverLabel) serverLabel.textContent = T.server;
+    if (devLabel) devLabel.textContent = T.dev;
+    if (compileBtn) compileBtn.textContent = T.compile;
+    if (runBtn) runBtn.textContent = T.run;
+    if (copyBtn) copyBtn.textContent = T.copy;
+    if (outLabel) outLabel.textContent = T.output;
+    if (badge) {
+      badge.textContent = VERSION_BADGE[th ? 'th' : 'en']();
+      badge.title = `Loaded from esm.sh, pinned to ${SVELTE_CDN_VERSION}`;
+    }
+
+    let lastClientJs: string | null = null;
+
+    function showHint(text: string) {
+      if (!hint) return;
+      hint.textContent = text;
+      hint.hidden = false;
+    }
+    function hideHint() {
+      if (hint) hint.hidden = true;
+    }
+    function showError(text: string) {
+      if (!errBox) return;
+      errBox.querySelector('code')!.textContent = text;
+      errBox.hidden = false;
+    }
+    function showWarnings(lines: string[]) {
+      if (!warnBox) return;
+      warnBox.textContent = lines.length ? lines.join('\n') : T.noWarnings;
+      warnBox.hidden = false;
+    }
+    function showOutput(text: string) {
+      if (!outBox) return;
+      outBox.querySelector('code')!.textContent = text;
+      outBox.hidden = false;
+    }
+    function resetPanels() {
+      if (errBox) errBox.hidden = true;
+      if (warnBox) warnBox.hidden = true;
+      if (outBox) outBox.hidden = true;
+      if (frame) {
+        frame.hidden = true;
+        frame.removeAttribute('srcdoc');
+      }
+    }
+
+    compileBtn?.addEventListener('click', async () => {
+      compileBtn.disabled = true;
+      resetPanels();
+      lastClientJs = null;
+      if (runBtn) runBtn.disabled = true;
+      showHint(T.loading);
+      try {
+        const compiler = await loadSvelteCompiler();
+        hideHint();
+        badge && (badge.textContent = VERSION_BADGE[th ? 'th' : 'en'](compiler.VERSION));
+        const settings = { server: !!serverCheck?.checked, dev: !!devCheck?.checked };
+        const result = compileSvelte(compiler, code, settings);
+        if (result.ok) {
+          showOutput(result.js);
+          showWarnings(result.warnings.map((w) => w.text));
+          if (result.generate === 'client') {
+            lastClientJs = result.js;
+            if (runBtn) runBtn.disabled = false;
+          }
+        } else {
+          showError(result.error.frame ? `${result.error.text}\n\n${result.error.frame}` : result.error.text);
+        }
+      } catch (e) {
+        hideHint();
+        showError((e as Error)?.message ?? String(e));
+      } finally {
+        compileBtn.disabled = false;
+      }
+    });
+
+    runBtn?.addEventListener('click', () => {
+      if (!lastClientJs || !frame) {
+        showError(T.runNotAvailable);
+        return;
+      }
+      if (errBox) errBox.hidden = true;
+      frame.srcdoc = buildRunSrcdoc(lastClientJs);
+      frame.hidden = false;
+    });
+
+    window.addEventListener('message', (e) => {
+      if (!frame || frame.hidden) return;
+      if (!isRunMessage(e.data)) return;
+      showError(`${T.runtimeError}: ${e.data.message}`);
+    });
+
+    copyBtn?.addEventListener('click', async () => {
+      const text = outBox?.querySelector('code')?.textContent ?? '';
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = copyBtn.textContent;
+        copyBtn.textContent = T.copied;
+        setTimeout(() => (copyBtn.textContent = original), 1200);
+      } catch {
+        // clipboard API unavailable (e.g. insecure context) — no-op, output is still selectable.
+      }
+    });
+  });
+</script>

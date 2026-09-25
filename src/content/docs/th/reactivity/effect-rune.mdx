@@ -10,6 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
 
 ## Effect sync กับโลกภายนอก
 
@@ -27,6 +28,22 @@ import SpotTheBug from '../../../../components/SpotTheBug.astro';
 ```
 
 Dependency ถูก track อัตโนมัติ เหมือน `$derived` ทุกประการ — effect อ่าน `count` มันจึงรันใหม่ตอน `count` เปลี่ยน ไม่ต้องมี dependency array
+
+คอมไพล์ effect ตัวเดียวกันนี้ด้านล่างแล้วสังเกต `$.user_effect(...)` ในผลลัพธ์ — compiler แยก tag `$effect` ที่คุณเขียนเองออกจาก effect ภายในของ template (ตัวที่คอยซิงก์ text node เฉย ๆ) อย่างชัดเจน
+
+export const effectRuneCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let count = $state(0);
+
+  $effect(() => {
+    console.log(count);
+  });
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+
+<SveltePlayground code={effectRuneCode} id="effect-rune-playground" />
 
 ## Dependency คือสิ่งที่การรันล่าสุดอ่านพอดี
 

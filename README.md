@@ -90,3 +90,108 @@ both `tools/probe/vite.config.ts` (read by `svelte-check`) and its own
 
 `tools/probe/` is gitignored and safe to delete any time — `--refresh`
 rebuilds it from scratch.
+
+## SveltePlayground
+
+A narrow-scope, in-browser Svelte 5 playground (spec §3.3, deep-review §4
+"Playground") used in three lessons today —
+`reactivity/state-rune`, `reactivity/derived-rune`, `reactivity/effect-rune`
+— so readers can see what `$state`/`$derived`/`$effect`/the template
+actually compile to, instead of taking the lesson's word for it. Not a
+generic "run any Svelte file" sandbox: each embed supplies one
+`export const xxxCode` template literal defining a single `.svelte`
+component source (mirrors `TSPlayground`/`RenderVisualizer`'s pattern in the
+sibling courses).
+
+**Architecture.** `src/components/SveltePlayground.astro` renders the code
+statically via Expressive Code (read-only) and wires a toolbar with plain
+inline `<script>` — no Preact island needed, since both stages are DOM
+toggling/mounting, not framework-level state (matches `TSPlayground.astro`'s
+approach, not `RenderVisualizer`'s). Two stages:
+
+- **Stage 1 "Compile"** (always available). Lazily `import()`s
+  **`svelte/compiler@5.57.1`** — the exact version this course teaches —
+  from `esm.sh` (a plain dynamic `import()`, not a UMD script tag: unlike
+  TypeScript, `svelte/compiler` is ESM-only). Runs
+  `compile(source, { generate, runes: true, dev, filename: 'Playground.svelte' })`
+  with `generate`/`dev` driven by two checkboxes ("Server target", "Dev
+  mode"; runes mode is always on — this course only teaches runes). Shows
+  the compiled JS in a `<pre>` with a copy button, every warning
+  (`line:col code: message`), and on a real `CompileError` its message,
+  `line:col`, and Svelte's own source-frame text. The version badge shows
+  the actually-loaded `compiler.VERSION` after first use, not just the
+  pinned constant.
+- **Stage 2 "Run"** — enabled only after a successful **`client`**-target
+  compile (a `server`-target compile produces a string-renderer, not
+  something mountable in a browser). Strips the compiled output's leading
+  `export default` and embeds it in a sandboxed `<iframe srcdoc
+  sandbox="allow-scripts">` with an `importmap` pinning `svelte`,
+  `svelte/internal/client`, and `svelte/internal/disclose-version` to the
+  same `esm.sh` version (the compiled output's own import specifiers — read
+  directly off real compiler output, not guessed), then calls
+  `mount(Playground, { target })` from `svelte`. Every embed always compiles
+  with the same fixed `filename: 'Playground.svelte'`, so the top-level
+  exported function is always named `Playground` regardless of the lesson's
+  own code comments — Run's mount step depends on this name being
+  deterministic, not parsed out of the compiled output. Runtime errors
+  (`window.onerror` / `unhandledrejection` inside the iframe) are forwarded
+  to the host via `postMessage` and shown in the same error panel Compile
+  uses.
+
+**Manually proven in a real browser tab before writing any component code**
+(not assumed from the official REPL's behavior): loaded
+`svelte/compiler@5.57.1` from `esm.sh` and ran `compile()` on `$state`,
+`$derived`, and `$effect` examples — confirmed the exact output markers
+(`$.state(`, `$.set(`, `$.derived(`, `$.user_effect(`, `$.template_effect(()
+=> $.set_text(...))`), the `CompileError` shape (`code`, `message`, `start`
+`{line, column}`, `frame`), and `generate: 'server'`/`dev: true` output —
+then separately built the exact import-map + `mount()` iframe srcdoc by hand
+and proved a compiled `$state` counter mounted in a sandboxed iframe and
+its DOM text genuinely updated after two real clicks (via `flushSync()`)
+before wiring any of it into the Astro component.
+
+**Files:** `src/components/SveltePlayground.astro` (wrapper + inline
+`<script>` DOM wiring), `src/components/svelte-playground-runtime.ts` (pure
+logic: the lazy compiler loader, `compileSvelte()`, the import-map/srcdoc
+builder, the `postMessage` protocol type, EN/TH copy) — split the same way
+`ts-runner.ts` is split from `TSPlayground.astro`.
+
+**Limitations:**
+- Single-file only — one `.svelte` component per embed, no imports beyond
+  `svelte` itself.
+- `generate: 'server'` output is Compile-only by design; Run is disabled
+  for it (a server-target render function needs a real request/response
+  cycle, not a browser DOM).
+- The lesson `xxxCode` literals are plain string literals (like
+  `RenderVisualizer`'s, not `TSPlayground`'s fenced examples) —
+  `tools/verify-snippets.mjs` only collects fences, so these aren't (and
+  can't be) picked up by that harness. `tools/check-parity.mjs` already had
+  a rule for `export const ...Code` literals (byte-identical EN/TH, no
+  Thai leak) before this component existed, so parity is still enforced.
+- `foundations/why-svelte-the-compiler` (the lesson spec §3.3 named as a
+  fourth embed spot) was **skipped**: it was being actively edited by a
+  concurrent agent for the entire duration of this work (a live, uncommitted
+  165+-line diff, unchanged in size across repeated checks) and, by the time
+  this component was ready, that in-progress rewrite had already added its
+  own `svelte/compiler`-based demonstration of the same output markers
+  (`$.state`/`$.derived`/`$.user_effect`/`$.template_effect`+`set_text`) via
+  a real `vitest` test in `## The compiler's output, for real`. Embedding a
+  fourth `SveltePlayground` there risked colliding with that in-flight
+  content for marginal added value. `<SveltePlayground>` is a generic,
+  drop-in component — adding it to that lesson later is a small, isolated
+  edit once the concurrent work lands.
+
+**Proof:** `tools/svelte-playground.spec.mjs` is a plain Playwright script
+(not a `@playwright/test` suite, matching `render-visualizer.spec.mjs`'s
+precedent in `react-deep-dive`) — `node tools/svelte-playground.spec.mjs
+<baseUrl>` against a running static build. For all three embedding lessons
+(EN + TH, six pages total), it clicks Compile and asserts the output panel
+contains that lesson's real compiler marker (`$.state(`, `$.derived(`,
+`$.user_effect(`) and a real, non-empty `Svelte 5.57.1` version badge, then
+clicks Run and asserts the button rendered *inside the sandboxed iframe*
+changes text after a real click (proves compile → mount → live DOM
+reactivity, not just a static compile view), and asserts zero page-level
+console errors across the whole flow. Verified 6/6 passing against
+`astro build` output served locally. `playwright` is a real devDependency
+(`^1.63.0`, matching `react-deep-dive`) — run `npx playwright install
+chromium` once if the browser binary isn't already cached.

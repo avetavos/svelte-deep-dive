@@ -10,6 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
 
 ## Declaring reactive state
 
@@ -24,6 +25,18 @@ import SpotTheBug from '../../../../components/SpotTheBug.astro';
 ```
 
 There are no setters and no special update calls. `count++` is a real reassignment, and because the compiler tracks that the button's text reads `count`, that one text node updates.
+
+Click **Compile** below to see this yourself: the same counter, run through the real Svelte compiler in your browser. Look for `$.state(0)` (the reactive cell `count` becomes) and `$.set(count, ...)` (what `count++` compiles to) in the output panel.
+
+export const stateRuneCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let count = $state(0);
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+
+<SveltePlayground code={stateRuneCode} id="state-rune-playground" />
 
 ## Deep reactivity via proxies
 

@@ -10,6 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
 
 ## Computed values
 
@@ -26,6 +27,19 @@ import SpotTheBug from '../../../../components/SpotTheBug.astro';
 ```
 
 You never list dependencies. The compiler sees that `double` reads `count` and rebuilds `double` exactly when `count` changes. Derived values are read-only by default — you don't normally assign to them; they are a function of their inputs. (There is one deliberate exception — see "Writable deriveds" below.)
+
+Compile this exact example below and look for `$.derived(() => count * 2)` in the output — that's the whole rune: a lazily-recomputed cell wrapping the function you wrote, not a re-run of the entire component.
+
+export const derivedRuneCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let count = $state(2);
+  let double = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{double}</button>
+`;
+
+<SveltePlayground code={derivedRuneCode} id="derived-rune-playground" />
 
 ## Complex logic: $derived.by
 

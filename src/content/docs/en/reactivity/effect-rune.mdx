@@ -10,6 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
 
 ## Effects synchronize with the outside world
 
@@ -27,6 +28,22 @@ import SpotTheBug from '../../../../components/SpotTheBug.astro';
 ```
 
 Dependencies are tracked automatically, exactly like `$derived` — the effect reads `count`, so it re-runs when `count` changes. No dependency array.
+
+Compile this same effect below and look for `$.user_effect(...)` in the output — the compiler tags an author-written `$effect` distinctly from the template's own internal effects (the ones that just keep text nodes in sync).
+
+export const effectRuneCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let count = $state(0);
+
+  $effect(() => {
+    console.log(count);
+  });
+</script>
+
+<button onclick={() => count++}>{count}</button>
+`;
+
+<SveltePlayground code={effectRuneCode} id="effect-rune-playground" />
 
 ## Dependencies are exactly what the LAST run read
 

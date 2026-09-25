@@ -10,6 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 import SpotTheBug from '../../../../components/SpotTheBug.astro';
+import SveltePlayground from '../../../../components/SveltePlayground.astro';
 
 ## ค่าคำนวณ (Computed values)
 
@@ -26,6 +27,19 @@ import SpotTheBug from '../../../../components/SpotTheBug.astro';
 ```
 
 คุณไม่ต้องระบุ dependency เอง compiler เห็นว่า `double` อ่าน `count` และสร้าง `double` ใหม่พอดีตอน `count` เปลี่ยน ค่า derived เป็น read-only โดย default — ปกติคุณไม่ assign ให้มันตรง ๆ มันคือฟังก์ชันของ input ของมัน (มีข้อยกเว้นตั้งใจอยู่หนึ่งอย่าง — ดู "Writable deriveds" ด้านล่าง)
+
+คอมไพล์ตัวอย่างนี้ด้านล่างแล้วสังเกต `$.derived(() => count * 2)` ในผลลัพธ์ — นั่นคือ rune ทั้งหมด: cell ที่คำนวณใหม่แบบ lazy ห่อฟังก์ชันที่คุณเขียน ไม่ใช่การรันคอมโพเนนต์ทั้งตัวใหม่
+
+export const derivedRuneCode = `<script>
+  // English comments: keep this pinned to Svelte 5 runes mode.
+  let count = $state(2);
+  let double = $derived(count * 2);
+</script>
+
+<button onclick={() => count++}>{double}</button>
+`;
+
+<SveltePlayground code={derivedRuneCode} id="derived-rune-playground" />
 
 ## Logic ที่ซับซ้อน: $derived.by
 
